@@ -1,3 +1,3 @@
 # Current Stage
 
-EPIC 1-9 substantially complete. Documentation updated. Manual EDH verification ongoing.
+Implementation completed for runtime handshake session binding, protocol version mismatch handling, correlated style acknowledgments, selector candidates, CSS selector-list parsing, build artifact verification, dist-independent unit tests, and honest Kilo capability reporting. Automated checks pass: typecheck, lint, tests, build. Manual VS Code Extension Development Host verification remains.

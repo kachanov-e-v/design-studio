@@ -61,3 +61,14 @@ See `docs/ARCHITECTURE.md`. Layers: extension, presentation (webview), applicati
 ## License
 
 MIT (pending).
+## Preview Runtime
+
+To enable interactive features on your own app, install the local runtime package and import it once:
+
+```ts
+import "@design-studio/preview-runtime";
+```
+
+The Demo preview injects the runtime automatically. For an external URL, Design Studio reports `Runtime not detected` until the app imports the runtime and handshake completes. Third-party sites may be blocked by `X-Frame-Options`, `frame-ancestors`, or CSP; those cases are reported separately and are not bypassed.
+
+See `docs/DEVELOPMENT_GUIDE.md` for integration details and limitations.

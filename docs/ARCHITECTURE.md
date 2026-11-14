@@ -29,9 +29,15 @@ Universal Plugin Manager is NOT created until at least two real extension scenar
 
 Preview runtime → bridge → extension → webview UI → inspector → persistence/AI adapter.
 
-## Package layout (planned)
+## Runtime handshake
 
-- `packages/shared-contracts` — versioned message types, DTOs.
-- `packages/preview-runtime` — injected runtime (vanilla TS).
-- `src/extension` — host code.
-- `src/webview` — React UI.
+- PreviewContainer owns iframe lifecycle and a per-URL session nonce.
+- Parent sends `ds:ping`; runtime responds with `ds:pong`.
+- Retries use bounded backoff; timeout transitions to `missing`.
+- Stale iframe messages are ignored by `event.source` and session nonce.
+
+## Build and packaging
+
+- Runtime source is canonical in `packages/preview-runtime/src`.
+- Build produces `dist/webview/runtime.js` and `dist/webview/protocol.js`.
+- `scripts/verify-build.js` validates required artifacts after Vite build.

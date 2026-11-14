@@ -1,5 +1,6 @@
 # Next Steps
 
-1. Manual EDH verification of full flow (preview, edit mode, Kilo handoff).
-2. EPIC 8: add integration tests, error handling, performance/accessibility review.
-3. EPIC 9: release prep (VSIX, README, release notes).
+- Manual EDH verification of Demo and a user Vite/React project, including 20 consecutive refreshes.
+- Add React component tests if a DOM test environment is introduced.
+- Evaluate a CSS AST parser only if broader persistence support is required.
+- Verify VSIX packaging contents, including `dist/extension.js` and all `dist/webview` artifacts.
