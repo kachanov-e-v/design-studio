@@ -1,0 +1,28 @@
+.panel {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  padding: 8px;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-panel-border, #444);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.input {
+  width: 100%;
+  margin-bottom: 6px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #ccc);
+  border: 1px solid var(--vscode-input-border, #555);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.status { display: block; margin-top: 4px; font-size: 11px; opacity: 0.8; }
+.panel button {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}

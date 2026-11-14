@@ -1,0 +1,53 @@
+{
+  "name": "design-studio",
+  "displayName": "Design Studio",
+  "description": "Visual design/editing surface for web apps inside VS Code",
+  "version": "0.0.1",
+  "publisher": "design-studio",
+  "engines": {
+    "vscode": "^1.105.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:design-studio.open"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "design-studio.open",
+        "title": "Open Design Studio",
+        "category": "Design Studio"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "npm run build:ext && npm run build:runtime && npm run build:webview",
+    "build:ext": "esbuild src/extension/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --format=cjs --sourcemap",
+    "build:runtime": "npm --prefix packages/preview-runtime run build",
+    "copy:runtime": "copy packages\\preview-runtime\\dist\\index.js webview\\public\\runtime.js",
+    "build:webview": "npm run copy:runtime && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src webview --ext .ts,.tsx",
+    "test": "vitest run",
+    "dev:webview": "vite"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.105.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "esbuild": "^0.21.0",
+    "eslint": "^8.57.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vitest": "^1.6.0"
+  }
+}

@@ -1,0 +1,11 @@
+src/**
+webview/**
+packages/**
+docs/**
+.vscode/**
+node_modules/**
+*.ts
+tsconfig.json
+vite.config.ts
+vitest.config.ts
+.eslintrc.cjs

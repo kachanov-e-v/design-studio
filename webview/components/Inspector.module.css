@@ -1,0 +1,15 @@
+.inspector {
+  width: 280px;
+  border-left: 1px solid var(--vscode-panel-border, #444);
+  padding: 8px 12px;
+  overflow: auto;
+  background: var(--vscode-sideBar-background, #252526);
+}
+.heading { font-size: 14px; margin: 0 0 8px; }
+.editor { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.editor label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.editor input { flex: 1; background: var(--vscode-input-background, #3c3c3c); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--vscode-input-border, #555); border-radius: 4px; padding: 2px 6px; }
+.styles { margin-top: 6px; font-family: monospace; font-size: 11px; max-height: 200px; overflow: auto; }
+.empty { opacity: 0.7; font-size: 12px; }
+.list li { padding: 4px 6px; border-radius: 4px; cursor: default; }
+.list li:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
