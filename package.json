@@ -24,12 +24,13 @@
     ]
   },
   "scripts": {
-    "build": "npm run build:ext && npm run build:runtime && npm run copy:runtime && npm run build:webview && npm run verify:build",
+    "build": "npm run build:ext && npm run build:runtime && npm run copy:runtime && npm run build:webview && npm run inline:demo && npm run verify:build",
     "build:ext": "esbuild src/extension/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --format=cjs --sourcemap",
     "build:runtime": "npm --prefix packages/preview-runtime run build",
     "copy:runtime": "node scripts/copy-runtime.js",
-    "verify:build": "node scripts/verify-build.js",
     "build:webview": "vite build",
+    "inline:demo": "node scripts/inline-demo-runtime.js",
+    "verify:build": "node scripts/verify-build.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src webview --ext .ts,.tsx",
     "test": "vitest run",

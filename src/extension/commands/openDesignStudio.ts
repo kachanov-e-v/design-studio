@@ -4,11 +4,57 @@ import * as path from "node:path";
 import { isAllowedUrl } from "../../shared/url";
 import { KiloCodeAdapter } from "../../infrastructure/ai-integrations/kilo-code/KiloCodeAdapter";
 import { StylePersistenceAdapter } from "../../infrastructure/persistence/StylePersistenceAdapter";
+import { PreviewHostServer } from "../../infrastructure/preview/PreviewHostServer";
 import type { DesignElementContext } from "../../domain/entities/DesignElementContext";
 
 const PREVIEW_URL_KEY = "designStudio.previewUrl.v2";
 
-export function openDesignStudio(context: vscode.ExtensionContext): void {
+let sharedHostServer: PreviewHostServer | null = null;
+
+async function ensureHostServer(context: vscode.ExtensionContext): Promise<PreviewHostServer | null> {
+  if (sharedHostServer?.running) return sharedHostServer;
+  try {
+    const server = new PreviewHostServer({
+      webviewRoot: path.join(context.extensionUri.fsPath, "dist", "webview"),
+    });
+    await server.start();
+    sharedHostServer = server;
+    context.subscriptions.push({ dispose: () => void server.stop() });
+    return server;
+  } catch (err) {
+    console.error("Design Studio: failed to start preview host server:", err);
+    return null;
+  }
+}
+
+/** Re-point a stored URL at the current preview host instance (ports change between sessions). */
+function migrateStoredUrl(stored: string, hostOrigin: string): string {
+  if (typeof stored !== "string" || stored.length === 0) return stored;
+  try {
+    const u = new URL(stored);
+    const isLocalHostServer = u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost");
+    if (isLocalHostServer && u.pathname.startsWith("/proxy/")) {
+      const target = stored.slice(stored.indexOf("/proxy/") + "/proxy/".length);
+      return `${hostOrigin}/proxy/${target}`;
+    }
+    if (isLocalHostServer && (u.pathname === "/demo.html" || u.pathname === "/__ds-runtime.js")) {
+      return `${hostOrigin}${u.pathname}`;
+    }
+    if (u.hostname.endsWith(".vscode-cdn.net") && u.pathname.endsWith("demo.html")) {
+      return `${hostOrigin}/demo.html`;
+    }
+  } catch {
+    // fall through
+  }
+  if (isAllowedUrl(stored)) {
+    return `${hostOrigin}/proxy/${stored}`;
+  }
+  return stored;
+}
+
+export async function openDesignStudio(context: vscode.ExtensionContext): Promise<void> {
+  const host = await ensureHostServer(context);
+
   const panel = vscode.window.createWebviewPanel(
     "designStudio",
     "Design Studio",
@@ -25,8 +71,13 @@ export function openDesignStudio(context: vscode.ExtensionContext): void {
   const adapter = new KiloCodeAdapter();
   const persistence = new StylePersistenceAdapter();
 
+  const resolveStoredUrl = (): string => {
+    const stored = context.workspaceState.get<string>(PREVIEW_URL_KEY, "");
+    return host ? migrateStoredUrl(stored, host.origin) : stored;
+  };
+
   const postState = () => {
-    const url = context.workspaceState.get<string>(PREVIEW_URL_KEY, "");
+    const url = resolveStoredUrl();
     const status = url ? (url.includes("demo.html") ? "demo" : "configured") : "idle";
     panel.webview.postMessage({ type: "preview:state", url, status });
   };
@@ -37,13 +88,25 @@ export function openDesignStudio(context: vscode.ExtensionContext): void {
       if (JSON.stringify(msg).length > 100000) return;
 
       if (msg.type === "preview:ready") {
+        if (host) {
+          const migrated = resolveStoredUrl();
+          if (migrated !== context.workspaceState.get<string>(PREVIEW_URL_KEY, "")) {
+            await context.workspaceState.update(PREVIEW_URL_KEY, migrated);
+          }
+        }
         postState();
         return;
       }
       if (msg.type === "preview:demo") {
-        const demoUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"));
-        console.log("Design Studio demo URI:", demoUri.toString());
-        await context.workspaceState.update(PREVIEW_URL_KEY, demoUri.toString());
+        let url: string;
+        if (host) {
+          url = `${host.origin}/demo.html`;
+        } else {
+          url = panel.webview
+            .asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"))
+            .toString();
+        }
+        await context.workspaceState.update(PREVIEW_URL_KEY, url);
         postState();
         return;
       }
@@ -53,7 +116,8 @@ export function openDesignStudio(context: vscode.ExtensionContext): void {
           panel.webview.postMessage({ type: "preview:error", message: "Invalid preview URL" });
           return;
         }
-        await context.workspaceState.update(PREVIEW_URL_KEY, url);
+        const stored = host && url ? `${host.origin}/proxy/${url}` : url;
+        await context.workspaceState.update(PREVIEW_URL_KEY, stored);
         postState();
         return;
       }

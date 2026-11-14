@@ -24,6 +24,10 @@ if (!runtime.includes("Design Studio runtime loaded")) {
   console.error("runtime.js does not contain expected runtime code");
   process.exit(1);
 }
+if (!/DesignStudioRuntime\s*=/.test(runtime) || /^\s*export\s/m.test(runtime)) {
+  console.error("runtime.js is not a browser-safe IIFE bundle (build preview-runtime with --format=iife --global-name=DesignStudioRuntime)");
+  process.exit(1);
+}
 
 const demo = fs.readFileSync(path.join(webviewDist, "demo.html"), "utf8");
 if (!demo.includes("Design Studio runtime loaded")) {

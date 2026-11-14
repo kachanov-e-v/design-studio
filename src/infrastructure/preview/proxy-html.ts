@@ -1,0 +1,122 @@
+const RUNTIME_SCRIPT_ATTRS = ` data-design-studio="1" defer`;
+
+export function proxyPathFor(targetUrl: string): string {
+  return `/proxy/${targetUrl}`;
+}
+
+export function targetFromProxyPath(rawPath: string): string | null {
+  const raw = rawPath.startsWith("/proxy/") ? rawPath.slice("/proxy/".length) : rawPath;
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function buildInjectedHead(runtimeUrl: string, baseHref: string): string {
+  return `<base href="${baseHref}">` + `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}></script>`;
+}
+
+export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string): string {
+  const injection = buildInjectedHead(runtimeUrl, baseHref);
+  const headMatch = /<head[^>]*>/i.exec(html);
+  if (headMatch) {
+    const at = headMatch.index + headMatch[0].length;
+    return html.slice(0, at) + injection + html.slice(at);
+  }
+  const bodyMatch = /<body[^>]*>/i.exec(html);
+  if (bodyMatch) {
+    const at = bodyMatch.index + bodyMatch[0].length;
+    return html.slice(0, at) + injection + html.slice(at);
+  }
+  return injection + html;
+}
+
+function rewriteCssUrls(css: string, proxyPrefix: string): string {
+  return css.replace(/url\(\s*(['"]?)\/(?!\/)/g, (_m, q: string) => `url(${q}${proxyPrefix}/`);
+}
+
+function targetOriginPrefix(finalTargetUrl: string): string {
+  try {
+    return `/proxy/${new URL(finalTargetUrl).origin}`;
+  } catch {
+    return "/proxy";
+  }
+}
+
+export function prependProxyOriginToPathUrls(content: string, proxyPrefix: string): string {
+  return rewriteCssUrls(content, proxyPrefix);
+}
+
+export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string): string {
+  const prefix = targetOriginPrefix(finalTargetUrl);
+  let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}/proxy/${finalTargetUrl}`);
+  out = rewriteRootAbsoluteAttributes(out, prefix);
+  const styleBlock = /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi;
+  out = out.replace(styleBlock, (m, open: string, css: string, close: string) =>
+    open + rewriteCssUrls(css, prefix) + close
+  );
+  const swSnippet = `<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/__ds-sw.js',{scope:'/'}).catch(function(){})})}</script>`;
+  out = injectBeforeCloseHead(out, swSnippet);
+  return out;
+}
+
+const ROOT_ABSOLUTE_ATTR = /(\s(?:src|href|action|poster|data-src)\s*=\s*)(["'])\/(?!\/|proxy\/|__ds-)/gi;
+
+function rewriteRootAbsoluteAttributes(html: string, prefix: string): string {
+  return html.replace(ROOT_ABSOLUTE_ATTR, (_m, attr: string, q: string) => `${attr}${q}${prefix}/`);
+}
+
+function injectBeforeCloseHead(html: string, snippet: string): string {
+  const closeHead = /<\/head>/i.exec(html);
+  if (closeHead) {
+    const at = closeHead.index;
+    return html.slice(0, at) + snippet + html.slice(at);
+  }
+  return html + snippet;
+}
+
+export function rewriteProxiedCss(css: string, finalTargetUrl: string): string {
+  return rewriteCssUrls(css, targetOriginPrefix(finalTargetUrl));
+}
+
+export const HEADERS_TO_STRIP = [
+  "x-frame-options",
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "clear-site-data",
+  "strict-transport-security",
+  "permissions-policy",
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+] as const;
+
+/** Service worker injected into proxied pages: re-routes same-origin root-absolute requests through the proxy. */
+export const DS_SERVICE_WORKER = `
+self.addEventListener("install", function (event) { self.skipWaiting(); });
+self.addEventListener("activate", function (event) { event.waitUntil(self.clients.claim()); });
+self.addEventListener("fetch", function (event) {
+  var req = event.request;
+  if (req.method !== "GET" && req.method !== "HEAD") return;
+  var url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  var p = url.pathname;
+  if (p.indexOf("/proxy/") === 0 || p === "/__ds-runtime.js" || p === "/__ds-sw.js" || p === "/demo.html") return;
+  event.respondWith(
+    self.clients.get(event.clientId).then(function (client) {
+      var prefix = null;
+      if (client) {
+        var m = /\\/proxy\\/https?:\\/\\/[^/]+/.exec(client.url);
+        if (m) prefix = m[0];
+      }
+      if (!prefix) return fetch(req);
+      var rewritten = prefix + p + url.search;
+      return fetch(rewritten, { headers: req.headers, method: req.method });
+    })
+  );
+});
+`;

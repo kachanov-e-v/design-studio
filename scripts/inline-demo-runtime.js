@@ -2,37 +2,37 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const demoPath = path.join(root, "webview", "public", "demo.html");
+const distDemoPath = path.join(root, "dist", "webview", "demo.html");
 const runtimePath = path.join(root, "dist", "webview", "runtime.js");
 
-let demo = fs.readFileSync(demoPath, "utf8");
-const runtime = fs.readFileSync(runtimePath, "utf8");
+const START = "<!--design-studio:inline-runtime-start-->";
+const END = "<!--design-studio:inline-runtime-end-->";
 
-// Find the opening body tag
-const bodyOpenIndex = demo.indexOf("<body>");
-if (bodyOpenIndex !== -1) {
-  // Find everything after <body>
-  const afterBody = demo.substring(bodyOpenIndex + 6); // 6 = length of "<body>"
-  
-  // Find the closing body tag
-  const bodyCloseIndex = afterBody.indexOf("</body>");
-  if (bodyCloseIndex !== -1) {
-    // Get content before closing body tag
-    const bodyContent = afterBody.substring(0, bodyCloseIndex);
-    
-    // Replace all script tags that load runtime.js
-    const bodyContentWithoutScripts = bodyContent.replace(
-      /<script>\s*\(function\(\) \{[\s\S]*?\}\(\);<\/script>/, 
-      ""
-    );
-    
-    // Rebuild the HTML
-    demo = demo.substring(0, bodyOpenIndex + 6) + bodyContentWithoutScripts;
+let demo = fs.readFileSync(distDemoPath, "utf8");
+const runtime = fs.readFileSync(runtimePath, "utf8");
+if (runtime.trim().length === 0) {
+  console.error("runtime.js is empty; run npm run build:runtime first");
+  process.exit(1);
+}
+
+// Drop any previously inlined runtime region.
+const startIdx = demo.indexOf(START);
+if (startIdx !== -1) {
+  const endIdx = demo.indexOf(END);
+  if (endIdx === -1) {
+    demo = demo.slice(0, startIdx);
+  } else {
+    demo = demo.slice(0, startIdx) + demo.slice(endIdx + END.length);
   }
 }
 
-// Add the runtime inline
-demo += `\n<script>\n${runtime}\n</script>\n</body>\n</html>`;
+const closeIdx = demo.indexOf("</body>");
+if (closeIdx === -1) {
+  console.error("dist/webview/demo.html has no </body> tag");
+  process.exit(1);
+}
 
-fs.writeFileSync(demoPath, demo, "utf8");
-console.log("demo.html updated with inline runtime");
+const inlined =
+  demo.slice(0, closeIdx) + START + "\n<script>\n" + runtime + "\n</script>\n" + END + "\n" + demo.slice(closeIdx);
+fs.writeFileSync(distDemoPath, inlined, "utf8");
+console.log("demo.html inlined with runtime bundle");
