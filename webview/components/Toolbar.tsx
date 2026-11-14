@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import styles from "./Toolbar.module.css";
 import { postToExtension } from "../bridge";
-import { isAllowedUrl } from "../../src/shared/url";
+import { isAllowedUrl } from "@design-studio/shared/url";
 
 export function Toolbar({
   onSetUrl,

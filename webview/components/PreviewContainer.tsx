@@ -1,7 +1,7 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { ElementPayload } from "../types";
-import { PROTOCOL_VERSION, isRuntimeMessage } from "../../packages/preview-runtime/src/protocol";
+import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 
 export interface PreviewContainerHandle {
   applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
