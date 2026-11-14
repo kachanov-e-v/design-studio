@@ -26,7 +26,7 @@ export function isRuntimeMessage(value) {
         case "ds:runtime-ready":
             if (v.nonce !== undefined && typeof v.nonce !== "string")
                 return false;
-            if (v.sessionId !== undefined && typeof v.sessionId !== "string")
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return true;
         case "ds:ping":
@@ -42,11 +42,17 @@ export function isRuntimeMessage(value) {
                 return false;
             return true;
         case "ds:set-mode":
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
             return typeof v.enabled === "boolean";
         case "ds:mode-changed":
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
             return typeof v.enabled === "boolean";
         case "ds:hover":
         case "ds:select":
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
             return isElementPayload(v.payload);
         case "ds:apply-style":
             if (typeof v.property !== "string" || !STYLE_PROPERTY_PATTERN.test(v.property))
@@ -55,6 +61,14 @@ export function isRuntimeMessage(value) {
                 return false;
             if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
                 return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            if (v.selectors !== undefined) {
+                if (!Array.isArray(v.selectors) || v.selectors.length > 20)
+                    return false;
+                if (!v.selectors.every((s) => typeof s === "string" && s.length > 0 && s.length <= 500))
+                    return false;
+            }
             return true;
         case "ds:style-applied":
             if (typeof v.property !== "string")
@@ -69,8 +83,12 @@ export function isRuntimeMessage(value) {
                 return false;
             if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
                 return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
             return true;
         case "ds:runtime-error":
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
             return typeof v.message === "string" && v.message.length <= 500;
         default:
             return false;

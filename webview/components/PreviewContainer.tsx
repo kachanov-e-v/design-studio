@@ -1,9 +1,21 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isRuntimeMessage } from "../../packages/preview-runtime/src/protocol";
 
-type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "error" | "version-mismatch";
+export interface PreviewContainerHandle {
+  applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
+}
+
+type RuntimeStatus =
+  | "idle"
+  | "iframe-loading"
+  | "connecting"
+  | "ready"
+  | "missing"
+  | "protocol-mismatch"
+  | "blocked-or-load-error"
+  | "error";
 
 function getTargetOrigin(url: string): string {
   try {
@@ -27,23 +39,26 @@ function makeSessionId(): string {
   return `ds-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function PreviewContainer({
-  url,
-  status,
-  editMode,
-  onEditModeChange,
-  onRefresh,
-  onSelect,
-  onStyleApplied,
-}: {
+export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   url: string;
   status: string;
   editMode: boolean;
   onEditModeChange: (value: boolean) => void;
   onRefresh: () => void;
   onSelect: (payload: ElementPayload | null) => void;
-  onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; property: string; value: string; payload?: ElementPayload }) => void;
-}): React.ReactElement {
+  onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => void;
+}>(function PreviewContainer(
+  {
+    url,
+    status,
+    editMode,
+    onEditModeChange,
+    onRefresh,
+    onSelect,
+    onStyleApplied,
+  },
+  ref
+): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const onSelectRef = useRef(onSelect);
   const onStyleAppliedRef = useRef(onStyleApplied);
@@ -112,6 +127,19 @@ export function PreviewContainer({
     tryPing();
   };
 
+  useImperativeHandle(ref, () => ({
+    applyStyle: (property, value) => {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return null;
+      const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+      iframe.contentWindow.postMessage(
+        { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, sessionId: sessionIdRef.current },
+        getTargetOrigin(url)
+      );
+      return { requestId, sessionId: sessionIdRef.current };
+    },
+  }), [runtimeStatus, url]);
+
   useEffect(() => {
     clearTimers();
     setHoverRect(null);
@@ -140,20 +168,21 @@ export function PreviewContainer({
       if (raw?.type === "ds:pong" || raw?.type === "ds:runtime-ready") {
         if (typeof raw.version === "string" && raw.version !== PROTOCOL_VERSION) {
           clearTimers();
-          setRuntimeStatus("version-mismatch");
+          setRuntimeStatus("protocol-mismatch");
           setDiagnostic(`Protocol version mismatch: expected ${PROTOCOL_VERSION}, got ${raw.version}.`);
           return;
         }
         const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
         const sid = typeof raw.sessionId === "string" ? raw.sessionId : undefined;
         if (nonce && nonce !== sessionIdRef.current) return;
+        if (!nonce) return;
         if (sid && sid !== sessionIdRef.current) return;
         clearTimers();
         resolvedRef.current = true;
         setRuntimeStatus("ready");
         setDiagnostic("");
         iframe.contentWindow?.postMessage(
-          { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current },
+          { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
           getTargetOrigin(url)
         );
         return;
@@ -161,6 +190,9 @@ export function PreviewContainer({
 
       if (!isRuntimeMessage(raw)) return;
       const data = raw as unknown as import("../../packages/preview-runtime/src/protocol").RuntimeMessage;
+
+      const messageSession = (data as { sessionId?: unknown }).sessionId;
+      if (typeof messageSession !== "string" || messageSession !== sessionIdRef.current) return;
 
       if (data.type === "ds:mode-changed") {
         if (data.enabled !== editModeRef.current) {
@@ -183,6 +215,7 @@ export function PreviewContainer({
           success: data.success,
           reason: data.reason,
           requestId: data.requestId,
+          sessionId: data.sessionId,
           property: data.property,
           value: data.value,
           payload: data.payload,
@@ -204,7 +237,7 @@ export function PreviewContainer({
     if (!iframe?.contentWindow) return;
     if (runtimeStatus !== "ready") return;
     iframe.contentWindow.postMessage(
-      { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode },
+      { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode, sessionId: sessionIdRef.current },
       getTargetOrigin(url)
     );
   }, [editMode, runtimeStatus, url]);
@@ -212,14 +245,18 @@ export function PreviewContainer({
   const runtimeLabel =
     runtimeStatus === "idle"
       ? "Preview not loaded"
+      : runtimeStatus === "iframe-loading"
+      ? "Loading preview iframe…"
       : runtimeStatus === "connecting"
       ? "Connecting Design Studio Runtime…"
       : runtimeStatus === "ready"
       ? "Runtime connected"
       : runtimeStatus === "missing"
       ? "Runtime not detected"
-      : runtimeStatus === "version-mismatch"
+      : runtimeStatus === "protocol-mismatch"
       ? "Runtime protocol mismatch"
+      : runtimeStatus === "blocked-or-load-error"
+      ? "Preview blocked or failed to load"
       : "Unable to connect to preview";
 
   const statusText =
@@ -261,7 +298,7 @@ export function PreviewContainer({
                 if (url) startHandshake();
               }}
               onError={() => {
-                setRuntimeStatus("error");
+                setRuntimeStatus("blocked-or-load-error");
                 setDiagnostic("iframe failed to load.");
               }}
             />
@@ -282,9 +319,14 @@ export function PreviewContainer({
                 Unable to connect to preview. {diagnostic}
               </div>
             )}
-            {runtimeStatus === "version-mismatch" && (
+            {runtimeStatus === "protocol-mismatch" && (
               <div className={styles.overlay} role="status">
                 Runtime protocol mismatch. {diagnostic}
+              </div>
+            )}
+            {runtimeStatus === "blocked-or-load-error" && (
+              <div className={styles.overlay} role="status">
+                Unable to connect to preview. {diagnostic}
               </div>
             )}
             {runtimeStatus === "connecting" && (
@@ -299,4 +341,6 @@ export function PreviewContainer({
       </div>
     </section>
   );
-}
+});
+
+PreviewContainer.displayName = "PreviewContainer";

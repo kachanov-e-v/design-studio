@@ -1,3 +1,3 @@
 # Current Stage
 
-Runtime integration hardening implemented: handshake with session nonce, deterministic build pipeline, separated preview/runtime diagnostics, strict protocol validation, selector candidates, CSS matching improvements, correlated style acknowledgments, and single message ownership. Documentation updated. Manual EDH verification ongoing.
+Implementation completed for runtime handshake session binding, protocol version mismatch handling, correlated style acknowledgments, selector candidates, CSS selector-list parsing, build artifact verification, dist-independent unit tests, and honest Kilo capability reporting. Automated checks pass: typecheck, lint, tests, build. Manual VS Code Extension Development Host verification remains.

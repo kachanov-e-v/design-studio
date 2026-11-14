@@ -33,24 +33,28 @@ export interface SetModeMessage {
   type: "ds:set-mode";
   version: string;
   enabled: boolean;
+  sessionId?: string;
 }
 
 export interface ModeChangedMessage {
   type: "ds:mode-changed";
   version: string;
   enabled: boolean;
+  sessionId?: string;
 }
 
 export interface HoverMessage {
   type: "ds:hover";
   version: string;
   payload: ElementPayload;
+  sessionId?: string;
 }
 
 export interface SelectMessage {
   type: "ds:select";
   version: string;
   payload: ElementPayload;
+  sessionId?: string;
 }
 
 export interface ApplyStyleMessage {
@@ -59,6 +63,8 @@ export interface ApplyStyleMessage {
   property: string;
   value: string;
   requestId?: string;
+  sessionId?: string;
+  selectors?: string[];
 }
 
 export interface StyleAppliedMessage {
@@ -70,12 +76,14 @@ export interface StyleAppliedMessage {
   reason?: string;
   payload?: ElementPayload;
   requestId?: string;
+  sessionId?: string;
 }
 
 export interface RuntimeErrorMessage {
   type: "ds:runtime-error";
   version: string;
   message: string;
+  sessionId?: string;
 }
 
 export type RuntimeMessage =
@@ -115,7 +123,7 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
   switch (v.type) {
     case "ds:runtime-ready":
       if (v.nonce !== undefined && typeof v.nonce !== "string") return false;
-      if (v.sessionId !== undefined && typeof v.sessionId !== "string") return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     case "ds:ping":
       if (typeof v.nonce !== "string" || v.nonce.length === 0 || v.nonce.length > 128) return false;
@@ -126,16 +134,24 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     case "ds:set-mode":
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.enabled === "boolean";
     case "ds:mode-changed":
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.enabled === "boolean";
     case "ds:hover":
     case "ds:select":
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return isElementPayload(v.payload);
     case "ds:apply-style":
       if (typeof v.property !== "string" || !STYLE_PROPERTY_PATTERN.test(v.property)) return false;
       if (typeof v.value !== "string" || v.value.length === 0 || v.value.length > 500) return false;
       if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      if (v.selectors !== undefined) {
+        if (!Array.isArray(v.selectors) || v.selectors.length > 20) return false;
+        if (!v.selectors.every((s) => typeof s === "string" && s.length > 0 && s.length <= 500)) return false;
+      }
       return true;
     case "ds:style-applied":
       if (typeof v.property !== "string") return false;
@@ -144,8 +160,10 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
       if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
       if (v.payload !== undefined && !isElementPayload(v.payload)) return false;
       if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     case "ds:runtime-error":
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.message === "string" && v.message.length <= 500;
     default:
       return false;

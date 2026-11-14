@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { STYLE_PROPS } from "../../shared/protocol";
 
 export interface StyleChange {
   selector: string;
@@ -23,7 +24,7 @@ export interface CssRuleMatch {
 }
 
 export function isValidCssProperty(property: string): boolean {
-  return typeof property === "string" && property.length > 0 && property.length <= 64 && /^[a-zA-Z-]+$/.test(property);
+  return typeof property === "string" && property.length > 0 && property.length <= 64 && STYLE_PROPS.includes(property);
 }
 
 export function isValidCssValue(value: string): boolean {
@@ -36,9 +37,60 @@ export function isValidCssValue(value: string): boolean {
   );
 }
 
+export function splitTopLevelSelectors(input: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inSingle) {
+      current += ch;
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      current += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      current += ch;
+      continue;
+    }
+    if (ch === "(") {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ")") {
+      if (depth > 0) depth -= 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      const trimmed = current.trim().replace(/\s+/g, " ");
+      if (trimmed) result.push(trimmed);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const trimmed = current.trim().replace(/\s+/g, " ");
+  if (trimmed) result.push(trimmed);
+  return result;
+}
+
 export function findCssRules(text: string, selector: string | string[]): CssRuleMatch[] {
   const candidates = Array.isArray(selector) ? selector : [selector];
-  const wanted = candidates.filter((s) => typeof s === "string" && s.length > 0);
+  const wanted = candidates.filter((s) => typeof s === "string" && s.length > 0).map((s) => s.trim().replace(/\s+/g, " "));
   const result: CssRuleMatch[] = [];
 
   const findMatchingBrace = (start: number): number => {
@@ -118,10 +170,7 @@ export function findCssRules(text: string, selector: string | string[]): CssRule
       const selectorText = text.slice(i, j).trim();
       const close = findMatchingBrace(j);
       if (close === -1 || close > to) break;
-      const selectors = selectorText
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+      const selectors = splitTopLevelSelectors(selectorText);
       if (selectors.length > 0 && selectors.some((s) => wanted.includes(s))) {
         result.push({
           selectorText,

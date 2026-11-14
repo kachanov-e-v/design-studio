@@ -1,12 +1,20 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Toolbar } from "./components/Toolbar";
-import { PreviewContainer } from "./components/PreviewContainer";
+import { PreviewContainer, type PreviewContainerHandle } from "./components/PreviewContainer";
 import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
 import type { ElementPayload } from "./types";
-import { PROTOCOL_VERSION } from "../packages/preview-runtime/src/protocol";
 import styles from "./App.module.css";
+
+interface PendingRequest {
+  requestId: string;
+  sessionId: string;
+  selector: string | undefined;
+  property: string;
+  value: string;
+  timeoutId: number;
+}
 
 export function App(): React.ReactElement {
   const [previewUrl, setPreviewUrl] = useState("");
@@ -16,6 +24,16 @@ export function App(): React.ReactElement {
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
+
+  const previewRef = useRef<PreviewContainerHandle | null>(null);
+  const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map());
+
+  const clearPending = () => {
+    for (const pending of pendingRequestsRef.current.values()) {
+      window.clearTimeout(pending.timeoutId);
+    }
+    pendingRequestsRef.current.clear();
+  };
 
   useEffect(() => {
     postToExtension({ type: "preview:ready" });
@@ -40,36 +58,74 @@ export function App(): React.ReactElement {
     });
   }, []);
 
+  useEffect(() => {
+    clearPending();
+    setSelected(null);
+    setLastChange(null);
+    setStyleError("");
+  }, [previewUrl]);
+
   const handleSetUrl = (url: string) => {
     setPreviewUrl(url);
     postToExtension({ type: "preview:setUrl", url });
   };
 
-  const applyStyle = (property: string, value: string) => {
-    const iframe = document.querySelector('iframe[title="preview"]') as HTMLIFrameElement | null;
-    const targetOrigin = getTargetOrigin(previewUrl);
-    const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    iframe?.contentWindow?.postMessage(
-      { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, selectors: selected?.selectors },
-      targetOrigin
-    );
-  };
-
-  const handleStyleApplied = (info: { success: boolean; reason?: string; requestId?: string; property: string; value: string; payload?: ElementPayload }) => {
-    if (!info.success) {
-      setStyleError(info.reason ?? "Failed to apply style");
+  const handleApplyStyle = (property: string, value: string) => {
+    const result = previewRef.current?.applyStyle(property, value) ?? null;
+    if (!result) {
+      setStyleError("Runtime not connected");
       return;
     }
+    const timeoutId = window.setTimeout(() => {
+      const pending = pendingRequestsRef.current.get(result.requestId);
+      if (!pending) return;
+      pendingRequestsRef.current.delete(result.requestId);
+      setStyleError("Style apply timed out");
+      setOperationStatus("Style apply timed out");
+    }, 5000);
+    pendingRequestsRef.current.set(result.requestId, {
+      requestId: result.requestId,
+      sessionId: result.sessionId,
+      selector: selected?.selector,
+      property,
+      value,
+      timeoutId,
+    });
+    setOperationStatus("Applying...");
+  };
+
+  const handleStyleApplied = (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => {
+    const requestId = info.requestId;
+    if (!requestId) return;
+    const pending = pendingRequestsRef.current.get(requestId);
+    if (!pending) return;
+    if (info.sessionId && info.sessionId !== pending.sessionId) return;
+    if (info.property !== pending.property) return;
+
+    window.clearTimeout(pending.timeoutId);
+    pendingRequestsRef.current.delete(requestId);
+
+    if (!info.success) {
+      setStyleError(info.reason ?? "Failed to apply style");
+      setOperationStatus(info.reason ?? "Failed to apply style");
+      return;
+    }
+
+    if (pending.selector && info.payload?.selector && info.payload.selector !== pending.selector) {
+      return;
+    }
+
     setStyleError("");
     setSelected((prev) => {
       if (info.payload) return info.payload;
       if (!prev) return prev;
       return { ...prev, styles: { ...prev.styles, [info.property]: info.value } };
     });
-    const selector = info.payload?.selector ?? selected?.selector;
+    const selector = info.payload?.selector ?? pending.selector;
     if (selector) {
       setLastChange({ selector, property: info.property, value: info.value });
     }
+    setOperationStatus("Applied");
   };
 
   const handleSave = () => {
@@ -98,28 +154,21 @@ export function App(): React.ReactElement {
       />
       <div className={styles.content}>
         <PreviewContainer
+          ref={previewRef}
           url={previewUrl}
           status={status}
           editMode={editMode}
           onEditModeChange={setEditMode}
-          onRefresh={() => postToExtension({ type: "preview:refresh" })}
+          onRefresh={() => {
+            clearPending();
+            postToExtension({ type: "preview:refresh" });
+          }}
           onSelect={setSelected}
           onStyleApplied={handleStyleApplied}
         />
-        <Inspector selected={selected} onApplyStyle={applyStyle} error={styleError} />
+        <Inspector selected={selected} onApplyStyle={handleApplyStyle} error={styleError} />
       </div>
       <FloatingPanel selected={selected} lastChange={lastChange} status={operationStatus} onSave={handleSave} onSendContext={handleSendContext} />
     </div>
   );
-}
-
-function getTargetOrigin(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.protocol === "http:" || u.protocol === "https:") return u.origin;
-    if (u.origin && u.origin !== "null") return u.origin;
-  } catch {
-    // ignore
-  }
-  return "*";
 }

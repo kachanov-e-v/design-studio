@@ -10,12 +10,83 @@ import {
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload } from "./protocol.js";
 
+export function getSelector(el: Element): string {
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const parts: string[] = [];
+  let current: Element | null = el;
+  let depth = 0;
+  while (current && current.nodeType === 1 && depth < 6) {
+    let part = current.tagName.toLowerCase();
+    if (current.classList.length) {
+      part += "." + Array.from(current.classList).slice(0, 2).map(CSS.escape).join(".");
+    }
+    const parentEl: Element | null = current.parentElement;
+    if (parentEl) {
+      const siblings = (Array.from(parentEl.children) as Element[]).filter((c: Element) => c.tagName === current!.tagName);
+      if (siblings.length > 1) {
+        part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      }
+    }
+    parts.unshift(part);
+    current = parentEl;
+    depth++;
+    if (current === document.body || current === null) break;
+  }
+  return parts.join(" > ");
+}
+
+export function getSelectorCandidates(el: Element): string[] {
+  const candidates: string[] = [];
+  const tag = el.tagName.toLowerCase();
+  if (el.id) candidates.push(`#${CSS.escape(el.id)}`);
+
+  const classes = Array.from(el.classList).map((c) => CSS.escape(c));
+  if (classes.length > 0) {
+    const subsets: string[][] = [];
+    for (let size = 1; size <= classes.length; size++) {
+      const combine = (start: number, current: string[]) => {
+        if (current.length === size) {
+          subsets.push([...current]);
+          return;
+        }
+        for (let i = start; i < classes.length; i++) {
+          current.push(classes[i]);
+          combine(i + 1, current);
+          current.pop();
+        }
+      };
+      combine(0, []);
+    }
+    for (const subset of subsets) {
+      candidates.push(`.${subset.join(".")}`);
+      candidates.push(`${tag}.${subset.join(".")}`);
+    }
+  } else {
+    candidates.push(tag);
+  }
+
+  const path = getSelector(el);
+  if (!candidates.includes(path)) candidates.push(path);
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    const normalized = candidate.trim();
+    if (!normalized || normalized.length > 500 || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= 60) break;
+  }
+  return result;
+}
+
 export function initDesignStudioRuntime(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
 
   let editMode = false;
   let selectedElement: Element | null = null;
   let parentOrigin = "*";
+  let activeSessionId = "";
 
   const isDesignStudioElement = (el: Element | null): boolean => {
     if (!el) return false;
@@ -33,46 +104,6 @@ export function initDesignStudioRuntime(): void {
     return node.parentElement ?? null;
   };
 
-  function getSelector(el: Element): string {
-    if (el.id) return `#${CSS.escape(el.id)}`;
-    const parts: string[] = [];
-    let current: Element | null = el;
-    let depth = 0;
-    while (current && current.nodeType === 1 && depth < 6) {
-      let part = current.tagName.toLowerCase();
-      if (current.classList.length) {
-        part += "." + Array.from(current.classList).slice(0, 2).map(CSS.escape).join(".");
-      }
-      const parentEl: Element | null = current.parentElement;
-      if (parentEl) {
-        const siblings = (Array.from(parentEl.children) as Element[]).filter((c: Element) => c.tagName === current!.tagName);
-        if (siblings.length > 1) {
-          part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-        }
-      }
-      parts.unshift(part);
-      current = parentEl;
-      depth++;
-      if (current === document.body || current === null) break;
-    }
-    return parts.join(" > ");
-  }
-
-  function getSelectorCandidates(el: Element): string[] {
-    const candidates: string[] = [];
-    if (el.id) candidates.push(`#${CSS.escape(el.id)}`);
-    const classes = Array.from(el.classList).slice(0, 3).map(CSS.escape);
-    if (classes.length) {
-      candidates.push(`.${classes.join(".")}`);
-      candidates.push(`${el.tagName.toLowerCase()}.${classes.join(".")}`);
-    } else {
-      candidates.push(el.tagName.toLowerCase());
-    }
-    const path = getSelector(el);
-    if (!candidates.includes(path)) candidates.push(path);
-    return Array.from(new Set(candidates));
-  }
-
   function collect(el: Element): ElementPayload {
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
@@ -89,7 +120,10 @@ export function initDesignStudioRuntime(): void {
 
   function postToParent(msg: RuntimeMessage): void {
     try {
-      window.parent.postMessage(msg, parentOrigin || "*");
+      const out = activeSessionId && !(msg as { sessionId?: unknown }).sessionId
+        ? { ...msg, sessionId: activeSessionId }
+        : msg;
+      window.parent.postMessage(out, parentOrigin || "*");
     } catch {
       // ignore
     }
@@ -100,29 +134,43 @@ export function initDesignStudioRuntime(): void {
     if (isDesignStudioElement(el)) return;
     if (el === document.body || el === document.documentElement) return;
     const payload = collect(el);
-    postToParent({ type, version: PROTOCOL_VERSION, payload });
+    postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || undefined });
   }
 
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin) return;
     const data = event.data;
-    if (!isRuntimeMessage(data)) {
-      if (data && typeof data === "object" && (data as { type?: unknown }).type === "ds:ping") return;
+
+    if (data && typeof data === "object" && (data as { type?: unknown }).type === "ds:ping") {
+      const ping = data as { nonce?: unknown; sessionId?: unknown; version?: unknown };
+      if (typeof ping.nonce !== "string" || ping.nonce.length === 0 || ping.nonce.length > 128) return;
+      if (event.origin && event.origin !== "null") parentOrigin = event.origin;
+      activeSessionId = typeof ping.sessionId === "string" && ping.sessionId.length > 0 ? ping.sessionId : ping.nonce;
+      postToParent({
+        type: "ds:pong",
+        version: PROTOCOL_VERSION,
+        nonce: ping.nonce,
+        sessionId: activeSessionId,
+      });
       return;
     }
+
+    if (!isRuntimeMessage(data)) return;
     const msg = data as RuntimeMessage;
-      if (msg.type === "ds:ping") {
-        if (event.origin && event.origin !== "null") parentOrigin = event.origin;
-        postToParent({ type: "ds:pong", version: PROTOCOL_VERSION, nonce: msg.nonce, sessionId: msg.sessionId });
-        return;
-      }
+
+    const messageSessionId = (msg as { sessionId?: unknown }).sessionId;
+    if (activeSessionId && messageSessionId !== activeSessionId) return;
+    if (msg.version !== PROTOCOL_VERSION) return;
+
     if (msg.type === "ds:set-mode") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
       editMode = Boolean(msg.enabled);
-      postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode });
+      postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
       return;
     }
     if (msg.type === "ds:apply-style") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
       const { property, value, requestId } = msg;
       if (!STYLE_PROPERTY_PATTERN.test(property)) {
         postToParent({
@@ -133,6 +181,7 @@ export function initDesignStudioRuntime(): void {
           success: false,
           reason: "Invalid property",
           requestId,
+          sessionId: activeSessionId || msg.sessionId,
         });
         return;
       }
@@ -145,6 +194,7 @@ export function initDesignStudioRuntime(): void {
           success: false,
           reason: "Invalid value",
           requestId,
+          sessionId: activeSessionId || msg.sessionId,
         });
         return;
       }
@@ -157,6 +207,7 @@ export function initDesignStudioRuntime(): void {
           success: false,
           reason: "No selected element",
           requestId,
+          sessionId: activeSessionId || msg.sessionId,
         });
         return;
       }
@@ -172,6 +223,7 @@ export function initDesignStudioRuntime(): void {
           success: true,
           payload,
           requestId,
+          sessionId: activeSessionId || msg.sessionId,
         });
       } catch {
         postToParent({
@@ -182,6 +234,7 @@ export function initDesignStudioRuntime(): void {
           success: false,
           reason: "Failed to apply style",
           requestId,
+          sessionId: activeSessionId || msg.sessionId,
         });
       }
       return;
@@ -218,12 +271,9 @@ export function initDesignStudioRuntime(): void {
     },
     true
   );
-
-  // Runtime readiness is now delivered through handshake ping/pong only.
 }
 
 if (typeof window !== "undefined") {
   console.log("Design Studio runtime loaded");
   initDesignStudioRuntime();
 }
-
