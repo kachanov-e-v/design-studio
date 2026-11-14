@@ -6,7 +6,7 @@ const dist = path.join(root, "packages", "preview-runtime", "dist");
 const publicDir = path.join(root, "webview", "public");
 
 const copies = [
-  { from: "index.js", to: "runtime.js" },
+  { from: "bundle.js", to: "runtime.js" },
   { from: "protocol.js", to: "protocol.js" },
 ];
 

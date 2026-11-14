@@ -20,8 +20,8 @@ for (const file of required) {
 }
 
 const runtime = fs.readFileSync(path.join(webviewDist, "runtime.js"), "utf8");
-if (!runtime.includes("./protocol.js")) {
-  console.error("runtime.js does not reference ./protocol.js");
+if (!runtime.includes("Design Studio runtime loaded")) {
+  console.error("runtime.js does not contain expected runtime code");
   process.exit(1);
 }
 
