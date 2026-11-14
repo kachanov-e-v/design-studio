@@ -4,7 +4,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PreviewHostServer } from "./PreviewHostServer";
-import { injectIntoHtml, rewriteProxiedCss, rewriteProxiedHtml, targetFromProxyPath, proxyPathFor } from "./proxy-html";
+import {
+  injectIntoHtml,
+  rewriteProxiedCss,
+  rewriteProxiedHtml,
+  targetFromProxyPath,
+  proxyPathFor,
+  candidateLoopbackTargets,
+} from "./proxy-html";
 
 const stubHtml = `<!DOCTYPE html><html><head><title>App</title></head><body><h1>Hello</h1></body></html>`;
 const stubCss = `body { background: url("/img/bg.png") no-repeat; }`;
@@ -89,6 +96,15 @@ describe("proxy-html helpers", () => {
     expect(targetFromProxyPath("/proxy/ftp://x")).toBeNull();
     expect(targetFromProxyPath("/proxy/")).toBeNull();
     expect(proxyPathFor("http://localhost:3000/")).toBe("/proxy/http://localhost:3000/");
+  });
+
+  it("builds loopback fallback candidates", () => {
+    expect(candidateLoopbackTargets("http://localhost:3000/app")).toEqual([
+      "http://localhost:3000/app",
+      "http://127.0.0.1:3000/app",
+    ]);
+    expect(candidateLoopbackTargets("http://127.0.0.1/api")).toEqual(["http://127.0.0.1/api", "http://localhost/api"]);
+    expect(candidateLoopbackTargets("http://example.org/")).toHaveLength(1);
   });
 });
 

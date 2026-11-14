@@ -2,11 +2,11 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { targetFromProxyPath, DS_SERVICE_WORKER } from "./proxy-html";
+import { targetFromProxyPath, DS_SERVICE_WORKER, candidateLoopbackTargets } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
-const FETCH_TIMEOUT_MS = 20_000;
+const FETCH_TIMEOUT_MS = 30_000;
 
 export interface PreviewHostServerOptions {
   webviewRoot: string;
@@ -116,6 +116,31 @@ export class PreviewHostServer {
     res.end("Not found");
   }
 
+  private async fetchWithFallbacks(
+    target: string,
+    req: http.IncomingMessage
+  ): Promise<{ upstream: Response | null; errors: { url: string; message: string }[] }> {
+    const candidates = candidateLoopbackTargets(target);
+    const errors: { url: string; message: string }[] = [];
+    for (const candidate of candidates) {
+      try {
+        const upstream = await fetch(candidate, {          method: req.method === "HEAD" ? "HEAD" : "GET",
+          redirect: "follow",
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          headers: { "user-agent": req.headers["user-agent"] ?? "design-studio-preview", accept: req.headers.accept ?? "*/*" },
+        });
+        return { upstream, errors };
+      } catch (err) {
+        const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+        const detail = [err instanceof Error ? err.message : String(err), cause?.code, cause?.message]
+          .filter((p): p is string => typeof p === "string" && p.length > 0)
+          .join(" ");
+        errors.push({ url: candidate, message: detail });
+      }
+    }
+    return { upstream: null, errors };
+  }
+
   private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const target = targetFromProxyPath(req.url ?? "");
     if (!target) {
@@ -123,17 +148,13 @@ export class PreviewHostServer {
       res.end("Invalid proxy target");
       return;
     }
-    let upstream: Response;
-    try {
-      upstream = await fetch(target, {
-        method: req.method === "HEAD" ? "HEAD" : "GET",
-        redirect: "follow",
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { "user-agent": req.headers["user-agent"] ?? "design-studio-preview", accept: req.headers.accept ?? "*/*" },
-      });
-    } catch {
+    const { upstream, errors } = await this.fetchWithFallbacks(target, req);
+    if (!upstream) {
       res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(`Preview host could not reach ${target}`);
+      res.end(
+        `Preview host could not reach ${target}.\n` +
+          errors.map((e, i) => `Attempt ${i + 1} (${e.url}): ${e.message}`).join("\n")
+      );
       return;
     }
 

@@ -16,6 +16,23 @@ export function targetFromProxyPath(rawPath: string): string | null {
   }
 }
 
+/** Dev servers often bind to 127.0.0.1 or ::1 only; try the alternate loopback form. */
+export function candidateLoopbackTargets(target: string): string[] {
+  const candidates = [target];
+  try {
+    const u = new URL(target);
+    const other =
+      u.hostname === "localhost" ? "127.0.0.1" : u.hostname === "127.0.0.1" ? "localhost" : null;
+    if (other) {
+      const port = u.port ? `:${u.port}` : "";
+      candidates.push(`${u.protocol}//${other}${port}${u.pathname}${u.search}`);
+    }
+  } catch {
+    // ignore
+  }
+  return candidates;
+}
+
 export function buildInjectedHead(runtimeUrl: string, baseHref: string): string {
   return `<base href="${baseHref}">` + `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}></script>`;
 }
