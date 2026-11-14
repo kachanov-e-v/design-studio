@@ -249,7 +249,7 @@ var DesignStudioRuntime = (() => {
     }
     window.addEventListener("message", (event) => {
       if (event.source !== window.parent) return;
-      if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin) return;
+      if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin && !parentOrigin.includes("vscode-webview")) return;
       const data = event.data;
       if (data && typeof data === "object" && data.type === "ds:ping") {
         const ping = data;
