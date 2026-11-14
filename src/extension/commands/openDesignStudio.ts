@@ -27,7 +27,8 @@ export function openDesignStudio(context: vscode.ExtensionContext): void {
 
   const postState = () => {
     const url = context.workspaceState.get<string>(PREVIEW_URL_KEY, "");
-    panel.webview.postMessage({ type: "preview:state", url, status: url ? "ready" : "idle" });
+    const status = url ? (url.includes("demo.html") ? "demo" : "configured") : "idle";
+    panel.webview.postMessage({ type: "preview:state", url, status });
   };
 
   panel.webview.onDidReceiveMessage(async (msg) => {
@@ -63,6 +64,7 @@ export function openDesignStudio(context: vscode.ExtensionContext): void {
       if (msg.type === "style:persist") {
         const change = {
           selector: String(msg.selector ?? ""),
+          selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
           property: String(msg.property ?? ""),
           value: String(msg.value ?? ""),
         };

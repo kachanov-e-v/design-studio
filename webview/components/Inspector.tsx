@@ -2,10 +2,11 @@ import React from "react";
 import styles from "./Inspector.module.css";
 import type { ElementPayload } from "../types";
 
-export function Inspector({ selected, onApplyStyle }: { selected: ElementPayload | null; onApplyStyle: (p: string, v: string) => void }): React.ReactElement {
+export function Inspector({ selected, onApplyStyle, error }: { selected: ElementPayload | null; onApplyStyle: (p: string, v: string) => void; error?: string }): React.ReactElement {
   return (
     <aside className={styles.inspector} aria-label="Inspector">
       <h2 className={styles.heading}>Inspector</h2>
+      {error && <div className={styles.error}>{error}</div>}
       {selected ? (
         <div className={styles.selected}>
           <div><strong>Tag:</strong> {selected.tag}</div>

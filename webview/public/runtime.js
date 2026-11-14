@@ -5,7 +5,7 @@ export function initDesignStudioRuntime() {
         return;
     let editMode = false;
     let selectedElement = null;
-    let readySent = false;
+    let parentOrigin = "*";
     const isDesignStudioElement = (el) => {
         if (!el)
             return false;
@@ -50,6 +50,23 @@ export function initDesignStudioRuntime() {
         }
         return parts.join(" > ");
     }
+    function getSelectorCandidates(el) {
+        const candidates = [];
+        if (el.id)
+            candidates.push(`#${CSS.escape(el.id)}`);
+        const classes = Array.from(el.classList).slice(0, 3).map(CSS.escape);
+        if (classes.length) {
+            candidates.push(`.${classes.join(".")}`);
+            candidates.push(`${el.tagName.toLowerCase()}.${classes.join(".")}`);
+        }
+        else {
+            candidates.push(el.tagName.toLowerCase());
+        }
+        const path = getSelector(el);
+        if (!candidates.includes(path))
+            candidates.push(path);
+        return Array.from(new Set(candidates));
+    }
     function collect(el) {
         const rect = el.getBoundingClientRect();
         const cs = getComputedStyle(el);
@@ -58,6 +75,7 @@ export function initDesignStudioRuntime() {
             styles[p] = cs.getPropertyValue(p).trim();
         return {
             selector: getSelector(el),
+            selectors: getSelectorCandidates(el),
             tag: el.tagName.toLowerCase(),
             rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
             styles,
@@ -65,7 +83,7 @@ export function initDesignStudioRuntime() {
     }
     function postToParent(msg) {
         try {
-            window.parent.postMessage(msg, "*");
+            window.parent.postMessage(msg, parentOrigin || "*");
         }
         catch {
             // ignore
@@ -82,17 +100,30 @@ export function initDesignStudioRuntime() {
         postToParent({ type, version: PROTOCOL_VERSION, payload });
     }
     window.addEventListener("message", (event) => {
-        const data = event.data;
-        if (!isRuntimeMessage(data))
+        if (event.source !== window.parent)
             return;
+        if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin)
+            return;
+        const data = event.data;
+        if (!isRuntimeMessage(data)) {
+            if (data && typeof data === "object" && data.type === "ds:ping")
+                return;
+            return;
+        }
         const msg = data;
+        if (msg.type === "ds:ping") {
+            if (event.origin && event.origin !== "null")
+                parentOrigin = event.origin;
+            postToParent({ type: "ds:pong", version: PROTOCOL_VERSION, nonce: msg.nonce, sessionId: msg.sessionId });
+            return;
+        }
         if (msg.type === "ds:set-mode") {
             editMode = Boolean(msg.enabled);
             postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode });
             return;
         }
         if (msg.type === "ds:apply-style") {
-            const { property, value } = msg;
+            const { property, value, requestId } = msg;
             if (!STYLE_PROPERTY_PATTERN.test(property)) {
                 postToParent({
                     type: "ds:style-applied",
@@ -101,6 +132,7 @@ export function initDesignStudioRuntime() {
                     value,
                     success: false,
                     reason: "Invalid property",
+                    requestId,
                 });
                 return;
             }
@@ -112,6 +144,7 @@ export function initDesignStudioRuntime() {
                     value: String(value ?? ""),
                     success: false,
                     reason: "Invalid value",
+                    requestId,
                 });
                 return;
             }
@@ -123,6 +156,7 @@ export function initDesignStudioRuntime() {
                     value,
                     success: false,
                     reason: "No selected element",
+                    requestId,
                 });
                 return;
             }
@@ -137,6 +171,7 @@ export function initDesignStudioRuntime() {
                     value: actual || value,
                     success: true,
                     payload,
+                    requestId,
                 });
             }
             catch {
@@ -147,6 +182,7 @@ export function initDesignStudioRuntime() {
                     value,
                     success: false,
                     reason: "Failed to apply style",
+                    requestId,
                 });
             }
             return;
@@ -180,10 +216,7 @@ export function initDesignStudioRuntime() {
         selectedElement = target;
         sendHoverOrSelect("ds:select", target);
     }, true);
-    if (!readySent) {
-        readySent = true;
-        postToParent({ type: "ds:runtime-ready", version: PROTOCOL_VERSION });
-    }
+    // Runtime readiness is now delivered through handshake ping/pong only.
 }
 if (typeof window !== "undefined") {
     console.log("Design Studio runtime loaded");

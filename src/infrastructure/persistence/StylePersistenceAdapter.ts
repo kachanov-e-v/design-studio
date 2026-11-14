@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 
 export interface StyleChange {
   selector: string;
+  selectors?: string[];
   property: string;
   value: string;
 }
@@ -35,30 +36,107 @@ export function isValidCssValue(value: string): boolean {
   );
 }
 
-export function findCssRules(text: string, selector: string): CssRuleMatch[] {
+export function findCssRules(text: string, selector: string | string[]): CssRuleMatch[] {
+  const candidates = Array.isArray(selector) ? selector : [selector];
+  const wanted = candidates.filter((s) => typeof s === "string" && s.length > 0);
   const result: CssRuleMatch[] = [];
-  const regex = /([^{}]+)\{([^}]*)\}/g;
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(text)) !== null) {
-    const selectorText = m[1].trim();
-    const selectors = selectorText
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    if (!selectors.includes(selector)) continue;
-    const fullStart = m.index;
-    const openBrace = text.indexOf("{", fullStart);
-    const closeBrace = text.indexOf("}", openBrace);
-    if (openBrace === -1 || closeBrace === -1) continue;
-    result.push({
-      selectorText,
-      selectors,
-      start: fullStart,
-      end: closeBrace + 1,
-      bodyStart: openBrace + 1,
-      bodyEnd: closeBrace,
-    });
-  }
+
+  const findMatchingBrace = (start: number): number => {
+    let depth = 0;
+    let i = start;
+    while (i < text.length) {
+      if (text.startsWith("/*", i)) {
+        const end = text.indexOf("*/", i + 2);
+        i = end === -1 ? text.length : end + 2;
+        continue;
+      }
+      const ch = text[i];
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i += 1;
+        while (i < text.length && text[i] !== quote) {
+          if (text[i] === "\\") i += 1;
+          i += 1;
+        }
+        i += 1;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+      i += 1;
+    }
+    return -1;
+  };
+
+  const parse = (from: number, to: number): void => {
+    let i = from;
+    while (i < to) {
+      while (i < to && /\s/.test(text[i])) i += 1;
+      if (i >= to) break;
+      if (text.startsWith("/*", i)) {
+        const end = text.indexOf("*/", i + 2);
+        i = end === -1 ? to : end + 2;
+        continue;
+      }
+      if (text[i] === "@") {
+        let j = i;
+        while (j < to && text[j] !== "{" && text[j] !== ";") {
+          if (text.startsWith("/*", j)) {
+            const end = text.indexOf("*/", j + 2);
+            j = end === -1 ? to : end + 2;
+            continue;
+          }
+          j += 1;
+        }
+        if (j >= to || text[j] === ";") {
+          i = Math.min(to, j + 1);
+          continue;
+        }
+        const close = findMatchingBrace(j);
+        if (close === -1 || close > to) {
+          i = j + 1;
+          continue;
+        }
+        parse(j + 1, close);
+        i = close + 1;
+        continue;
+      }
+
+      let j = i;
+      while (j < to && text[j] !== "{") {
+        if (text.startsWith("/*", j)) {
+          const end = text.indexOf("*/", j + 2);
+          j = end === -1 ? to : end + 2;
+          continue;
+        }
+        j += 1;
+      }
+      if (j >= to) break;
+      const selectorText = text.slice(i, j).trim();
+      const close = findMatchingBrace(j);
+      if (close === -1 || close > to) break;
+      const selectors = selectorText
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (selectors.length > 0 && selectors.some((s) => wanted.includes(s))) {
+        result.push({
+          selectorText,
+          selectors,
+          start: i,
+          end: close + 1,
+          bodyStart: j + 1,
+          bodyEnd: close,
+        });
+      }
+      i = close + 1;
+    }
+  };
+
+  parse(0, text.length);
   return result;
 }
 
@@ -78,25 +156,26 @@ export class StylePersistenceAdapter {
     }
 
     const files = await vscode.workspace.findFiles("**/*.css", "**/node_modules/**", 50);
-    const candidates: { uri: vscode.Uri; doc: vscode.TextDocument; text: string; rule: CssRuleMatch }[] = [];
+    const matches: { uri: vscode.Uri; doc: vscode.TextDocument; text: string; rule: CssRuleMatch }[] = [];
 
     for (const uri of files) {
       const doc = await vscode.workspace.openTextDocument(uri);
       const text = doc.getText();
-      const rules = findCssRules(text, change.selector);
+      const selectorCandidates = change.selectors?.length ? change.selectors : [change.selector];
+      const rules = findCssRules(text, selectorCandidates);
       for (const rule of rules) {
-        candidates.push({ uri, doc, text, rule });
+        matches.push({ uri, doc, text, rule });
       }
     }
 
-    if (candidates.length === 0) {
+    if (matches.length === 0) {
       return { success: false, message: "No matching CSS rule found" };
     }
-    if (candidates.length > 1) {
+    if (matches.length > 1) {
       return { success: false, message: "Ambiguous CSS rule match" };
     }
 
-    const { uri, doc, text, rule } = candidates[0];
+    const { uri, doc, text, rule } = matches[0];
     const body = text.slice(rule.bodyStart, rule.bodyEnd);
     const propEsc = change.property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const declRegex = new RegExp(`(^|[;{])\\s*${propEsc}\\s*:[^;]*;?`, "m");

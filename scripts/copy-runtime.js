@@ -10,15 +10,22 @@ const copies = [
   { from: "protocol.js", to: "protocol.js" },
 ];
 
-if (!fs.existsSync(path.join(dist, "index.js"))) {
-  console.error("Runtime bundle not found:", path.join(dist, "index.js"));
-  process.exit(1);
+for (const c of copies) {
+  const src = path.join(dist, c.from);
+  if (!fs.existsSync(src)) {
+    console.error("Required runtime artifact not found:", src);
+    process.exit(1);
+  }
+  const stat = fs.statSync(src);
+  if (!stat.isFile() || stat.size === 0) {
+    console.error("Required runtime artifact is empty:", src);
+    process.exit(1);
+  }
 }
 
 fs.mkdirSync(publicDir, { recursive: true });
 for (const c of copies) {
   const src = path.join(dist, c.from);
-  if (!fs.existsSync(src)) continue;
   const dest = path.join(publicDir, c.to);
   fs.copyFileSync(src, dest);
   console.log("Copied", c.from, "to", dest);

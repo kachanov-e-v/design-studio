@@ -9,12 +9,14 @@ export function Toolbar({
   editMode,
   onInspect,
   onSave,
+  canSave,
 }: {
   onSetUrl: (url: string) => void;
   currentUrl: string;
   editMode: boolean;
   onInspect: () => void;
   onSave: () => void;
+  canSave?: boolean;
 }): React.ReactElement {
   const [value, setValue] = useState(currentUrl);
   const [error, setError] = useState("");
@@ -62,7 +64,7 @@ export function Toolbar({
         <button type="button" onClick={onInspect} aria-pressed={editMode} title="Toggle edit mode">
           {editMode ? "Inspect: On" : "Inspect"}
         </button>
-        <button type="button" onClick={onSave} title="Save last style change to source">Save</button>
+        <button type="button" onClick={onSave} disabled={!canSave} title="Save last style change to source">Save</button>
       </nav>
     </header>
   );

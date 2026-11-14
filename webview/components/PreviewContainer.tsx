@@ -3,6 +3,30 @@ import styles from "./PreviewContainer.module.css";
 import type { ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isRuntimeMessage } from "../../packages/preview-runtime/src/protocol";
 
+type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "error" | "version-mismatch";
+
+function getTargetOrigin(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.origin;
+    if (u.origin && u.origin !== "null") return u.origin;
+  } catch {
+    // ignore
+  }
+  return "*";
+}
+
+function makeSessionId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // ignore
+  }
+  return `ds-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function PreviewContainer({
   url,
   status,
@@ -18,32 +42,91 @@ export function PreviewContainer({
   onEditModeChange: (value: boolean) => void;
   onRefresh: () => void;
   onSelect: (payload: ElementPayload | null) => void;
-  onStyleApplied?: (info: { property: string; value: string; payload?: ElementPayload }) => void;
+  onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; property: string; value: string; payload?: ElementPayload }) => void;
 }): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const onSelectRef = useRef(onSelect);
   const onStyleAppliedRef = useRef(onStyleApplied);
-  const [runtimeStatus, setRuntimeStatus] = useState<"idle" | "connecting" | "ready" | "missing" | "error">("idle");
+  const onEditModeChangeRef = useRef(onEditModeChange);
+  const editModeRef = useRef(editMode);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
   const [hoverRect, setHoverRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const timeoutRef = useRef<number | null>(null);
+  const [diagnostic, setDiagnostic] = useState("");
+
+  const sessionIdRef = useRef("");
+  const resolvedRef = useRef(false);
+  const retryTimerRef = useRef<number | null>(null);
+  const missingTimerRef = useRef<number | null>(null);
+  const MAX_RETRIES = 5;
 
   useEffect(() => {
     onSelectRef.current = onSelect;
     onStyleAppliedRef.current = onStyleApplied;
+    onEditModeChangeRef.current = onEditModeChange;
+    editModeRef.current = editMode;
   });
 
+  const clearTimers = () => {
+    if (retryTimerRef.current) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (missingTimerRef.current) {
+      window.clearTimeout(missingTimerRef.current);
+      missingTimerRef.current = null;
+    }
+  };
+
+  const sendPing = () => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+    const nonce = sessionIdRef.current;
+    if (!nonce) return;
+    iframe.contentWindow.postMessage(
+      { type: "ds:ping", version: PROTOCOL_VERSION, nonce, sessionId: nonce },
+      "*"
+    );
+  };
+
+  const startHandshake = () => {
+    clearTimers();
+    resolvedRef.current = false;
+    let attempts = 0;
+    const currentSession = sessionIdRef.current;
+    const tryPing = () => {
+      if (resolvedRef.current || sessionIdRef.current !== currentSession) return;
+      sendPing();
+      attempts += 1;
+      if (attempts <= MAX_RETRIES) {
+        retryTimerRef.current = window.setTimeout(tryPing, 300);
+      } else {
+        missingTimerRef.current = window.setTimeout(() => {
+          if (!resolvedRef.current && sessionIdRef.current === currentSession) {
+            setRuntimeStatus("missing");
+            setDiagnostic("Runtime did not respond to handshake before timeout.");
+          }
+        }, 700);
+      }
+    };
+    tryPing();
+  };
+
   useEffect(() => {
-    setRuntimeStatus(url ? "connecting" : "idle");
+    clearTimers();
     setHoverRect(null);
     onSelectRef.current(null);
-    if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
-    if (!url) return;
-    timeoutRef.current = window.setTimeout(() => {
-      setRuntimeStatus((prev) => (prev === "connecting" ? "missing" : prev));
-    }, 2000);
+    setDiagnostic("");
+    if (!url) {
+      setRuntimeStatus("idle");
+      sessionIdRef.current = "";
+      return;
+    }
+    resolvedRef.current = false;
+    sessionIdRef.current = makeSessionId();
+    setRuntimeStatus("connecting");
     return () => {
-      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+      clearTimers();
     };
   }, [url, refreshKey]);
 
@@ -52,21 +135,36 @@ export function PreviewContainer({
       const iframe = iframeRef.current;
       if (!iframe || !iframe.contentWindow) return;
       if (event.source !== iframe.contentWindow) return;
-      const data = event.data;
-      if (!isRuntimeMessage(data)) return;
+      const raw = event.data as { type?: unknown; version?: unknown; nonce?: unknown; sessionId?: unknown };
 
-      if (data.type === "ds:runtime-ready") {
-        if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+      if (raw?.type === "ds:pong" || raw?.type === "ds:runtime-ready") {
+        if (typeof raw.version === "string" && raw.version !== PROTOCOL_VERSION) {
+          clearTimers();
+          setRuntimeStatus("version-mismatch");
+          setDiagnostic(`Protocol version mismatch: expected ${PROTOCOL_VERSION}, got ${raw.version}.`);
+          return;
+        }
+        const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
+        const sid = typeof raw.sessionId === "string" ? raw.sessionId : undefined;
+        if (nonce && nonce !== sessionIdRef.current) return;
+        if (sid && sid !== sessionIdRef.current) return;
+        clearTimers();
+        resolvedRef.current = true;
         setRuntimeStatus("ready");
+        setDiagnostic("");
         iframe.contentWindow?.postMessage(
-          { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode },
-          "*"
+          { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current },
+          getTargetOrigin(url)
         );
         return;
       }
+
+      if (!isRuntimeMessage(raw)) return;
+      const data = raw as unknown as import("../../packages/preview-runtime/src/protocol").RuntimeMessage;
+
       if (data.type === "ds:mode-changed") {
-        if (data.enabled !== editMode) {
-          onEditModeChange(data.enabled);
+        if (data.enabled !== editModeRef.current) {
+          onEditModeChangeRef.current(data.enabled);
         }
         return;
       }
@@ -81,17 +179,25 @@ export function PreviewContainer({
         return;
       }
       if (data.type === "ds:style-applied") {
-        onStyleAppliedRef.current?.({ property: data.property, value: data.value, payload: data.payload });
+        onStyleAppliedRef.current?.({
+          success: data.success,
+          reason: data.reason,
+          requestId: data.requestId,
+          property: data.property,
+          value: data.value,
+          payload: data.payload,
+        });
         return;
       }
       if (data.type === "ds:runtime-error") {
         setRuntimeStatus("error");
+        setDiagnostic(data.message);
         return;
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [editMode, onEditModeChange]);
+  }, [url]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -99,9 +205,9 @@ export function PreviewContainer({
     if (runtimeStatus !== "ready") return;
     iframe.contentWindow.postMessage(
       { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode },
-      "*"
+      getTargetOrigin(url)
     );
-  }, [editMode, runtimeStatus]);
+  }, [editMode, runtimeStatus, url]);
 
   const runtimeLabel =
     runtimeStatus === "idle"
@@ -112,6 +218,8 @@ export function PreviewContainer({
       ? "Runtime connected"
       : runtimeStatus === "missing"
       ? "Runtime not detected"
+      : runtimeStatus === "version-mismatch"
+      ? "Runtime protocol mismatch"
       : "Unable to connect to preview";
 
   const statusText =
@@ -149,8 +257,13 @@ export function PreviewContainer({
               title="preview"
               src={url}
               className={styles.iframe}
-              onLoad={() => {}}
-              onError={() => setRuntimeStatus("error")}
+              onLoad={() => {
+                if (url) startHandshake();
+              }}
+              onError={() => {
+                setRuntimeStatus("error");
+                setDiagnostic("iframe failed to load.");
+              }}
             />
             {hoverRect && (
               <div
@@ -160,12 +273,23 @@ export function PreviewContainer({
             )}
             {runtimeStatus === "missing" && (
               <div className={styles.overlay} role="status">
-                Runtime not detected. Import @design-studio/preview-runtime in your app.
+                Runtime not detected. Import @design-studio/preview-runtime in your app entry point, then restart the dev server.
+                {diagnostic ? ` ${diagnostic}` : ""}
               </div>
             )}
             {runtimeStatus === "error" && (
               <div className={styles.overlay} role="status">
-                Unable to connect to preview
+                Unable to connect to preview. {diagnostic}
+              </div>
+            )}
+            {runtimeStatus === "version-mismatch" && (
+              <div className={styles.overlay} role="status">
+                Runtime protocol mismatch. {diagnostic}
+              </div>
+            )}
+            {runtimeStatus === "connecting" && (
+              <div className={styles.overlay} role="status">
+                Connecting Design Studio Runtime…
               </div>
             )}
           </>
