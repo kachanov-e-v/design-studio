@@ -26,8 +26,8 @@ if (!runtime.includes("Design Studio runtime loaded")) {
 }
 
 const demo = fs.readFileSync(path.join(webviewDist, "demo.html"), "utf8");
-if (!demo.includes("runtime.js")) {
-  console.error("demo.html does not reference runtime.js");
+if (!demo.includes("Design Studio runtime loaded")) {
+  console.error("demo.html does not contain inline runtime code");
   process.exit(1);
 }
 
