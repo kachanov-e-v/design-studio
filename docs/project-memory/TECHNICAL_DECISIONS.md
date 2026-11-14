@@ -7,3 +7,4 @@
 - ADR-005 Source mapping with confidence; MVP React + HTML/CSS.
 - ADR-006 Persistence minimal edits, WorkspaceEdit, conflict checks, rollback.
 - Stack: esbuild (host), Vite (webview), React, CSS Modules, Vitest, Playwright.
+- Runtime protocol v1: typed messages, source validation, ready handshake, kebab-case CSS properties.

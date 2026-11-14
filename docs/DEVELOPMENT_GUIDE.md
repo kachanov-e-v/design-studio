@@ -69,3 +69,7 @@ npm --prefix packages/preview-runtime run build
 - The runtime must run in the same document as the previewed app. It cannot be injected into arbitrary cross-origin sites or sites that forbid framing (X-Frame-Options / CSP frame-ancestors).
 - External URLs, CSP restrictions, and same-origin policy are enforced by the browser; Design Studio cannot bypass them.
 - If the runtime is not detected, Design Studio shows "Runtime not detected" and interactive features remain disabled.
+
+## Runtime protocol
+
+Messages between Webview and Preview Runtime are typed in packages/preview-runtime/src/protocol.ts and src/shared/protocol.ts. Protocol version is 1.
