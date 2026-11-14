@@ -1,31 +1,37 @@
-export interface ElementPayload {
-  selector: string;
-  tag: string;
-  rect: { top: number; left: number; width: number; height: number };
-  styles: Record<string, string>;
-}
+import {
+  PROTOCOL_VERSION,
+  type ElementPayload,
+  type RuntimeMessage,
+  isRuntimeMessage,
+  STYLE_PROPS,
+  STYLE_PROPERTY_PATTERN,
+} from "./protocol.js";
+
+export { PROTOCOL_VERSION } from "./protocol.js";
+export type { ElementPayload } from "./protocol.js";
 
 export function initDesignStudioRuntime(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
 
   let editMode = false;
   let selectedElement: Element | null = null;
+  let readySent = false;
 
-  window.addEventListener("message", (event) => {
-    const data = event.data;
-    if (!data || typeof data.type !== "string") return;
-    if (data.type === "ds:set-mode") {
-      editMode = Boolean(data.enabled);
+  const isDesignStudioElement = (el: Element | null): boolean => {
+    if (!el) return false;
+    try {
+      return Boolean(el.closest("[data-design-studio]"));
+    } catch {
+      return false;
     }
-    if (data.type === "ds:apply-style" && selectedElement) {
-      const { property, value } = data;
-      if (typeof property === "string") {
-        (selectedElement as HTMLElement).style.setProperty(property, String(value ?? ""));
-        const payload = collect(selectedElement);
-        window.parent.postMessage({ type: "ds:select", version: "1", payload }, "*");
-      }
-    }
-  });
+  };
+
+  const toElement = (target: EventTarget | null): Element | null => {
+    if (!target) return null;
+    if (target instanceof Element) return target;
+    const node = target as Node;
+    return node.parentElement ?? null;
+  };
 
   function getSelector(el: Element): string {
     if (el.id) return `#${CSS.escape(el.id)}`;
@@ -47,7 +53,7 @@ export function initDesignStudioRuntime(): void {
       parts.unshift(part);
       current = parentEl;
       depth++;
-      if (current === document.body) break;
+      if (current === document.body || current === null) break;
     }
     return parts.join(" > ");
   }
@@ -56,8 +62,7 @@ export function initDesignStudioRuntime(): void {
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
     const styles: Record<string, string> = {};
-    const props = ["display", "position", "width", "height", "margin", "padding", "color", "backgroundColor", "fontSize", "fontFamily", "border", "borderRadius", "opacity"];
-    for (const p of props) styles[p] = cs.getPropertyValue(p);
+    for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
     return {
       selector: getSelector(el),
       tag: el.tagName.toLowerCase(),
@@ -66,32 +71,131 @@ export function initDesignStudioRuntime(): void {
     };
   }
 
-  function send(type: string, el: Element): void {
-    if (!editMode) return;
-    if (el.closest("[data-design-studio]")) return;
-    const payload = collect(el);
-    window.parent.postMessage({ type, version: "1", payload }, "*");
+  function postToParent(msg: RuntimeMessage): void {
+    try {
+      window.parent.postMessage(msg, "*");
+    } catch {
+      // ignore
+    }
   }
 
-  let lastHover = 0;
-  document.addEventListener("mouseover", (e) => {
-    const now = Date.now();
-    if (now - lastHover < 100) return;
-    lastHover = now;
-    const target = e.target as Element | null;
-    if (!target || target === document.body) return;
-    send("ds:hover", target);
-  }, true);
+  function sendHoverOrSelect(type: "ds:hover" | "ds:select", el: Element): void {
+    if (!editMode) return;
+    if (isDesignStudioElement(el)) return;
+    if (el === document.body || el === document.documentElement) return;
+    const payload = collect(el);
+    postToParent({ type, version: PROTOCOL_VERSION, payload });
+  }
 
-  document.addEventListener("click", (e) => {
-    const target = e.target as Element | null;
-    if (!target) return;
-    selectedElement = target;
-    send("ds:select", target);
-  }, true);
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!isRuntimeMessage(data)) return;
+    const msg = data as RuntimeMessage;
+    if (msg.type === "ds:set-mode") {
+      editMode = Boolean(msg.enabled);
+      postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode });
+      return;
+    }
+    if (msg.type === "ds:apply-style") {
+      const { property, value } = msg;
+      if (!STYLE_PROPERTY_PATTERN.test(property)) {
+        postToParent({
+          type: "ds:style-applied",
+          version: PROTOCOL_VERSION,
+          property,
+          value,
+          success: false,
+          reason: "Invalid property",
+        });
+        return;
+      }
+      if (typeof value !== "string" || value.length === 0 || value.length > 500) {
+        postToParent({
+          type: "ds:style-applied",
+          version: PROTOCOL_VERSION,
+          property,
+          value: String(value ?? ""),
+          success: false,
+          reason: "Invalid value",
+        });
+        return;
+      }
+      if (!selectedElement) {
+        postToParent({
+          type: "ds:style-applied",
+          version: PROTOCOL_VERSION,
+          property,
+          value,
+          success: false,
+          reason: "No selected element",
+        });
+        return;
+      }
+      try {
+        (selectedElement as HTMLElement).style.setProperty(property, value);
+        const actual = getComputedStyle(selectedElement).getPropertyValue(property).trim();
+        const payload = collect(selectedElement);
+        postToParent({
+          type: "ds:style-applied",
+          version: PROTOCOL_VERSION,
+          property,
+          value: actual || value,
+          success: true,
+          payload,
+        });
+      } catch {
+        postToParent({
+          type: "ds:style-applied",
+          version: PROTOCOL_VERSION,
+          property,
+          value,
+          success: false,
+          reason: "Failed to apply style",
+        });
+      }
+      return;
+    }
+  });
+
+  let lastHover = 0;
+  document.addEventListener(
+    "mouseover",
+    (e) => {
+      if (!editMode) return;
+      const now = Date.now();
+      if (now - lastHover < 100) return;
+      lastHover = now;
+      const target = toElement(e.target);
+      if (!target) return;
+      sendHoverOrSelect("ds:hover", target);
+    },
+    true
+  );
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (!editMode) return;
+      const target = toElement(e.target);
+      if (!target) return;
+      if (isDesignStudioElement(target)) return;
+      if (target === document.body || target === document.documentElement) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectedElement = target;
+      sendHoverOrSelect("ds:select", target);
+    },
+    true
+  );
+
+  if (!readySent) {
+    readySent = true;
+    postToParent({ type: "ds:runtime-ready", version: PROTOCOL_VERSION });
+  }
 }
 
 if (typeof window !== "undefined") {
   console.log("Design Studio runtime loaded");
   initDesignStudioRuntime();
 }
+

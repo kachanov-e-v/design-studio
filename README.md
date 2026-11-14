@@ -61,3 +61,12 @@ See `docs/ARCHITECTURE.md`. Layers: extension, presentation (webview), applicati
 ## License
 
 MIT (pending).
+## Preview Runtime
+
+To enable interactive features on your own app, install the local runtime package and import it once:
+
+```ts
+import "@design-studio/preview-runtime";
+```
+
+See `docs/DEVELOPMENT_GUIDE.md` for integration details and limitations.

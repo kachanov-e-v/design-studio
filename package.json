@@ -24,10 +24,10 @@
     ]
   },
   "scripts": {
-    "build": "npm run build:ext && npm run build:runtime && npm run build:webview",
+    "build": "npm run build:ext && npm run build:runtime && npm run copy:runtime && npm run build:webview",
     "build:ext": "esbuild src/extension/extension.ts --bundle --platform=node --outfile=dist/extension.js --external:vscode --format=cjs --sourcemap",
     "build:runtime": "npm --prefix packages/preview-runtime run build",
-    "copy:runtime": "copy packages\\preview-runtime\\dist\\index.js webview\\public\\runtime.js",
+    "copy:runtime": "node scripts/copy-runtime.js",
     "build:webview": "npm run copy:runtime && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src webview --ext .ts,.tsx",
@@ -51,3 +51,4 @@
     "vitest": "^1.6.0"
   }
 }
+
