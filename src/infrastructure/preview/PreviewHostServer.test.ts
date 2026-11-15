@@ -246,6 +246,27 @@ describe("PreviewHostServer", () => {
     expect(without.status).toBe(404);
   });
 
+  it("proxies bare paths via the sticky dev target after hard navigations", async () => {
+    const projectServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await projectServer.start();
+    try {
+      const before = await get(`${projectServer.origin}/dashboard`);
+      expect(before.status).toBe(404);
+
+      projectServer.setDevTarget(stubOrigin);
+      const doc = await get(`${projectServer.origin}/dashboard`);
+      expect(doc.status).toBe(200);
+      expect(doc.body).toContain("Dashboard");
+      expect(doc.body).toContain("__ds-runtime.js");
+
+      projectServer.setDevTarget(null);
+      const cleared = await get(`${projectServer.origin}/dashboard`);
+      expect(cleared.status).toBe(404);
+    } finally {
+      await projectServer.stop();
+    }
+  });
+
   it("serves project files with runtime injection", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-project-"));
     fs.mkdirSync(path.join(projectRoot, "assets"), { recursive: true });

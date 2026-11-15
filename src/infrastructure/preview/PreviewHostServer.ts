@@ -103,6 +103,32 @@ export class PreviewHostServer {
     this.projectRoot = root;
   }
 
+  private devTarget: string | null = null;
+
+  /**
+   * Sticky dev-server target: after a hard navigation the document URL loses
+   * the /proxy/ prefix, so Referer no longer identifies the upstream. The
+   * extension sets the dev-server URL here and bare paths keep working.
+   */
+  setDevTarget(target: string | null): void {
+    this.devTarget = target && /^https?:\/\//i.test(target) ? target : null;
+  }
+
+  /** Target of a bare-path request: explicit /proxy/, else Referer, else sticky dev target. */
+  private barePathTarget(req: http.IncomingMessage, rawUrl: string): string | null {
+    const explicit = targetFromProxyPath(rawUrl);
+    if (explicit) return explicit;
+    const fromReferer = targetFromReferer(req.headers.referer, rawUrl);
+    if (fromReferer) return fromReferer;
+    if (!this.devTarget) return null;
+    try {
+      // devTarget is an origin-only URL: resolve the request path against it.
+      return new URL(rawUrl, this.devTarget).toString();
+    } catch {
+      return null;
+    }
+  }
+
   get origin(): string {
     return `http://${this.host}:${this.port}`;
   }
@@ -176,7 +202,15 @@ export class PreviewHostServer {
       await this.handleProxy(req, res);
       return;
     }
+    // The request body must be consumed before a response is written; check
+    // first whether a bare-path non-GET request can be proxied via the
+    // proxied document URL in Referer or the sticky dev target.
     if (method !== "GET" && method !== "HEAD") {
+      const bareTarget = this.barePathTarget(req, req.url ?? "/");
+      if (bareTarget) {
+        await this.handleProxy(req, res, bareTarget);
+        return;
+      }
       res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Method not allowed");
       return;
@@ -207,10 +241,10 @@ export class PreviewHostServer {
       this.handleProjectFile(res, urlPath.slice("/project/".length));
       return;
     }
-    // SPA cross-origin references (client-router RSC fetches, router redirects)
-    // hit bare paths on this origin; proxy them to the dev server taken from
-    // the proxied document URL in Referer instead of answering 404.
-    const refererTarget = targetFromReferer(req.headers.referer, req.url ?? "/");
+    // Browser-initiated references that bypassed /proxy/ rewriting (SPA router
+    // fetches, hard navigations, HMR websocket handshakes) hit bare paths on
+    // this origin; proxy them upstream via Referer or the sticky dev target.
+    const refererTarget = this.barePathTarget(req, req.url ?? "/");
     if (refererTarget) {
       await this.handleProxy(req, res, refererTarget);
       return;
@@ -453,7 +487,7 @@ export class PreviewHostServer {
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket): Promise<void> {
     const raw = req.url ?? "";
-    const target = targetFromProxyPath(raw);
+    const target = this.barePathTarget(req, raw);
     if (!target) {
       socket.destroy();
       return;

@@ -145,6 +145,8 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
     const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
     const url = projectUrl() ?? (devServer && host ? `${host.origin}/proxy/${devServer}` : "");
+    // Keep the host's sticky dev target in sync (see PreviewHostServer.setDevTarget).
+    host?.setDevTarget(entry ? null : devServer || null);
     const entries = root ? await findProjectEntries(root) : [];
     const [pending, devServerSuggestions] = await Promise.all([
       Promise.resolve(store ? store.pendingChanges().length : 0),
