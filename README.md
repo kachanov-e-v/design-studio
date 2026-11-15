@@ -1,94 +1,53 @@
 # Design Studio
 
-VS Code extension: a project-bound visual editor for web apps, integrated with
-AI agents (Kilo Code, Mistral Vibe) through MCP. Preview the project's own
-pages, edit them visually (Figma-style block and style editing), persist every
-change to source or to the design journal — so the AI coding agent always sees
-what you changed and never overwrites it.
+Независимый плагин VS Code для визуального редактирования компонентов Next.js. Плагин не связан с конкретным ИИ-агентом: он копирует в буфер обмена подробную инструкцию или исходник выбранного компонента — их можно вставить в любой чат.
 
-## Features
+## Возможности
 
-- **Project binding** — no arbitrary URLs. Pick an HTML entry file from the
-  workspace (or bind to the project's localhost dev server). Served by the
-  built-in preview host with the Design Studio runtime injected automatically.
-- **Visual editing (edit mode)**
-  - hover highlight, click selection;
-  - double-click to edit text inline (Enter — commit, Escape — cancel);
-  - block operations: move up/down, duplicate, delete;
-  - style editor in the Inspector (color, sizing, spacing, typography, flex,
-    borders, etc.).
-- **Persistence** — "Save" writes style edits into project CSS
-  (WorkspaceEdit + document save): plain selectors are matched directly in
-  `*.css`, hashed CSS Modules classes from dev servers are mapped back to
-  `*.module.css` via dev source maps (with a name-pattern fallback).
-  Every change is recorded in `.design-studio/changes.jsonl` and
-  `.design-studio/DESIGN_STATE.md` is regenerated.
-- **AI agent integration via MCP** — `dist/mcp-server.js` exposes
-  `get_pending_changes`, `get_changes_since`, `acknowledge_changes`,
-  `get_selected_element`, `complete_handoff`, `get_project_state`. Pending
-  (structure/text) changes are left for the agent to apply in source and
-  acknowledge — so the agent knows about your visual edits and won't rewrite
-  them.
-- **Element handoff** — select an element, type what to change, press
-  "Send to AI": context + instruction goes to the agent chat (Kilo Code /
-  Mistral Vibe auto-focus, clipboard prompt, plus `.design-studio/handoff.json`
-  readable via MCP).
-- Undo/Redo via VS Code (WorkspaceEdit).
+- предпросмотр локального сервера разработки Next.js;
+- выбор элементов страницы и определение React-компонента, файла и строки;
+- визуальная правка текста, классов, структуры, основных и произвольных CSS-свойств;
+- накопление изменений с исходными и новыми значениями;
+- генерация инструкции с компонентом, путями, селекторами и всеми сделанными правками;
+- копирование исходного файла выбранного компонента в чат с ИИ;
+- сохранение CSS-правок в исходники там, где правило можно определить однозначно;
+- русский интерфейс по умолчанию и переключатель на английский.
 
-## Requirements
+## Запуск
 
-- VS Code 1.105+
-- Node 26+, npm 11+
+1. Откройте папку Next.js-проекта в VS Code.
+2. Запустите сервер разработки проекта, например `npm run dev`.
+3. Выполните команду **Дизайн-студия: Открыть дизайн-студию**.
+4. Выберите обнаруженный сервер Next.js. Если сервер не появился в списке, нажмите **Сервер** и укажите его адрес, например `http://localhost:3000`.
+5. Включите режим правки. Выберите элемент в предпросмотре, затем измените текст, классы, структуру или CSS в инспекторе.
+6. Нажмите **Скопировать инструкцию** и вставьте её в любой чат с ИИ. Инструкция включает сделанные в текущей сессии правки и найденный путь к исходнику. Чтобы передать исходный файл выбранного React-компонента отдельно, нажмите **Копировать исходник** рядом с его именем в инспекторе.
 
-## Setup
+Локальный предпросмотр автоматически внедряет runtime в HTML Next.js-сервера. Для некоторых конфигураций приложения внедрение может быть заблокировано политикой безопасности или особенностями сервера; в этом случае webview покажет сообщение о runtime. Встроенное демо доступно без проекта.
+
+CSS можно сохранить в исходники кнопкой **Сохранить стили**, когда плагин однозначно находит подходящее правило. Изменения текста, классов и структуры передаются в инструкцию для выбранного ИИ-агента.
+
+## Разработка плагина
 
 ```bash
 npm install
-npm run build
-```
-
-## Development
-
-```bash
 npm run typecheck
 npm run lint
-npm test
 npm run build
 ```
 
-Launch Extension Development Host: open project in VS Code, press F5.
+Чтобы открыть Extension Development Host, загрузите папку плагина в VS Code и нажмите F5.
 
-## Usage
+## Архитектура
 
-1. Command Palette → "Design Studio: Open Design Studio".
-2. Choose a project entry (HTML file) from the dropdown — the project's dev
-   server is detected from `package.json` and offered automatically, or use
-   "Dev server…" to bind it manually. Demo is available for a quick check.
-3. Toggle **Edit** mode. Click to select; double-click to edit text; use the
-   Inspector for styles and block ops.
-4. Press **Save** to commit style edits to source; block/text edits are
-   recorded as pending journal entries for the AI agent immediately.
-5. Select an element, type an instruction, **Send to AI** — the handoff is
-   written to the project and the agent chat is focused.
-6. Click **MCP setup** to copy the MCP server config and register it in
-   Kilo Code / Mistral Vibe MCP settings (see `docs/INTEGRATIONS.md`).
+- `src/extension` — команды VS Code и обработка действий интерфейса;
+- `src/infrastructure/preview` — локальный HTTP-предпросмотр и обнаружение сервера разработки;
+- `src/infrastructure/ai` — экспорт инструкции и исходника в буфер обмена;
+- `src/infrastructure/persistence` — сохранение CSS;
+- `packages/preview-runtime` — выбор и визуальное редактирование элементов страницы;
+- `webview` — минималистичный интерфейс на React.
 
-## Architecture
+Подробности: [архитектура](docs/ARCHITECTURE.md), [разработка](docs/DEVELOPMENT_GUIDE.md), [безопасность](docs/SECURITY.md).
 
-See `docs/ARCHITECTURE.md`. Layers: extension, presentation (webview),
-application, domain, infrastructure (preview host, persistence, journal, MCP
-server, agent handoff), packages (preview-runtime).
+## Лицензия
 
-## Documentation
-
-- `docs/README.md` index
-- `docs/ARCHITECTURE.md`
-- `docs/ROADMAP.md`
-- `docs/TECH_STACK.md`
-- `docs/SECURITY.md`
-- `docs/INTEGRATIONS.md` — MCP setup for Kilo Code / Mistral Vibe (OpenCode, Cline: planned)
-- `docs/project-memory/`
-
-## License
-
-MIT (pending).
+MIT (лицензию нужно добавить перед публикацией).

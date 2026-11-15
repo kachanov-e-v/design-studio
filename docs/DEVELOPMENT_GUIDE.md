@@ -1,101 +1,37 @@
-# Development Guide
+# Разработка
 
-## Prerequisites
+## Требования
 
-- Node 26+, npm 11+, VS Code 1.105+.
+- VS Code 1.105 или новее;
+- Node.js и npm;
+- локальный Next.js-проект для проверки предпросмотра.
 
-## Setup
+## Сборка
 
 ```bash
 npm install
+npm run typecheck
+npm run lint
 npm run build
 ```
 
-## Run
-
-- Open project in VS Code.
-- Press F5 to launch Extension Development Host.
-- In EDH: Command Palette → "Design Studio: Open Design Studio".
-
-## Scripts
-
-- `npm run build` — build extension, runtime, webview, and verify artifacts.
-- `npm run typecheck` — TypeScript check.
-- `npm run lint` — ESLint.
-- `npm test` — Vitest unit tests.
-
-## Build pipeline
-
-- Canonical runtime source is `packages/preview-runtime/src`.
-- `npm run build` runs extension build, runtime build, one copy step, webview build, and `scripts/verify-build.js`.
-- `scripts/copy-runtime.js` fails if `dist/index.js` or `dist/protocol.js` is missing or empty.
-- `scripts/verify-build.js` checks `dist/webview/index.html`, `demo.html`, `runtime.js`, and `protocol.js`.
-
-Required production artifacts:
-
-- `dist/extension.js`
-- `dist/webview/index.html`
-- `dist/webview/demo.html`
-- `dist/webview/runtime.js`
-- `dist/webview/protocol.js`
-
-## Handshake and diagnostics
-
-- Parent sends `ds:ping` with a session nonce after iframe load and retries with backoff.
-- Runtime responds with `ds:pong` using the same nonce.
-- Stale iframe messages are ignored by session nonce.
-- PreviewContainer distinguishes iframe load, connecting, ready, missing, blocked, and protocol mismatch states.
-- Save is enabled only after a confirmed `ds:style-applied` with `success: true`.
-
-## Troubleshooting
-
-- Webview blank: check CSP and that `dist/webview` exists; rebuild.
-- Runtime not loaded: ensure demo.html uses `./runtime.js` and file exists in dist.
-- Runtime not detected: the iframe loaded, but handshake (`ds:ping`/`ds:pong`) did not complete. Check that the app imports `@design-studio/preview-runtime`, restart the dev server, and inspect iframe console for runtime errors.
-- Protocol mismatch: webview and runtime use different `PROTOCOL_VERSION`; rebuild all packages.
-- Kilo not available: install Kilo Code extension; adapter checks commands dynamically.
-- Save to source: requires an unambiguous CSS rule matching one of the runtime selector candidates; otherwise reports no match or ambiguity.
-
-## Conventions
-
-- TypeScript strict; no `any` in domain.
-- Adapter boundary: Kilo adapter uses only `vscode.commands`.
-- Domain has no infra deps.
-
-## Preview Runtime integration
-
-Install the local runtime package into your app (workspace dependency):
+Внутренний runtime собирается отдельно:
 
 ```bash
-npm install /path/to/design-studio/packages/preview-runtime
-```
-
-Or use a file dependency in your app `package.json`:
-
-```json
-"dependencies": {
-  "@design-studio/preview-runtime": "file:../design-studio/packages/preview-runtime"
-}
-```
-
-Then import it once in your app entry:
-
-```ts
-import "@design-studio/preview-runtime";
-```
-
-Build the runtime bundle first:
-
-```bash
+npm --prefix packages/preview-runtime install
 npm --prefix packages/preview-runtime run build
 ```
 
-### Limitations
+## Отладка
 
-- The runtime must run in the same document as the previewed app. It cannot be injected into arbitrary cross-origin sites or sites that forbid framing (X-Frame-Options / CSP frame-ancestors).
-- External URLs, CSP restrictions, and same-origin policy are enforced by the browser; Design Studio cannot bypass them.
-- If the runtime is not detected, Design Studio shows "Runtime not detected" and interactive features remain disabled.
+Откройте проект плагина в VS Code, нажмите F5 и выполните **Дизайн-студия: Открыть дизайн-студию** в Extension Development Host. Для webview доступен `npm run dev:webview`.
 
-## Runtime protocol
+В Extension Development Host откройте папку Next.js-приложения и запустите его командой `npm run dev`. Плагин определяет адрес из `package.json` и проверяет доступные локальные серверы. Если обнаружение не сработало, выберите **Сервер** и введите адрес вручную, например `http://localhost:3000`.
 
-Messages between Webview and Preview Runtime are typed in `packages/preview-runtime/src/protocol.ts` and `src/shared/protocol.ts`. Protocol version is 1. All runtime messages include `version`; handshake messages include `nonce`/`sessionId`; style acknowledgments include `success`, `reason`, `requestId`, and updated payload.
+Визуальные изменения хранятся в сессии webview. Кнопка **Скопировать инструкцию** передаёт их как список значений до/после вместе с выбранным DOM-элементом, цепочкой React-компонентов и подсказками файлов. Инспектор **Копировать исходник** копирует содержимое найденного файла компонента (до 300 КБ). CSS-правки можно сохранить в найденный файл стилей; остальные правки применяются к исходникам через агента, которому пользователь вручную передаёт скопированный текст.
+
+Если предпросмотр не подключился, проверьте, что локальный сервер Next.js запущен, а консоль **Design Studio Preview** не содержит ошибок запроса. Для диагностики webview используйте **Developer: Open Webview Developer Tools**.
+
+## Обмен сообщениями
+
+Webview отправляет командам расширения сообщения проекта, сохранения CSS, экспорта инструкции, исходника компонента и выбора языка. Страница предпросмотра общается с runtime по версионированному протоколу из `packages/preview-runtime/src/protocol.ts`.

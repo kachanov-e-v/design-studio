@@ -1,79 +1,28 @@
-# Architecture
+# Архитектура
 
-## Layers
+Design Studio — независимое расширение VS Code. Интеграция с ИИ сводится к формированию текста и копированию в системный буфер обмена; расширение не ищет, не запускает и не вызывает чаты или API сторонних агентов.
 
-```
-extension/        activate, commands, providers, webview registration
-presentation/     webview React UI (toolbar, preview container, inspector, overlays, floating panel)
-application/      use-cases + services + ports (interfaces)
-domain/           entities, value-objects, domain services, events, errors (no infra deps)
-infrastructure/   vscode, preview (host server + project serving), runtime, source-mapping, persistence, journal (.design-studio), MCP server, ai-integrations (agent handoff), messaging, storage
-packages/         shared-contracts, preview-runtime
-```
+## Поток данных
 
-Rules: UI contains no persistence/AI business logic; core independent of UI; MCP server and agent handoff isolated from VS Code UI (MCP core is UI-free and testable); domain has no VS Code/React/Node/agent deps.
+1. Расширение запускает локальный предпросмотр проекта и проксирует запросы к серверу разработки.
+2. `preview-runtime` работает внутри страницы, находит элемент, DOM-селектор, вычисленные стили и React owner chain.
+3. Webview показывает инспектор и применяет изменения в предпросмотре. Список текущей сессии содержит тип правки, элемент, React-компонент и значения до/после.
+4. `PromptExportService` ищет вероятные исходники, разрешает bundler-пути, формирует инструкцию или собирает исходный файл компонента и копирует результат в буфер обмена.
+5. Пользователь сам вставляет результат в выбранный ИИ-чат.
 
-## Key interfaces
+## Слои
 
-```ts
-interface PreviewAdapter { detectProject(): Promise<PreviewCapabilities>; start(): Promise<PreviewSession>; stop(): Promise<void>; refresh(): Promise<void>; getStatus(): PreviewStatus; }
-interface FrameworkAdapter { id: string; detect(): Promise<boolean>; initialize(): Promise<void>; dispose(): Promise<void>; }
-interface SourceMappingAdapter { id: string; resolveElement(element: ElementReference): Promise<SourceMappingResult>; }
-interface AIIntegrationAdapter { id: string; isAvailable(): Promise<boolean>; sendContext(ctx: ElementSelectionContext, instruction: string): Promise<SendContextResult>; }
-interface StylePersistenceAdapter { id: string; canEdit(source: SourceMappingResult): Promise<boolean>; apply(change: StyleChange): Promise<PersistenceResult>; }
-```
+- `src/extension` — команды, жизненный цикл webview, настройки языка и обмен сообщениями.
+- `src/domain` — формат изменений и формирование инструкции.
+- `src/infrastructure/preview` — локальный HTTP-хост, обнаружение Next.js/Vite и runtime-инъекция.
+- `src/infrastructure/ai` — экспорт исходного контекста в буфер обмена без агентских адаптеров.
+- `src/infrastructure/persistence` — поиск и сохранение CSS-правил через VS Code WorkspaceEdit.
+- `packages/preview-runtime` — протокол и обработчик взаимодействия со страницей.
+- `webview` — React-интерфейс, локализованный на русский и английский.
 
-## Project binding
+## Ограничения
 
-- The extension scans workspace `*.html` (node_modules/dist/build excluded) and
-  pins a `PreviewSession` to one entry file or a `localhost` dev server URL.
-- Arbitrary external URLs are rejected (`isLocalhostUrl` guard).
-- `PreviewHostServer` serves the pinned project under `/project/<rel>` with
-  traversal jail (`resolveProjectPath`) and injects the runtime into HTML.
-
-## Design change journal + MCP
-
-- `DesignChangeStore` owns `<workspace>/.design-studio/`:
-  `changes.jsonl` (append-only), `DESIGN_STATE.md` (regenerated), `handoff.json`.
-- Style saves persist via WorkspaceEdit and are stored as
-  `applied-to-source`; block/text edits are stored as `pending` for the agent.
-- `DesignStudioMcpCore` (agent-agnostic) + `dist/mcp-server.js` (stdio entry)
-  expose 6 tools; agents apply pending items and acknowledge.
-- `AgentHandoffService` writes the handoff file, focuses agent chats
-  (Kilo Code, Mistral Vibe command probing) and copies a prompt to clipboard.
-
-## Preview proxy pipeline (dev servers)
-
-- Documents load via `/proxy/<target-url>`; `<base href>` and the runtime
-  script are injected, root-absolute HTML attributes stay untouched (hydrogen
-  mismatch avoidance; bare paths are resolved elsewhere).
-- Bare paths on the preview origin resolve through a hint chain:
-  `/proxy/` path → document `Referer` → sticky dev target
-  (`setDevTarget`, set by the extension, cleared for static entries).
-- The injected service worker (`/__ds-sw.js`) reroutes same-origin requests of
-  all methods: it rebuilds requests from a Blob body snapshot (wholesale
-  `new Request(url, old)` copies fail for navigate-mode requests and for
-  stream bodies with a copied content-length); failures answer HTTP 598.
-- The proxy is a full passthrough: all methods with bodies, full header set
-  (`Origin`/`Referer` re-pointed upstream for server-action CSRF), `Set-Cookie`
-  lists, redirects with rewritten `Location` and forwarded bodies (Next server
-  actions answer 303 + `x-action-redirect` + RSC flight body), HMR websocket
-  upgrade tunnel, loopback fallback (`localhost` ↔ `127.0.0.1`).
-- Responses ≥ 300 trace to the "Design Studio Preview" Output channel.
-
-## Data flow
-
-Preview runtime → bridge → extension → webview UI → inspector → persistence/journal → MCP server → AI agent.
-
-## Runtime handshake
-
-- PreviewContainer owns iframe lifecycle and a per-URL session nonce.
-- Parent sends `ds:ping`; runtime responds with `ds:pong`.
-- Retries use bounded backoff; timeout transitions to `missing`.
-- Stale iframe messages are ignored by `event.source` and session nonce.
-
-## Build and packaging
-
-- Runtime source is canonical in `packages/preview-runtime/src`.
-- Build produces `dist/webview/runtime.js` and `dist/webview/protocol.js`.
-- `scripts/verify-build.js` validates required artifacts after Vite build.
+- визуальные изменения компонента существуют в предпросмотре; инструкция переносит их в исходники через выбранного пользователем кодового агента;
+- инспектор может сохранить CSS напрямую, когда исходное правило найдено однозначно;
+- поиск файла компонента использует сведения React dev runtime и резервный поиск по содержимому;
+- исходник копируется целиком из файла компонента, до 300 КБ.

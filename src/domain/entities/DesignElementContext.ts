@@ -1,5 +1,7 @@
-import type { ComponentInfo, ElementOp, ElementPayload, SourceRule } from "../../../packages/preview-runtime/src/protocol";
-import type { SourceHint } from "../../infrastructure/ai-integrations/SourceHintFinder";
+import type { ComponentInfo, ElementPayload, SourceRule } from "../../../packages/preview-runtime/src/protocol";
+import type { SourceHint } from "../../infrastructure/source-analysis/SourceHintFinder";
+import type { DesignEdit } from "./DesignEdit";
+import type { Language } from "../../shared/i18n";
 
 export interface ElementSelectionContext {
   selector: string;
@@ -46,7 +48,13 @@ function shortHref(href: string): string {
   }
 }
 
-export function contextToPrompt(ctx: ElementSelectionContext, instruction: string, op?: ElementOp): string {
+export function contextToPrompt(
+  ctx: ElementSelectionContext,
+  instruction: string,
+  edits: DesignEdit[] = [],
+  language: Language = "ru",
+  framework = "Next.js"
+): string {
   const styles = Object.entries(ctx.styles)
     .map(([k, v]) => `${k}: ${v}`)
     .join("; ");
@@ -57,30 +65,54 @@ export function contextToPrompt(ctx: ElementSelectionContext, instruction: strin
   const first = ctx.components?.find((c) => c.name || c.file);
   const componentLine =
     first && (first.name || first.file)
-      ? `Component (React, dev owner): ${first.name ?? "<anonymous>"}${first.file ? ` — ${first.file}${first.line ? `:${first.line}` : ""}` : ""}`
+      ? `${language === "ru" ? "Компонент React" : "React component"}: ${first.name ?? "<anonymous>"}${first.file ? ` — ${first.file}${first.line ? `:${first.line}` : ""}` : ""}`
       : null;
+  const editLines = edits.length
+    ? [
+        language === "ru" ? "Изменения, выполненные в визуальном редакторе:" : "Changes made in the visual editor:",
+        ...edits.map((edit, index) => {
+          const where = edit.component?.file
+            ? `${edit.component.file}${edit.component.line ? `:${edit.component.line}` : ""}`
+            : edit.component?.name ?? edit.selector;
+          if (edit.kind === "style") {
+            return `${index + 1}. CSS ${edit.property}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after ?? "")} (${where}; ${edit.selector})`;
+          }
+          if (edit.kind === "classes") {
+            return `${index + 1}. ${language === "ru" ? "Классы" : "Classes"}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after ?? "")} (${where}; ${edit.selector})`;
+          }
+          if (edit.kind === "text") {
+            return `${index + 1}. ${language === "ru" ? "Текст" : "Text"}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after ?? "")} (${where}; ${edit.selector})`;
+          }
+          return `${index + 1}. ${language === "ru" ? "Структура" : "Structure"}: ${edit.operation ?? "change"} (${where}; ${edit.selector})`;
+        }),
+      ].join("\n")
+    : language === "ru"
+      ? "Визуальные изменения пока не выполнялись."
+      : "No visual changes have been made yet.";
   const lines = [
-    "Design Studio element context (v4)",
-    `Element: ${ctx.tag}${ctx.id ? `#${ctx.id}` : ""}${ctx.classes?.length ? `.${ctx.classes.join(".")}` : ""} (${ctx.selector})`,
+    language === "ru" ? "Инструкция для ИИ-кодового агента · Дизайн-студия" : "AI coding agent instruction · Design Studio",
+    language === "ru" ? `Проект: ${framework}. Изучи существующие соглашения и измени исходный компонент.` : `Project: ${framework}. Follow existing conventions and update the source component.`,
+    `${language === "ru" ? "Выбранный элемент" : "Selected element"}: ${ctx.tag}${ctx.id ? `#${ctx.id}` : ""}${ctx.classes?.length ? `.${ctx.classes.join(".")}` : ""} (${ctx.selector})`,
     componentLine,
-    ownerChain && (ctx.components?.length ?? 0) > 1 ? `Owner chain: ${ownerChain}` : null,
-    ctx.tailwind ? "Framework hint: Tailwind CSS detected — style changes should map to utility classes on the element." : null,
-    ctx.text ? `Text: ${ctx.text}` : null,
-    `Computed styles: ${styles}`,
+    ownerChain && (ctx.components?.length ?? 0) > 1 ? `${language === "ru" ? "Цепочка компонентов" : "Component chain"}: ${ownerChain}` : null,
+    ctx.tailwind ? (language === "ru" ? "Tailwind CSS обнаружен: отражай правки стилей в классах элемента." : "Tailwind CSS detected: express style edits through the element classes.") : null,
+    ctx.text ? `${language === "ru" ? "Текст" : "Text"}: ${ctx.text}` : null,
+    `${language === "ru" ? "Вычисленные стили" : "Computed styles"}: ${styles}`,
     ctx.rules?.length
-      ? `Matched CSS rules:\n${ctx.rules.map((r) => `- ${shortHref(r.href)} :: ${r.selectorText}`).join("\n")}`
+      ? `${language === "ru" ? "Подходящие правила CSS" : "Matched CSS rules"}:\n${ctx.rules.map((r) => `- ${shortHref(r.href)} :: ${r.selectorText}`).join("\n")}`
       : null,
     ctx.sourceHints?.length
       ? [
-          "Possible source locations (best-effort workspace search, verify by reading the files):",
+          language === "ru" ? "Возможные исходные файлы (проверь содержимое перед изменением):" : "Possible source files (verify the file contents before editing):",
           ...ctx.sourceHints.map((h) => `- ${h.file}:${h.line} — ${h.snippet} (matched ${h.token})`),
         ].join("\n")
       : null,
-    op ? `Requested structural change: ${op}` : null,
-    `Instruction: ${instruction}`,
+    editLines,
+    `${language === "ru" ? "Пожелание пользователя" : "User request"}: ${instruction || (language === "ru" ? "Синхронизируй с исходным кодом перечисленные визуальные изменения." : "Synchronize the listed visual changes with the source code.")}`,
     "",
-    "Apply the requested change in the project source files.",
-    "The full element snapshot (classes, selectors, rules) is in .design-studio/handoff.json — read it via the Design Studio MCP tool get_selected_element.",
+    language === "ru"
+      ? `Найди указанный компонент и внеси перечисленные изменения в исходный код. Сохрани структуру проекта${framework === "Next.js" ? " Next.js, границы Server/Client Components" : ""}, доступность и существующий стиль кода. Не меняй несвязанные файлы. В конце перечисли изменённые файлы и кратко опиши результат.`
+      : `Locate the referenced component and apply the listed changes in source. Preserve the project structure${framework === "Next.js" ? " and Next.js Server/Client Component boundaries" : ""}, accessibility, and existing code style. Avoid unrelated files. Finish by listing changed files and summarizing the result.`,
   ].filter((l): l is string => l !== null);
   return lines.join("\n");
 }

@@ -5,7 +5,9 @@ import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
+import { translate, type Language } from "@design-studio/shared/i18n";
 import type { ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
+import type { DesignEdit } from "../src/domain/entities/DesignEdit";
 import styles from "./App.module.css";
 
 interface PendingStyleRequest {
@@ -14,6 +16,7 @@ interface PendingStyleRequest {
   selector?: string;
   property: string;
   value: string;
+  previousValue: string;
   timeoutId: number;
 }
 
@@ -26,9 +29,10 @@ interface PendingStyleEdit {
 }
 
 export function App(): React.ReactElement {
-  const [state, setState] = useState<Partial<PreviewStateMessage>>({ url: "", status: "idle" });
+  const [state, setState] = useState<Partial<PreviewStateMessage>>({ url: "", status: "idle", language: "ru" });
   const [selected, setSelected] = useState<ElementPayload | null>(null);
   const [pendingStyles, setPendingStyles] = useState<PendingStyleEdit[]>([]);
+  const [edits, setEdits] = useState<DesignEdit[]>([]);
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
@@ -37,13 +41,32 @@ export function App(): React.ReactElement {
   const pendingRequestsRef = useRef<Map<string, PendingStyleRequest>>(new Map());
   const selectedRef = useRef<ElementPayload | null>(null);
   const previousClassesRef = useRef<string[] | undefined>(undefined);
+  const language: Language = state.language === "en" ? "en" : "ru";
+  const languageRef = useRef<Language>(language);
+  languageRef.current = language;
   selectedRef.current = selected;
 
+  useEffect(() => {
+    document.documentElement.lang = language;
+    document.title = translate(language, "toolbar.title");
+  }, [language]);
+
   const clearPending = () => {
-    for (const pending of pendingRequestsRef.current.values()) {
-      window.clearTimeout(pending.timeoutId);
-    }
+    for (const pending of pendingRequestsRef.current.values()) window.clearTimeout(pending.timeoutId);
     pendingRequestsRef.current.clear();
+  };
+
+  const recordEdit = (edit: DesignEdit) => {
+    setEdits((previous) => {
+      const replaceable = edit.kind === "style" || edit.kind === "classes" || edit.kind === "text";
+      if (!replaceable) return [...previous, edit];
+      const key = (candidate: DesignEdit) => `${candidate.kind}:${candidate.selector}:${candidate.property ?? ""}`;
+      const existingIndex = previous.findIndex((candidate) => key(candidate) === key(edit));
+      if (existingIndex === -1) return [...previous, edit];
+      const next = [...previous];
+      next[existingIndex] = { ...edit, before: previous[existingIndex].before };
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -53,8 +76,6 @@ export function App(): React.ReactElement {
         type?: string;
         message?: string;
         success?: boolean;
-        pendingChanges?: number;
-        changeId?: string;
         file?: string;
       } & Partial<PreviewStateMessage>;
       if (msg.type === "preview:state") {
@@ -66,27 +87,18 @@ export function App(): React.ReactElement {
           projectEntries: msg.projectEntries,
           devServer: msg.devServer,
           devServerSuggestions: msg.devServerSuggestions,
-          pendingChanges: msg.pendingChanges,
+          language: msg.language === "en" ? "en" : "ru",
         });
       } else if (msg.type === "preview:error") {
-        setState((s) => ({ ...s, status: "error" }));
-        setOperationStatus(msg.message ?? "Preview error");
+        setState((current) => ({ ...current, status: "error" }));
+        setOperationStatus(msg.message ?? translate(languageRef.current, "status.previewError"));
       } else if (msg.type === "persist:result") {
-        if (msg.success) {
-          setPendingStyles([]);
-          setOperationStatus(msg.message ?? "Saved");
-        } else {
-          setOperationStatus(msg.message ?? "Save failed");
-        }
-      } else if (msg.type === "journal:result") {
-        if (msg.success) {
-          setState((s) => ({ ...s, pendingChanges: msg.pendingChanges }));
-        }
+        if (msg.success) setPendingStyles([]);
         setOperationStatus(msg.message ?? "");
-      } else if (msg.type === "ai:result") {
-        setOperationStatus(msg.message ?? (msg.success ? "Handoff done" : "Handoff failed"));
-      } else if (msg.type === "mcp:result") {
+      } else if (msg.type === "ai:result" || msg.type === "ai:componentResult") {
         setOperationStatus(msg.message ?? "");
+      } else if (msg.type === "error") {
+        setOperationStatus(translate(languageRef.current, "status.extensionError", { error: msg.message ?? "" }));
       }
     });
   }, []);
@@ -95,41 +107,39 @@ export function App(): React.ReactElement {
     clearPending();
     setSelected(null);
     setPendingStyles([]);
+    setEdits([]);
     setStyleError("");
   }, [state.url]);
 
   const handleChange = (property: string, value: string) => {
-    const sel = selectedRef.current;
-    if (sel?.tailwind === true) {
-      const utils = styleToUtilities(property, value);
-      if (utils !== null) {
-        previousClassesRef.current = sel.classes ? [...sel.classes] : undefined;
-        applyOp("set-classes", resolveTailwindClassList(sel.classes ?? [], utils).join(" "));
+    const current = selectedRef.current;
+    if (current?.tailwind === true) {
+      const utilities = styleToUtilities(property, value);
+      if (utilities !== null) {
+        previousClassesRef.current = current.classes ? [...current.classes] : [];
+        applyOp("set-classes", resolveTailwindClassList(current.classes ?? [], utilities).join(" "));
         return;
       }
-      // Unsupported value: fall through to the raw-CSS path.
     }
     const result = previewRef.current?.applyStyle(property, value) ?? null;
     if (!result) {
-      setStyleError("Runtime not connected");
+      setStyleError(translate(language, "status.runtimeMissing"));
       return;
     }
     const timeoutId = window.setTimeout(() => {
-      const pending = pendingRequestsRef.current.get(result.requestId);
-      if (!pending) return;
-      pendingRequestsRef.current.delete(result.requestId);
-      setStyleError("Style apply timed out");
-      setOperationStatus("Style apply timed out");
+      if (!pendingRequestsRef.current.delete(result.requestId)) return;
+      setStyleError(translate(language, "status.styleTimeout"));
+      setOperationStatus(translate(language, "status.styleTimeout"));
     }, 5000);
     pendingRequestsRef.current.set(result.requestId, {
       requestId: result.requestId,
       sessionId: result.sessionId,
-      selector: selectedRef.current?.selector,
+      selector: current?.selector,
       property,
       value,
+      previousValue: current?.styles[property] ?? "",
       timeoutId,
     });
-    setOperationStatus("Applying…");
   };
 
   const handleStyleApplied = (info: {
@@ -144,121 +154,114 @@ export function App(): React.ReactElement {
     const requestId = info.requestId;
     if (!requestId) return;
     const pending = pendingRequestsRef.current.get(requestId);
-    if (!pending) return;
-    if (info.sessionId && info.sessionId !== pending.sessionId) return;
-
+    if (!pending || (info.sessionId && info.sessionId !== pending.sessionId)) return;
     window.clearTimeout(pending.timeoutId);
     pendingRequestsRef.current.delete(requestId);
-
     if (!info.success) {
-      setStyleError(info.reason ?? "Failed to apply style");
-      setOperationStatus(info.reason ?? "Failed to apply style");
+      const message = info.reason ?? translate(language, "status.styleFailed");
+      setStyleError(message);
+      setOperationStatus(message);
       return;
     }
 
     setStyleError("");
-    const payload = info.payload ?? undefined;
-    setSelected((prev) => {
-      const base = payload ?? prev;
-      if (!base) return prev;
-      return { ...base, styles: { ...base.styles, [info.property]: info.value } };
-    });
-    const selector = payload?.selector ?? pending.selector;
-    if (selector) {
-      setPendingStyles((prevStyles) => [
-        ...prevStyles.filter((p) => !(p.selector === selector && p.property === info.property)),
-        { selector, selectors: payload?.selectors, property: info.property, value: info.value, rules: payload?.rules },
-      ]);
-      setOperationStatus("Applied — press Save to commit");
+    const payload = info.payload ?? selectedRef.current ?? undefined;
+    if (payload) {
+      setSelected((previous) => ({ ...payload, styles: { ...previous?.styles, ...payload.styles, [info.property]: info.value } }));
+      const component = payload.component?.[0];
+      if (payload.selector) {
+        recordEdit({
+          kind: "style",
+          selector: payload.selector,
+          property: info.property,
+          before: pending.previousValue,
+          after: info.value,
+          component: component ? { name: component.name, file: component.file, line: component.line } : undefined,
+        });
+        setPendingStyles((previous) => [
+          ...previous.filter((item) => !(item.selector === payload.selector && item.property === info.property)),
+          { selector: payload.selector, selectors: payload.selectors, property: info.property, value: info.value, rules: payload.rules },
+        ]);
+        setOperationStatus(translate(language, "status.styleApplied"));
+      }
     }
   };
 
   const applyOp = (op: ElementOp, value?: string) => {
-    const result = previewRef.current?.applyOp(op, value) ?? null;
-    if (!result) {
-      setStyleError("Runtime not connected");
+    if (op === "set-classes" && selectedRef.current && previousClassesRef.current === undefined) {
+      previousClassesRef.current = [...(selectedRef.current.classes ?? [])];
     }
+    const result = previewRef.current?.applyOp(op, value) ?? null;
+    if (!result) setStyleError(translate(language, "status.runtimeMissing"));
   };
 
   const handleOpApplied = (info: OpAppliedInfo) => {
     if (!info.success) {
-      setOperationStatus(info.reason ?? "Block operation failed");
+      setOperationStatus(info.reason ?? translate(language, "status.operationFailed"));
       return;
     }
-    setSelected(info.payload ?? null);
-    const selector = info.payload?.selector ?? selectedRef.current?.selector;
+    const payload = info.payload ?? selectedRef.current;
+    setSelected(payload ?? null);
+    if (!payload?.selector) return;
+    const component = payload.component?.[0];
+    const componentRef = component ? { name: component.name, file: component.file, line: component.line } : undefined;
     if (info.op === "set-classes") {
-      const classes = (info.value ?? "").split(" ").filter(Boolean);
-      if (selector && classes.length > 0) {
-        postToExtension({
-          type: "journal:recordChange",
-          kind: "style",
-          selector,
-          selectors: info.payload?.selectors,
-          classes,
-          previousClasses: previousClassesRef.current,
-        });
-        setOperationStatus("Tailwind classes recorded for the AI agent");
-      }
+      const before = (previousClassesRef.current ?? selectedRef.current?.classes ?? []).join(" ");
+      const after = (info.value ?? "").split(/\s+/).filter(Boolean).join(" ");
+      recordEdit({ kind: "classes", selector: payload.selector, before, after, component: componentRef });
       previousClassesRef.current = undefined;
+      setOperationStatus(translate(language, "status.classesApplied"));
       return;
     }
     if (info.op === "set-text") {
-      if (selector) {
-        postToExtension({
-          type: "journal:recordChange",
-          kind: "text",
-          selector,
-          selectors: info.payload?.selectors,
-          text: info.value,
-        });
-      }
-      setOperationStatus("Text applied — press Save to commit");
+      recordEdit({ kind: "text", selector: payload.selector, before: selectedRef.current?.text ?? "", after: info.value ?? payload.text ?? "", component: componentRef });
+      setOperationStatus(translate(language, "status.textApplied"));
       return;
     }
-    if (!selector) return;
-    postToExtension({
-      type: "journal:recordChange",
-      kind: "structure",
-      selector,
-      op: info.op,
-      note: "structural edit, the AI agent must mirror it in source files",
-    });
-    setOperationStatus("Block operation recorded for the AI agent");
+    recordEdit({ kind: "structure", selector: payload.selector, operation: info.op, component: componentRef });
+    setOperationStatus(translate(language, "status.operationApplied"));
   };
 
   const handleTextChanged = (info: { text: string; payload?: ElementPayload }) => {
-    const selector = info.payload?.selector;
-    if (!selector) return;
-    setSelected(info.payload ?? null);
-    postToExtension({
-      type: "journal:recordChange",
+    const previous = selectedRef.current;
+    const payload = info.payload ?? previous;
+    if (!payload?.selector) return;
+    setSelected(payload);
+    const component = payload.component?.[0];
+    recordEdit({
       kind: "text",
-      selector,
-      selectors: info.payload?.selectors,
-      text: info.text,
+      selector: payload.selector,
+      before: previous?.text ?? "",
+      after: info.text,
+      component: component ? { name: component.name, file: component.file, line: component.line } : undefined,
     });
-    setOperationStatus("Inline text change recorded for the AI agent");
+    setOperationStatus(translate(language, "status.textApplied"));
   };
 
   const handleSave = () => {
     if (pendingStyles.length === 0) {
-      setOperationStatus("No style edits to save. Block/text edits are already in the journal.");
+      setOperationStatus(translate(language, "status.noEdits"));
       return;
     }
-    for (const edit of pendingStyles) {
-      postToExtension({ type: "style:persist", ...edit });
-    }
-    setOperationStatus("Saving…");
+    for (const edit of pendingStyles) postToExtension({ type: "style:persist", ...edit });
+    setOperationStatus(translate(language, "status.saving"));
   };
 
-  const handleSendToAgent = (instruction: string) => {
+  const handleCopyInstruction = (instruction: string) => {
     if (!selected) {
-      setOperationStatus("Select an element first");
+      setOperationStatus(translate(language, "status.noSelection"));
       return;
     }
-    postToExtension({ type: "ai:sendElement", payload: selected, instruction });
-    setOperationStatus("Sending to AI agent…");
+    postToExtension({ type: "ai:copyInstruction", payload: selected, instruction, edits });
+  };
+
+  const handleCopyComponent = (component: { name?: string; file?: string; line?: number }) => {
+    postToExtension({ type: "ai:copyComponent", component });
+  };
+
+  const handleLanguageChange = (nextLanguage: Language) => {
+    setState((current) => ({ ...current, language: nextLanguage }));
+    postToExtension({ type: "ui:setLanguage", language: nextLanguage });
   };
 
   return (
@@ -270,7 +273,9 @@ export function App(): React.ReactElement {
         devServer={state.devServer}
         devServerSuggestions={state.devServerSuggestions}
         editMode={editMode}
-        onInspect={() => setEditMode((v) => !v)}
+        language={language}
+        onLanguageChange={handleLanguageChange}
+        onInspect={() => setEditMode((value) => !value)}
         onSave={handleSave}
         canSave={pendingStyles.length > 0}
       />
@@ -279,26 +284,26 @@ export function App(): React.ReactElement {
           ref={previewRef}
           url={state.url ?? ""}
           status={state.status ?? "idle"}
+          language={language}
           editMode={editMode}
           onEditModeChange={setEditMode}
-          onRefresh={() => {
-            clearPending();
-            postToExtension({ type: "preview:refresh" });
-          }}
+          onRefresh={() => { clearPending(); postToExtension({ type: "preview:refresh" }); }}
           onSelect={setSelected}
           onStyleApplied={handleStyleApplied}
           onOpApplied={handleOpApplied}
           onTextChanged={handleTextChanged}
         />
-        <Inspector selected={selected} onApplyStyle={handleChange} onApplyOp={applyOp} onEditText={(text) => applyOp("set-text", text)} error={styleError} />
+        <Inspector
+          selected={selected}
+          language={language}
+          onApplyStyle={handleChange}
+          onApplyOp={applyOp}
+          onEditText={(text) => applyOp("set-text", text)}
+          onCopyComponent={handleCopyComponent}
+          error={styleError}
+        />
       </div>
-      <FloatingPanel
-        selected={selected}
-        status={operationStatus}
-        pendingChanges={state.pendingChanges ?? 0}
-        onSendToAgent={handleSendToAgent}
-        onCopyMcpConfig={() => postToExtension({ type: "mcp:copyConfig" })}
-      />
+      <FloatingPanel selected={selected} status={operationStatus} edits={edits} language={language} onCopyInstruction={handleCopyInstruction} />
     </div>
   );
 }

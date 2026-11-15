@@ -1,5 +1,3 @@
-import { STYLE_PROPS } from "../../shared/protocol";
-
 export interface CssRuleMatch {
   selectorText: string;
   selectors: string[];
@@ -9,12 +7,11 @@ export interface CssRuleMatch {
   bodyEnd: number;
 }
 export function isValidCssProperty(property: string): boolean {
-  return typeof property === "string" && property.length > 0 && property.length <= 64 && STYLE_PROPS.includes(property);
+  return typeof property === "string" && property.length <= 64 && /^(?:--[a-zA-Z0-9_-]+|-?[a-zA-Z][a-zA-Z0-9-]*)$/.test(property);
 }
 export function isValidCssValue(value: string): boolean {
   return (
     typeof value === "string" &&
-    value.length > 0 &&
     value.length <= 500 &&
     !/[{};]/.test(value) &&
     !Array.from(value).some((ch) => ch.charCodeAt(0) < 0x20)

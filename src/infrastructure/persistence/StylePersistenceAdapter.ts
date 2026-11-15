@@ -94,7 +94,12 @@ export class StylePersistenceAdapter {
     const declRegex = new RegExp(`(^|[;{])\\s*${propEsc}\\s*:[^;]*;?`, "m");
 
     let newBody: string;
-    if (declRegex.test(body)) {
+    if (change.value === "") {
+      if (!declRegex.test(body)) {
+        return { success: true, message: "Property is already absent", file: uri.fsPath };
+      }
+      newBody = body.replace(declRegex, (match) => match.match(/^([;{])/)?.[1] ?? "");
+    } else if (declRegex.test(body)) {
       newBody = body.replace(declRegex, (match) => {
         const delimMatch = match.match(/^([;{])/);
         const delim = delimMatch ? delimMatch[1] : "";

@@ -2,6 +2,7 @@ import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { ElementOp, ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
+import { translate, type Language } from "@design-studio/shared/i18n";
 
 export interface PreviewContainerHandle {
   applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
@@ -55,6 +56,7 @@ function makeRequestId(): string {
 export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   url: string;
   status: string;
+  language: Language;
   editMode: boolean;
   onEditModeChange: (value: boolean) => void;
   onRefresh: () => void;
@@ -66,6 +68,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   {
     url,
     status,
+    language,
     editMode,
     onEditModeChange,
     onRefresh,
@@ -87,6 +90,8 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const [hoverRect, setHoverRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [diagnostic, setDiagnostic] = useState("");
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const sessionIdRef = useRef("");
   const resolvedRef = useRef(false);
@@ -140,7 +145,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         missingTimerRef.current = window.setTimeout(() => {
           if (!resolvedRef.current && sessionIdRef.current === currentSession) {
             setRuntimeStatus("missing");
-            setDiagnostic("Runtime did not respond to handshake before timeout.");
+            setDiagnostic(languageRef.current === "ru" ? "Время ожидания подключения истекло." : "Connection handshake timed out.");
           }
         }, 700);
       }
@@ -200,7 +205,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         if (typeof raw.version === "string" && raw.version !== PROTOCOL_VERSION) {
           clearTimers();
           setRuntimeStatus("protocol-mismatch");
-          setDiagnostic(`Protocol version mismatch: expected ${PROTOCOL_VERSION}, got ${raw.version}.`);
+          setDiagnostic(languageRef.current === "ru"
+            ? `Ожидалась версия ${PROTOCOL_VERSION}, получена ${raw.version}.`
+            : `Expected ${PROTOCOL_VERSION}, received ${raw.version}.`);
           return;
         }
         const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
@@ -289,36 +296,43 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
 
   const runtimeLabel =
     runtimeStatus === "idle"
-      ? "Preview not loaded"
+      ? translate(language, "preview.idle")
       : runtimeStatus === "iframe-loading"
-      ? "Loading preview iframe�"
+      ? translate(language, "preview.iframeLoading")
       : runtimeStatus === "connecting"
-      ? "Connecting Design Studio Runtime�"
+      ? translate(language, "preview.connecting")
       : runtimeStatus === "ready"
-      ? "Runtime connected"
+      ? translate(language, "preview.connected")
       : runtimeStatus === "missing"
-      ? "Runtime not detected"
+      ? translate(language, "preview.missing")
       : runtimeStatus === "protocol-mismatch"
-      ? "Runtime protocol mismatch"
+      ? translate(language, "preview.protocolMismatch")
       : runtimeStatus === "blocked-or-load-error"
-      ? "Preview blocked or failed to load"
-      : "Unable to connect to preview";
+      ? translate(language, "preview.blocked")
+      : translate(language, "preview.error");
 
   const statusText =
     runtimeStatus === "ready"
       ? editMode
-        ? "Edit mode enabled"
-        : "Edit mode disabled"
+        ? translate(language, "preview.editEnabled")
+        : translate(language, "preview.editDisabled")
       : runtimeLabel;
+  const projectStatus = status === "project"
+    ? (language === "ru" ? "проект" : "project")
+    : status === "devserver"
+      ? (language === "ru" ? "сервер" : "server")
+      : status === "demo"
+        ? translate(language, "toolbar.demo")
+        : status;
 
   return (
     <section className={styles.preview}>
       <div className={styles.bar}>
-        <span className={styles.status}>Status: {status}</span>
+        <span className={styles.status}>{translate(language, "preview.status")}: {projectStatus}</span>
         <span className={styles.url}>{url}</span>
         <span className={styles.status}>{statusText}</span>
         <label className={styles.toggle}>
-          <input type="checkbox" checked={editMode} onChange={(e) => onEditModeChange(e.target.checked)} /> Edit mode
+          <input type="checkbox" checked={editMode} onChange={(e) => onEditModeChange(e.target.checked)} /> {translate(language, "preview.editMode")}
         </label>
         <button
           type="button"
@@ -327,7 +341,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             onRefresh();
           }}
         >
-          Refresh
+          {translate(language, "preview.refresh")}
         </button>
       </div>
       <div className={styles.frame}>
@@ -336,7 +350,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             <iframe
               ref={iframeRef}
               key={`${url}::${refreshKey}`}
-              title="preview"
+              title={translate(language, "toolbar.title")}
               src={url}
               className={styles.iframe}
               onLoad={() => {
@@ -355,7 +369,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             )}
             {runtimeStatus === "missing" && (
               <div className={styles.overlay} role="status">
-                Runtime not detected. Import @design-studio/preview-runtime in your app entry point, then restart the dev server.
+                {translate(language, "preview.runtimeMissing")}
                 {diagnostic ? ` ${diagnostic}` : ""}
               </div>
             )}
@@ -376,12 +390,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             )}
             {runtimeStatus === "connecting" && (
               <div className={styles.overlay} role="status">
-                Connecting Design Studio Runtime�
+                {translate(language, "preview.connecting")}
               </div>
             )}
           </>
         ) : (
-          <span>Loading preview�</span>
+          <span>{translate(language, "preview.iframeLoading")}</span>
         )}
       </div>
     </section>

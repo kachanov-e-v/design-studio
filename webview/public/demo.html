@@ -1,18 +1,26 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Design Studio Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Демо · Дизайн-студия</title>
   <style>
-    body { font-family: system-ui; padding: 24px; }
+    body { font-family: system-ui; padding: 24px; color: #242424; }
     .box { padding: 16px; border: 1px solid #888; border-radius: 8px; margin-top: 12px; }
     button { padding: 6px 12px; }
   </style>
 </head>
 <body>
-  <h1>Demo Preview</h1>
-  <p>Hover and click elements in edit mode.</p>
-  <div class="box" style="color: #333; background: #f5f5f5;">Sample element</div>
-  <button>Sample button</button>
+  <h1 data-ru="Демонстрация" data-en="Demo preview">Демонстрация</h1>
+  <p data-ru="Выберите элемент в режиме правки." data-en="Select an element in edit mode.">Выберите элемент в режиме правки.</p>
+  <div class="box" style="color: #333; background: #f5f5f5;" data-ru="Пример компонента" data-en="Sample component">Пример компонента</div>
+  <button data-ru="Пример кнопки" data-en="Sample button">Пример кнопки</button>
+  <script>
+    const language = new URLSearchParams(location.search).get("lang") === "en" ? "en" : "ru";
+    document.documentElement.lang = language;
+    document.querySelectorAll("[data-ru][data-en]").forEach((element) => {
+      element.textContent = element.getAttribute(`data-${language}`);
+    });
+  </script>
 </body>
 </html>
