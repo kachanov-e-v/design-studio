@@ -152,7 +152,26 @@ self.addEventListener("fetch", function (event) {
       }
       if (!prefix) return fetch(req);
       var rewritten = prefix + p + url.search;
-      return fetch(new Request(rewritten, req));
+      // The original request cannot be copied wholesale: constructing a
+      // Request from a navigate-mode request throws ("Cannot construct a
+      // Request"), and a stream body with the copied content-length header
+      // fails mid-flight. Snapshot the body as a Blob instead; the browser
+      // recomputes content-length from it.
+      return req.blob().then(function (blob) {
+        var init = {
+          method: req.method,
+          headers: req.headers,
+          credentials: req.credentials,
+          cache: req.cache,
+          integrity: req.integrity,
+          keepalive: req.keepalive
+        };
+        init.redirect = req.mode === "navigate" ? "follow" : req.redirect;
+        if (req.method !== "GET" && req.method !== "HEAD") init.body = blob;
+        return fetch(rewritten, init);
+      }).catch(function (e) {
+        return new Response("DS SW fetch error: " + (e && e.message), { status: 598 });
+      });
     })
   );
 });
