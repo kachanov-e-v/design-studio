@@ -1,4 +1,4 @@
-import type { ElementOp, ElementPayload, SourceRule } from "../../../packages/preview-runtime/src/protocol";
+import type { ComponentInfo, ElementOp, ElementPayload, SourceRule } from "../../../packages/preview-runtime/src/protocol";
 import type { SourceHint } from "../../infrastructure/ai-integrations/SourceHintFinder";
 
 export interface ElementSelectionContext {
@@ -11,6 +11,8 @@ export interface ElementSelectionContext {
   tailwind?: boolean;
   text?: string;
   rules?: SourceRule[];
+  /** React owner components, nearest first; files resolved against the workspace. */
+  components?: ComponentInfo[];
   sourceHints?: SourceHint[];
 }
 
@@ -27,6 +29,7 @@ export function toSelectionContext(payload: ElementPayload, sourceHints?: Source
   if (idFromSelector) ctx.id = idFromSelector[1];
   if (payload.tailwind === true) ctx.tailwind = true;
   if (payload.rules && payload.rules.length > 0) ctx.rules = payload.rules;
+  if (payload.component && payload.component.length > 0) ctx.components = payload.component;
   if (sourceHints && sourceHints.length > 0) ctx.sourceHints = sourceHints;
   return ctx;
 }
@@ -47,9 +50,20 @@ export function contextToPrompt(ctx: ElementSelectionContext, instruction: strin
   const styles = Object.entries(ctx.styles)
     .map(([k, v]) => `${k}: ${v}`)
     .join("; ");
+  const ownerChain = (ctx.components ?? [])
+    .map((c) => c.name)
+    .filter((n): n is string => typeof n === "string" && n.length > 0)
+    .join(" > ");
+  const first = ctx.components?.find((c) => c.name || c.file);
+  const componentLine =
+    first && (first.name || first.file)
+      ? `Component (React, dev owner): ${first.name ?? "<anonymous>"}${first.file ? ` — ${first.file}${first.line ? `:${first.line}` : ""}` : ""}`
+      : null;
   const lines = [
-    "Design Studio element context (v3)",
+    "Design Studio element context (v4)",
     `Element: ${ctx.tag}${ctx.id ? `#${ctx.id}` : ""}${ctx.classes?.length ? `.${ctx.classes.join(".")}` : ""} (${ctx.selector})`,
+    componentLine,
+    ownerChain && (ctx.components?.length ?? 0) > 1 ? `Owner chain: ${ownerChain}` : null,
     ctx.tailwind ? "Framework hint: Tailwind CSS detected — style changes should map to utility classes on the element." : null,
     ctx.text ? `Text: ${ctx.text}` : null,
     `Computed styles: ${styles}`,

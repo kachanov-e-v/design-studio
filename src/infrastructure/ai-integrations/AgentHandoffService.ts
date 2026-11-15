@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { ElementPayload } from "../../../packages/preview-runtime/src/protocol";
 import { contextToPrompt, toSelectionContext, type ElementSelectionContext } from "../../domain/entities/DesignElementContext";
 import { findSourceHints } from "./SourceHintFinder";
+import { resolveComponentPaths } from "./ComponentResolver";
 import type { DesignChangeStore } from "../journal/DesignChangeStore";
 
 export interface ElementHandoffResult {
@@ -39,6 +40,13 @@ export class AgentHandoffService {
       }
     }
     const ctx: ElementSelectionContext = toSelectionContext(element, hints);
+    if (this.workspaceRoot && ctx.components) {
+      try {
+        ctx.components = resolveComponentPaths(this.workspaceRoot, ctx.components);
+      } catch {
+        // keep raw bundler paths when resolution fails
+      }
+    }
     this.store.writeHandoff(element, instruction);
     const prompt = contextToPrompt(ctx, instruction);
 

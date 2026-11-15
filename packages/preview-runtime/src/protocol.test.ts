@@ -58,4 +58,13 @@ describe("isRuntimeMessage", () => {
     expect(isValidClassListValue("a b<c")).toBe(false);
     expect(isValidClassListValue(Array(31).fill("x").join(" "))).toBe(false);
   });
+  it("validates element payload component chain", () => {
+    const base = { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} };
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ name: "LoginForm", file: "./src/LoginForm.tsx", line: 42 }, { name: "LoginPage" }] } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ file: "./src/LoginForm.tsx" }] } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{}] } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ name: "LoginForm" }, {}] } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ name: "LoginForm", line: -1 }] } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: Array(7).fill({ name: "X" }) } })).toBe(false);
+  });
 });

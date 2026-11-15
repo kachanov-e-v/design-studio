@@ -22,9 +22,11 @@ var DesignStudioRuntime = (() => {
   var src_exports = {};
   __export(src_exports, {
     PROTOCOL_VERSION: () => PROTOCOL_VERSION,
+    collectReactComponents: () => collectReactComponents,
     getSelector: () => getSelector,
     getSelectorCandidates: () => getSelectorCandidates,
-    initDesignStudioRuntime: () => initDesignStudioRuntime
+    initDesignStudioRuntime: () => initDesignStudioRuntime,
+    parseOwnerStack: () => parseOwnerStack
   });
 
   // src/protocol.ts
@@ -150,6 +152,17 @@ var DesignStudioRuntime = (() => {
       if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
     }
     if (v.tailwind !== void 0 && typeof v.tailwind !== "boolean") return false;
+    if (v.component !== void 0) {
+      if (!Array.isArray(v.component) || v.component.length > 6) return false;
+      for (const comp of v.component) {
+        if (!comp || typeof comp !== "object" || Array.isArray(comp)) return false;
+        const c = comp;
+        if (c.name !== void 0 && (typeof c.name !== "string" || c.name.length === 0 || c.name.length > 100)) return false;
+        if (c.file !== void 0 && (typeof c.file !== "string" || c.file.length === 0 || c.file.length > 500)) return false;
+        if (c.line !== void 0 && (!isFiniteNumber(c.line) || c.line < 0 || c.line > 1e6)) return false;
+        if (c.name === void 0 && c.file === void 0) return false;
+      }
+    }
     if (v.rules !== void 0) {
       if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
       for (const rule of v.rules) {
@@ -203,6 +216,87 @@ var DesignStudioRuntime = (() => {
     "z-index",
     "cursor"
   ];
+
+  // src/fiber.ts
+  var SOURCE_FILE = /\.(tsx|jsx|ts|js|mjs|cjs)$/i;
+  var NON_SOURCE_FRAME = /node_modules|chunks\/|\.next\/static|webpack\/bootstrap|polyfills|framework|main-app|_app-|internals/i;
+  function asString(value, max) {
+    if (typeof value !== "string") return void 0;
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || trimmed.length > max) return void 0;
+    return trimmed;
+  }
+  function componentDisplayName(type) {
+    if (typeof type === "function") {
+      const fn = type;
+      return asString(fn.displayName, 100) ?? asString(fn.name, 100);
+    }
+    if (type && typeof type === "object") {
+      const wrapper = type;
+      const inner = typeof wrapper.render === "function" || wrapper.render && typeof wrapper.render === "object" ? wrapper.render : typeof wrapper.type === "function" || wrapper.type && typeof wrapper.type === "object" ? wrapper.type : void 0;
+      return asString(wrapper.displayName, 100) ?? asString(inner?.displayName, 100) ?? asString(inner?.name, 100);
+    }
+    return void 0;
+  }
+  function parseOwnerStack(stack, limit = 3) {
+    const text = typeof stack === "string" ? stack : stack && typeof stack.stack === "string" ? stack.stack : void 0;
+    if (!text) return [];
+    const out = [];
+    const re = /([^\s()"']+?\.(?:tsx|jsx|ts|js|mjs|cjs)):(\d+):(\d+)/g;
+    let match;
+    while ((match = re.exec(text)) !== null && out.length < limit) {
+      let file = match[1];
+      file = file.replace(/^(?:webpack-internal:\/\/\/?)/, "");
+      const group = file.match(/^\([^)]*\)\/(.+)$/);
+      if (group) file = group[1] ?? file;
+      file = file.replace(/^\/(?:\.\/)?/, "./");
+      if (!SOURCE_FILE.test(file) || NON_SOURCE_FRAME.test(file)) continue;
+      const line = Number.parseInt(match[2], 10);
+      out.push({ file, line: Number.isFinite(line) && line > 0 ? line : void 0 });
+    }
+    return out;
+  }
+  function sourceFromFiber(fiber) {
+    const src = fiber._debugSource;
+    if (src && typeof src === "object") {
+      const file = asString(src.fileName, 500);
+      const line = typeof src.lineNumber === "number" && Number.isFinite(src.lineNumber) && src.lineNumber > 0 ? src.lineNumber : void 0;
+      if (file) return { file: file.replace(/^(?:webpack-internal:\/\/\/?)/, ""), line };
+    }
+    const stack = parseOwnerStack(fiber._debugStack, 1)[0];
+    if (stack) return { file: stack.file, line: stack.line };
+    return {};
+  }
+  function pushOwner(out, seen, owner, sourceOverride) {
+    const name = componentDisplayName(owner.type);
+    const { file, line } = sourceOverride ?? sourceFromFiber(owner);
+    if (!name && !file) return;
+    if (name && seen.has(name)) return;
+    if (name) seen.add(name);
+    out.push({ ...name !== void 0 ? { name } : {}, ...file !== void 0 ? { file, line } : {} });
+  }
+  function collectReactComponents(el) {
+    try {
+      const holder = el;
+      const fiberKey = Object.keys(holder).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternal$"));
+      if (!fiberKey) return [];
+      let fiber = holder[fiberKey];
+      if (!fiber || typeof fiber !== "object") return [];
+      const out = [];
+      const seen = /* @__PURE__ */ new Set();
+      const ownSource = sourceFromFiber(fiber);
+      let guard = 0;
+      while (fiber && guard++ < 32) {
+        const owner = fiber._debugOwner;
+        if (!owner || typeof owner !== "object") break;
+        pushOwner(out, seen, owner, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : void 0);
+        fiber = owner;
+      }
+      return out.slice(0, 6);
+    } catch {
+      return [];
+    }
+  }
 
   // src/index.ts
   function getSelector(el) {
@@ -370,6 +464,8 @@ var DesignStudioRuntime = (() => {
       if (text.length > 0) payload.text = text.slice(0, 2e3);
       const rules = collectSourceRules(el);
       if (rules) payload.rules = rules;
+      const components = collectReactComponents(el);
+      if (components.length > 0) payload.component = components;
       return payload;
     }
     function postToParent(msg) {

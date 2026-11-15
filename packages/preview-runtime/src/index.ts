@@ -9,10 +9,11 @@ import {
   STYLE_PROPS,
   STYLE_PROPERTY_PATTERN,
 } from "./protocol.js";
+import { collectReactComponents } from "./fiber.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
-
+export { collectReactComponents, parseOwnerStack } from "./fiber.js";
 export function getSelector(el: Element): string {
   if (el.id) return `#${CSS.escape(el.id)}`;
   const parts: string[] = [];
@@ -193,6 +194,8 @@ export function initDesignStudioRuntime(): void {
     if (text.length > 0) payload.text = text.slice(0, 2000);
     const rules = collectSourceRules(el);
     if (rules) payload.rules = rules;
+    const components = collectReactComponents(el);
+    if (components.length > 0) payload.component = components;
     return payload;
   }
 

@@ -71,19 +71,33 @@ describe("findSourceHints", () => {
   });
 });
 
-describe("contextToPrompt v3", () => {
+describe("contextToPrompt v4", () => {
   it("includes classes, framework hint, rules and source hints", () => {
     const ctx = toSelectionContext(payload as never, [
       { file: "app/login/page.tsx", line: 5, snippet: '<div className="email-field px-4 bg-slate-900">Email</div>', token: 'text word "Email"' },
     ]);
     const prompt = contextToPrompt(ctx, "Сделай border 1px этому элементу.");
-    expect(prompt).toContain("(v3)");
+    expect(prompt).toContain("(v4)");
     expect(prompt).toContain("div.email-field.px-4.bg-slate-900");
     expect(prompt).toContain("Tailwind CSS detected");
     expect(prompt).toContain(".email-field");
     expect(prompt).toContain("_next/static/css/app.css");
     expect(prompt).toContain("app/login/page.tsx:5");
     expect(prompt).toContain("get_selected_element");
+  });
+
+  it("adds Component and Owner chain lines from components", () => {
+    const ctx = toSelectionContext({
+      ...payload,
+      component: [
+        { name: "EmailField", file: "src/components/EmailField.tsx", line: 42 },
+        { name: "LoginForm" },
+        { name: "LoginPage" },
+      ],
+    } as never, []);
+    const prompt = contextToPrompt(ctx, "Сделай border 1px этому элементу.");
+    expect(prompt).toContain("Component (React, dev owner): EmailField — src/components/EmailField.tsx:42");
+    expect(prompt).toContain("Owner chain: EmailField > LoginForm > LoginPage");
   });
 
   it("omits optional sections when data is missing", () => {

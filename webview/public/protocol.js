@@ -178,6 +178,23 @@ export function isElementPayload(value) {
     }
     if (v.tailwind !== undefined && typeof v.tailwind !== "boolean")
         return false;
+    if (v.component !== undefined) {
+        if (!Array.isArray(v.component) || v.component.length > 6)
+            return false;
+        for (const comp of v.component) {
+            if (!comp || typeof comp !== "object" || Array.isArray(comp))
+                return false;
+            const c = comp;
+            if (c.name !== undefined && (typeof c.name !== "string" || c.name.length === 0 || c.name.length > 100))
+                return false;
+            if (c.file !== undefined && (typeof c.file !== "string" || c.file.length === 0 || c.file.length > 500))
+                return false;
+            if (c.line !== undefined && (!isFiniteNumber(c.line) || c.line < 0 || c.line > 1000000))
+                return false;
+            if (c.name === undefined && c.file === undefined)
+                return false;
+        }
+    }
     if (v.rules !== undefined) {
         if (!Array.isArray(v.rules) || v.rules.length > 8)
             return false;

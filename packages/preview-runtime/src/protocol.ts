@@ -7,6 +7,14 @@ export interface SourceRule {
   cssText?: string;
 }
 
+/** A React component that owns (rendered) the element, nearest first. */
+export interface ComponentInfo {
+  name?: string;
+  /** Source file of the component, e.g. a webpack-internal or bundler-native path. */
+  file?: string;
+  line?: number;
+}
+
 export interface ElementPayload {
   selector: string;
   selectors?: string[];
@@ -18,6 +26,8 @@ export interface ElementPayload {
   tailwind?: boolean;
   text?: string;
   rules?: SourceRule[];
+  /** React owner component chain (dev mode only), nearest owner first. */
+  component?: ComponentInfo[];
 }
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
@@ -270,6 +280,17 @@ export function isElementPayload(value: unknown): value is ElementPayload {
     if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
   }
   if (v.tailwind !== undefined && typeof v.tailwind !== "boolean") return false;
+  if (v.component !== undefined) {
+    if (!Array.isArray(v.component) || v.component.length > 6) return false;
+    for (const comp of v.component) {
+      if (!comp || typeof comp !== "object" || Array.isArray(comp)) return false;
+      const c = comp as Record<string, unknown>;
+      if (c.name !== undefined && (typeof c.name !== "string" || c.name.length === 0 || c.name.length > 100)) return false;
+      if (c.file !== undefined && (typeof c.file !== "string" || c.file.length === 0 || c.file.length > 500)) return false;
+      if (c.line !== undefined && (!isFiniteNumber(c.line) || c.line < 0 || c.line > 1000000)) return false;
+      if (c.name === undefined && c.file === undefined) return false;
+    }
+  }
   if (v.rules !== undefined) {
     if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
     for (const rule of v.rules) {

@@ -15,6 +15,8 @@ export interface ElementPayload {
   tailwind?: boolean;
   text?: string;
   rules?: SourceRule[];
+  /** React owner component chain (dev mode only), nearest owner first. */
+  component?: { name?: string; file?: string; line?: number }[];
 }
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
