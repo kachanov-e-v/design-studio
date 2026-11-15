@@ -42,6 +42,25 @@ interface StylePersistenceAdapter { id: string; canEdit(source: SourceMappingRes
 - `AgentHandoffService` writes the handoff file, focuses agent chats
   (Kilo Code, Mistral Vibe command probing) and copies a prompt to clipboard.
 
+## Preview proxy pipeline (dev servers)
+
+- Documents load via `/proxy/<target-url>`; `<base href>` and the runtime
+  script are injected, root-absolute HTML attributes stay untouched (hydrogen
+  mismatch avoidance; bare paths are resolved elsewhere).
+- Bare paths on the preview origin resolve through a hint chain:
+  `/proxy/` path → document `Referer` → sticky dev target
+  (`setDevTarget`, set by the extension, cleared for static entries).
+- The injected service worker (`/__ds-sw.js`) reroutes same-origin requests of
+  all methods: it rebuilds requests from a Blob body snapshot (wholesale
+  `new Request(url, old)` copies fail for navigate-mode requests and for
+  stream bodies with a copied content-length); failures answer HTTP 598.
+- The proxy is a full passthrough: all methods with bodies, full header set
+  (`Origin`/`Referer` re-pointed upstream for server-action CSRF), `Set-Cookie`
+  lists, redirects with rewritten `Location` and forwarded bodies (Next server
+  actions answer 303 + `x-action-redirect` + RSC flight body), HMR websocket
+  upgrade tunnel, loopback fallback (`localhost` ↔ `127.0.0.1`).
+- Responses ≥ 300 trace to the "Design Studio Preview" Output channel.
+
 ## Data flow
 
 Preview runtime → bridge → extension → webview UI → inspector → persistence/journal → MCP server → AI agent.

@@ -9,6 +9,6 @@
 - CSS persistence uses a lightweight parser with selector-list and at-rule handling, not a full CSS AST parser.
 - Wildcard postMessage targets are required for opaque VS Code webview origins.
 - vscode-resource (file%2B.vscode-cdn.net) subresource frames failed handshake in iframe-based webviews; demo and preview now run from the PreviewHostServer on 127.0.0.1, vscode-resource demo URI is only a fallback.
-- Proxy is best-effort: root-absolute URLs in initial HTML/CSS are rewritten and a service worker re-routes JS-issued same-origin fetches; JS-generated root-absolute URLs emitted before the service worker activates and cross-origin absolute URLs in HTML are not rewritten.
+- Proxy is best-effort: root-absolute CSS url() values are rewritten; HTML href/src/action attributes are intentionally kept as-is (rewriting them caused React hydration mismatches) and rely on the host Referer fallback and the service worker; JS-generated root-absolute URLs emitted before the service worker activates and cross-origin absolute URLs in HTML are not rewritten.
 - Websocket HMR tunnel supports http targets only (https/ws targets are dropped).
 - Proxy mux hides the user dev server port; the webview URL bar shows the http://127.0.0.1:<port>/proxy/<target> form.
