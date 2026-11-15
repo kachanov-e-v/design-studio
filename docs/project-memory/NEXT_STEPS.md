@@ -1,5 +1,6 @@
 # Next Steps
 
+- Verify structural HTML source mapping in EDH on a multi-element static page (duplicate/delete/move reflected in the file, journal `applied-to-source`).
 - Verify Tailwind inline edits in EDH against a real Tailwind project (class detection, utility translation, live preview, journal record, agent apply).
 - Manual EDH verification of Demo and a user Vite/React project, including 20 consecutive refreshes.
 - Add React component tests if a DOM test environment is introduced.

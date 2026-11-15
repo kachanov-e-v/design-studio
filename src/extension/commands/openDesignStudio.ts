@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { isLocalhostUrl } from "../../shared/url";
 import { AgentHandoffService } from "../../infrastructure/ai-integrations/AgentHandoffService";
 import { StylePersistenceAdapter } from "../../infrastructure/persistence/StylePersistenceAdapter";
+import { applyStructureOp } from "../../infrastructure/persistence/HtmlStructureEditor";
 import { DesignChangeStore } from "../../infrastructure/journal/DesignChangeStore";
 import { PreviewHostServer } from "../../infrastructure/preview/PreviewHostServer";
 import { detectDevServers, type DevServerCandidate } from "../../infrastructure/preview/DevServerDetector";
@@ -43,6 +44,41 @@ function getWorkspaceRoot(): string | null {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) return null;
   return folders[0].uri.fsPath;
+}
+
+/**
+ * Apply a structural block op directly to the bound project's HTML entry
+ * file (static projects only). Returns null when the entry is not set, the
+ * file is unreadable, or the element cannot be resolved unambiguously — the
+ * caller then falls back to the pending journal (agent path).
+ */
+function tryApplyStructureToSource(
+  root: string,
+  entry: string,
+  op: "delete" | "duplicate" | "move-up" | "move-down",
+  selectors: string[]
+): { file: string; message: string } | null {
+  if (!entry || entry.includes("..")) return null;
+  const file = path.join(root, entry);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  let next: string | null;
+  try {
+    next = applyStructureOp(text, op, selectors);
+  } catch {
+    return null;
+  }
+  if (next === null || next === text) return null;
+  try {
+    fs.writeFileSync(file, next, "utf8");
+  } catch {
+    return null;
+  }
+  return { file: entry, message: `${op} applied to ${entry}` };
 }
 
 /** Scan the bound project for previewable HTML entry points. */
@@ -233,6 +269,28 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           panel.webview.postMessage({ type: "journal:result", success: false, message: "Invalid change record" });
           return;
         }
+        const selectors = Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined;
+        if (root && kind === "structure" && typeof msg.op === "string" && (msg.op === "delete" || msg.op === "duplicate" || msg.op === "move-up" || msg.op === "move-down")) {
+          const applied = tryApplyStructureToSource(root, context.workspaceState.get<string>(PROJECT_ENTRY_KEY, ""), msg.op, selectors ?? []);
+          if (applied) {
+            const record = store.recordStructureApplied({
+              selector,
+              selectors,
+              op: msg.op,
+              file: applied.file,
+              note: "applied directly to the HTML source by Design Studio",
+            });
+            panel.webview.postMessage({
+              type: "journal:result",
+              success: true,
+              message: `${applied.message} (recorded ${record.id.slice(0, 8)})`,
+              changeId: record.id,
+              pendingChanges: store.pendingChanges().length,
+              file: applied.file,
+            });
+            return;
+          }
+        }
         if (kind === "style") {
           const classes = Array.isArray(msg.classes)
             ? msg.classes.slice(0, 30).map((c: unknown) => String(c)).filter((c: string) => c.length > 0 && c.length <= 100)
@@ -244,7 +302,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           const record = store.recordPending({
             kind: "style",
             selector,
-            selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
+            selectors,
             classes,
             previousClasses: Array.isArray(msg.previousClasses)
               ? msg.previousClasses.slice(0, 30).map((c: unknown) => String(c))
@@ -263,7 +321,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         const record = store.recordPending({
           kind: kind === "text" ? "text" : "structure",
           selector,
-          selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
+          selectors,
           op: typeof msg.op === "string" ? msg.op : undefined,
           text: typeof msg.text === "string" ? msg.text : undefined,
           note: "made visually in Design Studio, not yet in source",

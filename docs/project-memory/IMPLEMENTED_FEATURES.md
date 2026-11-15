@@ -12,3 +12,4 @@
 - Dev-server autodetection (package.json scripts + HTTP fingerprint verification) with suggestions in the project dropdown.
 - CSS persistence via dev sourcemaps (`File_local__hash` heuristic fallback) for CSS Modules on `next dev`/Vite.
 - Tailwind inline edits: page-level Tailwind detection, `classes`/`tailwind` element payload fields, pure CSS→utility translator (`src/shared/tailwind.ts`), `set-classes` runtime op, journaling of pending kind `style` class changes for the AI agent.
+- Structural DOM→source mapping for static HTML projects: selector-candidate resolution in the raw HTML file (`src/infrastructure/persistence/HtmlStructureEditor.ts`), direct apply of delete/duplicate/move-up/move-down, journal `applied-to-source` with the file, fallback to the pending journal when unresolvable.

@@ -79,6 +79,28 @@ export class DesignChangeStore {
     return record;
   }
 
+  recordStructureApplied(change: {
+    selector: string;
+    selectors?: string[];
+    op: string;
+    file?: string;
+    note?: string;
+  }): DesignChangeRecord {
+    const record: DesignChangeRecord = {
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      kind: "structure",
+      selector: change.selector,
+      selectors: change.selectors,
+      details: { op: change.op as never },
+      status: "applied-to-source",
+      file: change.file,
+      note: change.note,
+    };
+    this.append([record]);
+    return record;
+  }
+
   recordPending(change: {
     kind: "text" | "structure" | "style";
     selector: string;
