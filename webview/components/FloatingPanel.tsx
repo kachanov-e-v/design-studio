@@ -19,6 +19,7 @@ export function FloatingPanel({
 }): React.ReactElement {
   const [instruction, setInstruction] = useState("");
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
+  const canCopy = Boolean(selected || instruction.trim() || edits.length > 0);
 
   return (
     <div className={styles.panel} role="group" aria-label={t("floating.aria")}>
@@ -27,9 +28,9 @@ export function FloatingPanel({
         placeholder={t("floating.instruction")}
         value={instruction}
         onChange={(event) => setInstruction(event.target.value)}
-        onKeyDown={(event) => { if (event.key === "Enter" && selected) onCopyInstruction(instruction); }}
+        onKeyDown={(event) => { if (event.key === "Enter" && canCopy) onCopyInstruction(instruction); }}
       />
-      <button className={styles.copyButton} type="button" disabled={!selected} onClick={() => onCopyInstruction(instruction)}>
+      <button className={styles.copyButton} type="button" disabled={!canCopy} onClick={() => onCopyInstruction(instruction)}>
         {t("floating.copyInstruction")}
       </button>
       <span className={styles.count}>{t("floating.edits")}: {edits.length}</span>

@@ -92,6 +92,7 @@ export function initDesignStudioRuntime(): void {
   let editingElement: HTMLElement | null = null;
   let parentOrigin = "*";
   let activeSessionId = "";
+  const INTERACTIVE_SELECTOR = "a, button, input, select, textarea, summary, label, [role='button'], [role='link'], [role='menuitem'], [role='checkbox'], [role='radio'], [role='switch'], [role='tab'], [role='option'], [role='textbox'], [contenteditable='true']";
 
   const isDesignStudioElement = (el: Element | null): boolean => {
     if (!el) return false;
@@ -216,6 +217,32 @@ export function initDesignStudioRuntime(): void {
     if (el === document.body || el === document.documentElement) return;
     const payload = collect(el);
     postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || undefined });
+  }
+
+  function currentApplicationPath(): string {
+    const current = new URL(window.location.href);
+    const proxyMarker = "/proxy/";
+    const proxyIndex = current.pathname.indexOf(proxyMarker);
+    if (proxyIndex !== -1) {
+      const target = current.pathname.slice(proxyIndex + proxyMarker.length) + current.search + current.hash;
+      try {
+        const upstream = new URL(target);
+        return `${upstream.pathname}${upstream.search}${upstream.hash}`;
+      } catch {
+        // A malformed proxy URL falls back to the visible path below.
+      }
+    }
+    return `${current.pathname}${current.search}${current.hash}`;
+  }
+
+  function notifyNavigation(): void {
+    if (!activeSessionId) return;
+    postToParent({
+      type: "ds:navigate",
+      version: PROTOCOL_VERSION,
+      path: currentApplicationPath(),
+      sessionId: activeSessionId,
+    });
   }
 
   function postOpApplied(op: ElementOp, value: string | undefined, success: boolean, reason: string | undefined, payload: ElementPayload | null | undefined, requestId?: string): void {
@@ -361,10 +388,23 @@ export function initDesignStudioRuntime(): void {
     if (activeSessionId && messageSessionId !== activeSessionId) return;
     if (msg.version !== PROTOCOL_VERSION) return;
 
+    if (msg.type === "ds:navigate-history") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      if (msg.direction === "back") window.history.back();
+      else window.history.forward();
+      return;
+    }
+    if (msg.type === "ds:reload") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      window.location.reload();
+      return;
+    }
+
     if (msg.type === "ds:set-mode") {
       if (activeSessionId && msg.sessionId !== activeSessionId) return;
       editMode = Boolean(msg.enabled);
       postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
+      notifyNavigation();
       return;
     }
     if (msg.type === "ds:apply-style") {
@@ -444,6 +484,21 @@ export function initDesignStudioRuntime(): void {
     }
   });
 
+  const originalPushState = window.history.pushState.bind(window.history);
+  window.history.pushState = (...args: Parameters<History["pushState"]>) => {
+    const result = originalPushState(...args);
+    notifyNavigation();
+    return result;
+  };
+  const originalReplaceState = window.history.replaceState.bind(window.history);
+  window.history.replaceState = (...args: Parameters<History["replaceState"]>) => {
+    const result = originalReplaceState(...args);
+    notifyNavigation();
+    return result;
+  };
+  window.addEventListener("popstate", notifyNavigation);
+  window.addEventListener("hashchange", notifyNavigation);
+
   document.addEventListener(
     "dblclick",
     (e) => {
@@ -452,6 +507,8 @@ export function initDesignStudioRuntime(): void {
       if (!target) return;
       if (isDesignStudioElement(target)) return;
       if (target === document.body || target === document.documentElement) return;
+      const interactive = target.closest(INTERACTIVE_SELECTOR);
+      if (interactive && !e.altKey) return;
       e.preventDefault();
       e.stopPropagation();
       selectedElement = target;
@@ -512,6 +569,8 @@ export function initDesignStudioRuntime(): void {
       if (!target) return;
       if (isDesignStudioElement(target)) return;
       if (target === document.body || target === document.documentElement) return;
+      const interactive = target.closest(INTERACTIVE_SELECTOR);
+      if (interactive && !e.altKey) return;
       e.preventDefault();
       e.stopPropagation();
       selectedElement = target;

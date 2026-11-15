@@ -20,7 +20,7 @@ export class PromptExportService {
   constructor(private readonly workspaceRoot: string | null) {}
 
   async copyInstruction(
-    element: ElementPayload,
+    element: ElementPayload | null,
     instruction: string,
     edits: DesignEdit[],
     language: Language
@@ -30,15 +30,17 @@ export class PromptExportService {
     }
 
     let sourceHints: ReturnType<typeof findSourceHints> = [];
-    try {
-      sourceHints = findSourceHints(this.workspaceRoot, element);
-    } catch {
-      // Component metadata remains useful if workspace search is unavailable.
+    if (element) {
+      try {
+        sourceHints = findSourceHints(this.workspaceRoot, element);
+      } catch {
+        // Component metadata remains useful if workspace search is unavailable.
+      }
     }
 
-    const context = toSelectionContext(element, sourceHints);
+    const context = element ? toSelectionContext(element, sourceHints) : null;
     const framework = this.detectFramework();
-    if (context.components) {
+    if (context?.components) {
       try {
         context.components = resolveComponentPaths(this.workspaceRoot, context.components);
       } catch {

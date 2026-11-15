@@ -27,17 +27,6 @@ export interface OpAppliedInfo {
   payload?: ElementPayload | null;
 }
 
-function getTargetOrigin(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.protocol === "http:" || u.protocol === "https:") return u.origin;
-    if (u.origin && u.origin !== "null") return u.origin;
-  } catch {
-    // ignore
-  }
-  return "*";
-}
-
 function makeSessionId(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -60,6 +49,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   editMode: boolean;
   onEditModeChange: (value: boolean) => void;
   onRefresh: () => void;
+  devServer?: string;
+  onNavigate: (url: string) => void;
+  onLocationChange: (path: string) => void;
   onSelect: (payload: ElementPayload | null) => void;
   onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => void;
   onOpApplied?: (info: OpAppliedInfo) => void;
@@ -72,6 +64,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     editMode,
     onEditModeChange,
     onRefresh,
+    devServer,
+    onNavigate,
+    onLocationChange,
     onSelect,
     onStyleApplied,
     onOpApplied,
@@ -85,11 +80,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const onOpAppliedRef = useRef(onOpApplied);
   const onTextChangedRef = useRef(onTextChanged);
   const onEditModeChangeRef = useRef(onEditModeChange);
+  const onLocationChangeRef = useRef(onLocationChange);
   const editModeRef = useRef(editMode);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
   const [hoverRect, setHoverRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [diagnostic, setDiagnostic] = useState("");
+  const [address, setAddress] = useState(devServer ?? "");
   const languageRef = useRef(language);
   languageRef.current = language;
 
@@ -105,8 +102,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onOpAppliedRef.current = onOpApplied;
     onTextChangedRef.current = onTextChanged;
     onEditModeChangeRef.current = onEditModeChange;
+    onLocationChangeRef.current = onLocationChange;
     editModeRef.current = editMode;
   });
+
+  useEffect(() => {
+    setAddress(devServer ?? "");
+  }, [devServer, url]);
 
   const clearTimers = () => {
     if (retryTimerRef.current) {
@@ -160,7 +162,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, sessionId: sessionIdRef.current },
-        getTargetOrigin(url)
+        "*"
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -170,7 +172,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, requestId, sessionId: sessionIdRef.current },
-        getTargetOrigin(url)
+        "*"
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -221,7 +223,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         setDiagnostic("");
         iframe.contentWindow?.postMessage(
           { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
-          getTargetOrigin(url)
+          "*"
         );
         return;
       }
@@ -274,6 +276,15 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         onTextChangedRef.current?.({ text: data.text, payload: data.payload });
         return;
       }
+      if (data.type === "ds:navigate") {
+        try {
+          if (devServer) setAddress(`${new URL(devServer).origin}${data.path}`);
+        } catch {
+          // Ignore navigation addresses when the project has no server URL.
+        }
+        onLocationChangeRef.current(data.path);
+        return;
+      }
       if (data.type === "ds:runtime-error") {
         setRuntimeStatus("error");
         setDiagnostic(data.message);
@@ -290,7 +301,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (runtimeStatus !== "ready") return;
     iframe.contentWindow.postMessage(
       { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode, sessionId: sessionIdRef.current },
-      getTargetOrigin(url)
+      "*"
     );
   }, [editMode, runtimeStatus, url]);
 
@@ -325,21 +336,72 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         ? translate(language, "toolbar.demo")
         : status;
 
+  const submitAddress = () => {
+    const value = address.trim();
+    if (!value) return;
+    try {
+      const current = devServer ? new URL(devServer) : null;
+      const base = current ? `${current.origin}/` : undefined;
+      const next = new URL(value, base);
+      if (next.protocol !== "http:" && next.protocol !== "https:") return;
+      onNavigate(next.toString());
+      setAddress(next.toString());
+    } catch {
+      // Keep the typed value available for correction.
+    }
+  };
+
+  const moveHistory = (direction: "back" | "forward") => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow || runtimeStatus !== "ready" || !sessionIdRef.current) return;
+    iframe.contentWindow.postMessage({
+      type: "ds:navigate-history",
+      version: PROTOCOL_VERSION,
+      direction,
+      sessionId: sessionIdRef.current,
+    }, "*");
+  };
+
+  const reloadPreview = () => {
+    const iframe = iframeRef.current;
+    if (iframe?.contentWindow && runtimeStatus === "ready" && sessionIdRef.current) {
+      iframe.contentWindow.postMessage({
+        type: "ds:reload",
+        version: PROTOCOL_VERSION,
+        sessionId: sessionIdRef.current,
+      }, "*");
+    } else {
+      setRefreshKey((key) => key + 1);
+    }
+    onRefresh();
+  };
+
   return (
     <section className={styles.preview}>
       <div className={styles.bar}>
         <span className={styles.status}>{translate(language, "preview.status")}: {projectStatus}</span>
-        <span className={styles.url}>{url}</span>
+        {status === "devserver" && (
+          <>
+            <button type="button" title={translate(language, "preview.back")} aria-label={translate(language, "preview.back")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("back")}>←</button>
+            <button type="button" title={translate(language, "preview.forward")} aria-label={translate(language, "preview.forward")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("forward")}>→</button>
+            <form className={styles.addressForm} onSubmit={(event) => { event.preventDefault(); submitAddress(); }}>
+              <input
+                className={styles.address}
+                type="text"
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+                placeholder={translate(language, "preview.addressPlaceholder")}
+                aria-label={translate(language, "preview.addressPlaceholder")}
+              />
+            </form>
+            <button type="button" title={translate(language, "preview.go")} aria-label={translate(language, "preview.go")} onClick={submitAddress}>↵</button>
+          </>
+        )}
         <span className={styles.status}>{statusText}</span>
-        <label className={styles.toggle}>
-          <input type="checkbox" checked={editMode} onChange={(e) => onEditModeChange(e.target.checked)} /> {translate(language, "preview.editMode")}
-        </label>
+        {editMode && runtimeStatus === "ready" && <span className={styles.hint}>{translate(language, "preview.selectHint")}</span>}
         <button
           type="button"
-          onClick={() => {
-            setRefreshKey((k) => k + 1);
-            onRefresh();
-          }}
+          onClick={reloadPreview}
         >
           {translate(language, "preview.refresh")}
         </button>

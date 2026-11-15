@@ -115,7 +115,16 @@ export class PreviewHostServer {
    * extension sets the dev-server URL here and bare paths keep working.
    */
   setDevTarget(target: string | null): void {
-    this.devTarget = target && /^https?:\/\//i.test(target) ? target : null;
+    if (!target) {
+      this.devTarget = null;
+      return;
+    }
+    try {
+      const parsed = new URL(target);
+      this.devTarget = parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
+    } catch {
+      this.devTarget = null;
+    }
   }
 
   /** Target of a bare-path request: explicit /proxy/, else Referer, else sticky dev target. */

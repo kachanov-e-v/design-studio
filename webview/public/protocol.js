@@ -13,6 +13,9 @@ const RUNTIME_TYPES = new Set([
     "ds:apply-op",
     "ds:op-applied",
     "ds:text-changed",
+    "ds:navigate",
+    "ds:navigate-history",
+    "ds:reload",
     "ds:runtime-error",
 ]);
 ;
@@ -132,6 +135,22 @@ export function isRuntimeMessage(value) {
                 return false;
             if (v.payload !== undefined && !isElementPayload(v.payload))
                 return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            return true;
+        case "ds:navigate":
+            if (typeof v.path !== "string" || v.path.length > 4000 || !v.path.startsWith("/"))
+                return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            return true;
+        case "ds:navigate-history":
+            if (v.direction !== "back" && v.direction !== "forward")
+                return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            return true;
+        case "ds:reload":
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return true;

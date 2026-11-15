@@ -248,11 +248,20 @@ export function App(): React.ReactElement {
   };
 
   const handleCopyInstruction = (instruction: string) => {
-    if (!selected) {
+    if (!selected && !instruction.trim() && edits.length === 0) {
       setOperationStatus(translate(language, "status.noSelection"));
       return;
     }
-    postToExtension({ type: "ai:copyInstruction", payload: selected, instruction, edits });
+    postToExtension({ type: "ai:copyInstruction", ...(selected ? { payload: selected } : {}), instruction, edits });
+  };
+
+  const handlePreviewNavigate = (url: string) => {
+    clearPending();
+    postToExtension({ type: "project:navigate", url });
+  };
+
+  const handlePreviewLocationChange = (path: string) => {
+    postToExtension({ type: "project:rememberNavigation", path });
   };
 
   const handleCopyComponent = (component: { name?: string; file?: string; line?: number }) => {
@@ -287,7 +296,10 @@ export function App(): React.ReactElement {
           language={language}
           editMode={editMode}
           onEditModeChange={setEditMode}
-          onRefresh={() => { clearPending(); postToExtension({ type: "preview:refresh" }); }}
+          devServer={state.devServer}
+          onNavigate={handlePreviewNavigate}
+          onLocationChange={handlePreviewLocationChange}
+          onRefresh={clearPending}
           onSelect={setSelected}
           onStyleApplied={handleStyleApplied}
           onOpApplied={handleOpApplied}

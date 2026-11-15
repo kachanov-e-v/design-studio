@@ -46,6 +46,9 @@ var DesignStudioRuntime = (() => {
     "ds:apply-op",
     "ds:op-applied",
     "ds:text-changed",
+    "ds:navigate",
+    "ds:navigate-history",
+    "ds:reload",
     "ds:runtime-error"
   ]);
   function isFiniteNumber(value) {
@@ -123,6 +126,17 @@ var DesignStudioRuntime = (() => {
       case "ds:text-changed":
         if (typeof v.text !== "string" || v.text.length > 5e3) return false;
         if (v.payload !== void 0 && !isElementPayload(v.payload)) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
+      case "ds:navigate":
+        if (typeof v.path !== "string" || v.path.length > 4e3 || !v.path.startsWith("/")) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
+      case "ds:navigate-history":
+        if (v.direction !== "back" && v.direction !== "forward") return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
+      case "ds:reload":
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return true;
       default:
@@ -428,6 +442,7 @@ var DesignStudioRuntime = (() => {
     let editingElement = null;
     let parentOrigin = "*";
     let activeSessionId = "";
+    const INTERACTIVE_SELECTOR = "a, button, input, select, textarea, summary, label, [role='button'], [role='link'], [role='menuitem'], [role='checkbox'], [role='radio'], [role='switch'], [role='tab'], [role='option'], [role='textbox'], [contenteditable='true']";
     const isDesignStudioElement = (el) => {
       if (!el) return false;
       try {
@@ -538,6 +553,29 @@ var DesignStudioRuntime = (() => {
       if (el === document.body || el === document.documentElement) return;
       const payload = collect(el);
       postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || void 0 });
+    }
+    function currentApplicationPath() {
+      const current = new URL(window.location.href);
+      const proxyMarker = "/proxy/";
+      const proxyIndex = current.pathname.indexOf(proxyMarker);
+      if (proxyIndex !== -1) {
+        const target = current.pathname.slice(proxyIndex + proxyMarker.length) + current.search + current.hash;
+        try {
+          const upstream = new URL(target);
+          return `${upstream.pathname}${upstream.search}${upstream.hash}`;
+        } catch {
+        }
+      }
+      return `${current.pathname}${current.search}${current.hash}`;
+    }
+    function notifyNavigation() {
+      if (!activeSessionId) return;
+      postToParent({
+        type: "ds:navigate",
+        version: PROTOCOL_VERSION,
+        path: currentApplicationPath(),
+        sessionId: activeSessionId
+      });
     }
     function postOpApplied(op, value, success, reason, payload, requestId) {
       postToParent({
@@ -673,10 +711,22 @@ var DesignStudioRuntime = (() => {
       const messageSessionId = msg.sessionId;
       if (activeSessionId && messageSessionId !== activeSessionId) return;
       if (msg.version !== PROTOCOL_VERSION) return;
+      if (msg.type === "ds:navigate-history") {
+        if (activeSessionId && msg.sessionId !== activeSessionId) return;
+        if (msg.direction === "back") window.history.back();
+        else window.history.forward();
+        return;
+      }
+      if (msg.type === "ds:reload") {
+        if (activeSessionId && msg.sessionId !== activeSessionId) return;
+        window.location.reload();
+        return;
+      }
       if (msg.type === "ds:set-mode") {
         if (activeSessionId && msg.sessionId !== activeSessionId) return;
         editMode = Boolean(msg.enabled);
         postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
+        notifyNavigation();
         return;
       }
       if (msg.type === "ds:apply-style") {
@@ -755,6 +805,20 @@ var DesignStudioRuntime = (() => {
         return;
       }
     });
+    const originalPushState = window.history.pushState.bind(window.history);
+    window.history.pushState = (...args) => {
+      const result = originalPushState(...args);
+      notifyNavigation();
+      return result;
+    };
+    const originalReplaceState = window.history.replaceState.bind(window.history);
+    window.history.replaceState = (...args) => {
+      const result = originalReplaceState(...args);
+      notifyNavigation();
+      return result;
+    };
+    window.addEventListener("popstate", notifyNavigation);
+    window.addEventListener("hashchange", notifyNavigation);
     document.addEventListener(
       "dblclick",
       (e) => {
@@ -763,6 +827,8 @@ var DesignStudioRuntime = (() => {
         if (!target) return;
         if (isDesignStudioElement(target)) return;
         if (target === document.body || target === document.documentElement) return;
+        const interactive = target.closest(INTERACTIVE_SELECTOR);
+        if (interactive && !e.altKey) return;
         e.preventDefault();
         e.stopPropagation();
         selectedElement = target;
@@ -819,6 +885,8 @@ var DesignStudioRuntime = (() => {
         if (!target) return;
         if (isDesignStudioElement(target)) return;
         if (target === document.body || target === document.documentElement) return;
+        const interactive = target.closest(INTERACTIVE_SELECTOR);
+        if (interactive && !e.altKey) return;
         e.preventDefault();
         e.stopPropagation();
         selectedElement = target;

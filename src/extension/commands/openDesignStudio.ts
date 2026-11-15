@@ -190,10 +190,43 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           });
           return;
         }
+        const normalizedUrl = url ? new URL(url).toString() : "";
+        await context.workspaceState.update(PROJECT_ENTRY_KEY, "");
+        await context.workspaceState.update(DEV_SERVER_KEY, normalizedUrl);
+        await context.workspaceState.update(DEMO_KEY, false);
+        await postState();
+        return;
+      }
+      if (msg.type === "project:navigate") {
+        const rawUrl = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (!isLocalhostUrl(rawUrl)) {
+          panel.webview.postMessage({
+            type: "preview:error",
+            message: language === "ru" ? "Разрешены только локальные адреса проекта" : "Only local project URLs are allowed",
+          });
+          return;
+        }
+        const url = new URL(rawUrl).toString();
         await context.workspaceState.update(PROJECT_ENTRY_KEY, "");
         await context.workspaceState.update(DEV_SERVER_KEY, url);
         await context.workspaceState.update(DEMO_KEY, false);
         await postState();
+        return;
+      }
+      if (msg.type === "project:rememberNavigation") {
+        const route = typeof msg.path === "string" ? msg.path : "";
+        const current = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
+        if (!current || route.length > 4000 || !route.startsWith("/") || route.startsWith("//")) return;
+        try {
+          const origin = new URL(current).origin;
+          const next = new URL(route, `${origin}/`);
+          if (isLocalhostUrl(next.toString())) {
+            await context.workspaceState.update(DEV_SERVER_KEY, next.toString());
+            host?.setDevTarget(origin);
+          }
+        } catch {
+          // Ignore malformed route updates from the preview frame.
+        }
         return;
       }
       if (msg.type === "preview:refresh") {
@@ -249,11 +282,15 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         const payload = msg.payload;
         const instruction = typeof msg.instruction === "string" ? msg.instruction : "";
         const edits = Array.isArray(msg.edits) ? msg.edits.slice(0, 200) as DesignEdit[] : [];
-        if (!payload || typeof payload.selector !== "string") {
+        if (payload !== undefined && payload !== null && (typeof payload !== "object" || typeof payload.selector !== "string")) {
           panel.webview.postMessage({ type: "ai:result", success: false, message: translate(language, "status.noSelection") });
           return;
         }
-        const result = await promptExport.copyInstruction(payload, instruction, edits, language);
+        if (!payload && !instruction.trim() && edits.length === 0) {
+          panel.webview.postMessage({ type: "ai:result", success: false, message: translate(language, "status.noSelection") });
+          return;
+        }
+        const result = await promptExport.copyInstruction(payload ?? null, instruction, edits, language);
         panel.webview.postMessage({
           type: "ai:result",
           success: result.success,

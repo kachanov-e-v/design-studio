@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import styles from "./Toolbar.module.css";
 import { postToExtension } from "../bridge";
 import type { DevServerSuggestion } from "../types";
@@ -31,6 +31,10 @@ export function Toolbar({
 }): React.ReactElement {
   const [devServerValue, setDevServerValue] = useState(devServer ?? "");
   const [showDevServer, setShowDevServer] = useState(Boolean(devServer));
+  useEffect(() => {
+    setDevServerValue(devServer ?? "");
+    setShowDevServer(Boolean(devServer));
+  }, [devServer]);
   const suggestions = devServerSuggestions ?? [];
   const suggested = suggestions.find((candidate) => candidate.running) ?? suggestions[0] ?? null;
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);

@@ -64,6 +64,26 @@ export interface TextChangedMessage {
   sessionId?: string;
 }
 
+export interface NavigateMessage {
+  type: "ds:navigate";
+  version: string;
+  path: string;
+  sessionId?: string;
+}
+
+export interface NavigateHistoryMessage {
+  type: "ds:navigate-history";
+  version: string;
+  direction: "back" | "forward";
+  sessionId?: string;
+}
+
+export interface ReloadMessage {
+  type: "ds:reload";
+  version: string;
+  sessionId?: string;
+}
+
 export interface RuntimeReadyMessage {
   type: "ds:runtime-ready";
   version: string;
@@ -155,6 +175,9 @@ export type RuntimeMessage =
   | ApplyOpMessage
   | OpAppliedMessage
   | TextChangedMessage
+  | NavigateMessage
+  | NavigateHistoryMessage
+  | ReloadMessage
   | RuntimeErrorMessage;
 
 const RUNTIME_TYPES = new Set([
@@ -170,6 +193,9 @@ const RUNTIME_TYPES = new Set([
   "ds:apply-op",
   "ds:op-applied",
   "ds:text-changed",
+  "ds:navigate",
+  "ds:navigate-history",
+  "ds:reload",
   "ds:runtime-error",
 ]);;
 
@@ -249,6 +275,17 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
     case "ds:text-changed":
       if (typeof v.text !== "string" || v.text.length > 5000) return false;
       if (v.payload !== undefined && !isElementPayload(v.payload)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:navigate":
+      if (typeof v.path !== "string" || v.path.length > 4000 || !v.path.startsWith("/")) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:navigate-history":
+      if (v.direction !== "back" && v.direction !== "forward") return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:reload":
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     default:
