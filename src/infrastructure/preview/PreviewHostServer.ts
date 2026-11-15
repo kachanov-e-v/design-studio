@@ -2,7 +2,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { targetFromProxyPath, DS_SERVICE_WORKER, candidateLoopbackTargets } from "./proxy-html";
+import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
@@ -207,6 +207,14 @@ export class PreviewHostServer {
       this.handleProjectFile(res, urlPath.slice("/project/".length));
       return;
     }
+    // SPA cross-origin references (client-router RSC fetches, router redirects)
+    // hit bare paths on this origin; proxy them to the dev server taken from
+    // the proxied document URL in Referer instead of answering 404.
+    const refererTarget = targetFromReferer(req.headers.referer, req.url ?? "/");
+    if (refererTarget) {
+      await this.handleProxy(req, res, refererTarget);
+      return;
+    }
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found");
   }
@@ -351,8 +359,8 @@ export class PreviewHostServer {
     }
   }
 
-  private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const target = targetFromProxyPath(req.url ?? "");
+  private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse, targetOverride?: string): Promise<void> {
+    const target = targetOverride ?? targetFromProxyPath(req.url ?? "");
     if (!target) {
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Invalid proxy target");

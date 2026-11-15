@@ -36,6 +36,9 @@ beforeAll(async () => {
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
+    } else if (p === "/dashboard") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end('<!DOCTYPE html><html><head><title>Dashboard</title></head><body><main>Dash</main></body></html>');
     } else if (p === "/echo-headers") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ rsc: req.headers["rsc"] ?? null, cookie: req.headers["cookie"] ?? null, origin: req.headers["origin"] ?? null }));
@@ -223,6 +226,24 @@ describe("PreviewHostServer", () => {
   it("still rejects POST to non-proxy paths", async () => {
     const res = await request(`${server.origin}/demo.html`, { method: "POST", body: "x" });
     expect(res.status).toBe(405);
+  });
+
+  it("proxies bare SPA paths via the Referer fallback (RSC fetch, hard redirects)", async () => {
+    const referer = `${server.origin}/proxy/${stubOrigin}/login`;
+    const res = await get(`${server.origin}/dashboard`);
+    expect(res.status).toBe(404);
+    const withReferer = await request(`${server.origin}/dashboard`, { headers: { Referer: referer } });
+    expect(withReferer.status).toBe(200);
+    expect(withReferer.body).toContain("Dashboard");
+    expect(withReferer.body).toContain("__ds-runtime.js");
+
+    const rsc = await request(`${server.origin}/dashboard?_rsc=abc`, {
+      headers: { Referer: referer, RSC: "1" },
+    });
+    expect(rsc.status).toBe(200);
+
+    const without = await get(`${server.origin}/no-referer-path`);
+    expect(without.status).toBe(404);
   });
 
   it("serves project files with runtime injection", async () => {

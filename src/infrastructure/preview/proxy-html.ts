@@ -16,6 +16,27 @@ export function targetFromProxyPath(rawPath: string): string | null {
   }
 }
 
+/**
+ * Fallback proxy targeting: requests that bypassed /proxy/ rewriting (SPA
+ * router fetches, window.location redirects) still carry the proxied document
+ * URL in Referer. Extract the target origin from it and keep the request path.
+ */
+export function targetFromReferer(referer: string | undefined, requestPath: string): string | null {
+  if (!referer) return null;
+  const m = /\/proxy\/(https?:\/\/[^/]+)/.exec(referer);
+  if (!m || !m[1]) return null;
+  try {
+    const idx = requestPath.indexOf("?");
+    const pathname = idx === -1 ? requestPath : requestPath.slice(0, idx);
+    const search = idx === -1 ? "" : requestPath.slice(idx);
+    const u = new URL(`${pathname}${search || ""}`, m[1]);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 /** Dev servers often bind to 127.0.0.1 or ::1 only; try the alternate loopback form. */
 export function candidateLoopbackTargets(target: string): string[] {
   const candidates = [target];
