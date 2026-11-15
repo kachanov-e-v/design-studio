@@ -442,7 +442,19 @@ export class PreviewHostServer {
       if (location) headers["location"] = location;
       if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
       res.writeHead(status, headers);
-      res.end();
+      if (method === "HEAD") {
+        res.end();
+        return;
+      }
+      // Next.js server-action responses are 303 with an x-action-redirect
+      // header and an RSC flight body the client must read (no Location at
+      // all); dropping the body makes React fail with "Connection closed".
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      if (buf.length > MAX_RESPONSE_BYTES) {
+        res.destroy();
+        return;
+      }
+      res.end(buf);
       return;
     }
 
