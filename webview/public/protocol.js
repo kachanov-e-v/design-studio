@@ -183,7 +183,7 @@ export function isElementPayload(value) {
         return false;
     const styles = v.styles;
     const keys = Object.keys(styles);
-    if (keys.length > 64)
+    if (keys.length > STYLE_PROPS.length)
         return false;
     if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500))
         return false;

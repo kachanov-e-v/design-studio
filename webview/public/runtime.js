@@ -159,7 +159,7 @@ var DesignStudioRuntime = (() => {
     if (!v.styles || typeof v.styles !== "object" || Array.isArray(v.styles)) return false;
     const styles = v.styles;
     const keys = Object.keys(styles);
-    if (keys.length > 64) return false;
+    if (keys.length > STYLE_PROPS.length) return false;
     if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500)) return false;
     if (v.text !== void 0 && (typeof v.text !== "string" || v.text.length > 2e3)) return false;
     if (v.classes !== void 0) {

@@ -309,7 +309,7 @@ export function isElementPayload(value: unknown): value is ElementPayload {
   if (!v.styles || typeof v.styles !== "object" || Array.isArray(v.styles)) return false;
   const styles = v.styles as Record<string, unknown>;
   const keys = Object.keys(styles);
-  if (keys.length > 64) return false;
+  if (keys.length > STYLE_PROPS.length) return false;
   if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && (styles[k] as string).length <= 500)) return false;
   if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000)) return false;
   if (v.classes !== undefined) {

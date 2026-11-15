@@ -9,6 +9,26 @@ const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 
+/** Scope upstream cookies to the local preview origin so app sessions survive navigation. */
+function rewriteSetCookieForPreview(cookie: string): string {
+  const [pair, ...rawAttributes] = cookie.split(";");
+  if (!pair?.trim()) return cookie;
+
+  let hasPath = false;
+  const attributes = rawAttributes.flatMap((rawAttribute) => {
+    const attribute = rawAttribute.trim();
+    if (/^domain\s*=/i.test(attribute)) return [];
+    if (/^path\s*=/i.test(attribute)) {
+      hasPath = true;
+      return ["Path=/"];
+    }
+    return attribute ? [attribute] : [];
+  });
+
+  if (!hasPath) attributes.unshift("Path=/");
+  return [pair.trim(), ...attributes].join("; ");
+}
+
 /** Request headers that must not be forwarded verbatim to the upstream dev server. */
 const REQUEST_HEADERS_TO_SKIP = new Set([
   "host",
@@ -479,7 +499,13 @@ export class PreviewHostServer {
       }
     });
     // Forward the full cookie list (forEach collapses multiple Set-Cookie headers).
-    const setCookies = typeof upstream.headers.getSetCookie === "function" ? upstream.headers.getSetCookie() : [];
+    const upstreamCookies =
+      typeof upstream.headers.getSetCookie === "function"
+        ? upstream.headers.getSetCookie()
+        : upstream.headers.get("set-cookie")
+          ? [upstream.headers.get("set-cookie")!]
+          : [];
+    const setCookies = upstreamCookies.map(rewriteSetCookieForPreview);
     delete headers["set-cookie"];
 
     const status = upstream.status;
