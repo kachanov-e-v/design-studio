@@ -92,7 +92,11 @@ export function prependProxyOriginToPathUrls(content: string, proxyPrefix: strin
 export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string): string {
   const prefix = targetOriginPrefix(finalTargetUrl);
   let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}/proxy/${finalTargetUrl}`);
-  out = rewriteRootAbsoluteAttributes(out, prefix);
+  // Root-absolute attribute values (href/src/action) are intentionally left
+  // untouched: rewriting them desynchronizes SSR markup from what React
+  // renders on the client (hydration mismatch). Same-origin bare paths are
+  // covered instead by the Referer fallback on the preview host and by the
+  // injected service worker.
   const styleBlock = /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi;
   out = out.replace(styleBlock, (m, open: string, css: string, close: string) =>
     open + rewriteCssUrls(css, prefix) + close
@@ -100,12 +104,6 @@ export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtime
   const swSnippet = `<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/__ds-sw.js',{scope:'/'}).catch(function(){})})}</script>`;
   out = injectBeforeCloseHead(out, swSnippet);
   return out;
-}
-
-const ROOT_ABSOLUTE_ATTR = /(\s(?:src|href|action|poster|data-src)\s*=\s*)(["'])\/(?!\/|proxy\/|__ds-)/gi;
-
-function rewriteRootAbsoluteAttributes(html: string, prefix: string): string {
-  return html.replace(ROOT_ABSOLUTE_ATTR, (_m, attr: string, q: string) => `${attr}${q}${prefix}/`);
 }
 
 function injectBeforeCloseHead(html: string, snippet: string): string {
