@@ -28,7 +28,19 @@ export function Toolbar({
   const [showDevServer, setShowDevServer] = useState(Boolean(devServer));
 
   const suggestions = devServerSuggestions ?? [];
+  // detectDevServers already sorts by confidence; verified dev servers first
   const suggested = (suggestions.find((s) => s.running) ?? suggestions[0] ?? null);
+
+  const suggestLabel = (candidate: DevServerSuggestion): string => {
+    if (candidate.matchesProject === true) return `${candidate.url} — detected: serving this project`;
+    if (candidate.matchesProject === false) return `${candidate.url} — in use by a different page`;
+    if (candidate.kind !== "unknown" && candidate.kind !== "static-http") {
+      return `${candidate.url} — detected ${candidate.kind} dev server`;
+    }
+    if (candidate.kind === "static-http") return `${candidate.url} — detected HTTP server`;
+    if (candidate.running) return `${candidate.url} — port in use, unverified`;
+    return `${candidate.url} — detected`;
+  };
 
   const handleEntryChange = (value: string) => {
     if (value === "__devserver") {
@@ -66,9 +78,7 @@ export function Toolbar({
               {showDevServer && <option value="__devserver">Dev server: {devServerValue || "…"}</option>}
               <option value="__demo">Built-in Demo</option>
               {suggested && !showDevServer && (
-                <option value={`__suggest:${suggested.url}`}>
-                  {suggested.url} — detected{suggested.running ? ", running" : ""}
-                </option>
+                <option value={`__suggest:${suggested.url}`}>{suggestLabel(suggested)}</option>
               )}
               {(projectEntries ?? []).map((entry) => (
                 <option key={entry} value={entry}>

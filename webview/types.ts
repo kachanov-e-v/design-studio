@@ -9,10 +9,15 @@ export interface ElementPayload {
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
 
+export type DevServerKind = "vite" | "next" | "astro" | "webpack" | "static-http" | "unknown";
+
 export interface DevServerSuggestion {
   url: string;
   script: string;
   running: boolean;
+  kind: DevServerKind;
+  /** true: content matches a workspace entry; false: proved foreign; null: not checked. */
+  matchesProject: boolean | null;
 }
 
 export interface PreviewStateMessage {

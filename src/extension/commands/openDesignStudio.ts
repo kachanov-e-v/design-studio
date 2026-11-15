@@ -112,7 +112,11 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
     const entries = root ? await findProjectEntries(root) : [];
     const [pending, devServerSuggestions] = await Promise.all([
       Promise.resolve(store ? store.pendingChanges().length : 0),
-      devServer || entry ? Promise.resolve([] as DevServerCandidate[]) : root ? detectDevServers(root) : Promise.resolve([] as DevServerCandidate[]),
+      entry || devServer
+        ? Promise.resolve([] as DevServerCandidate[])
+        : root
+          ? detectDevServers(root, entries)
+          : Promise.resolve([] as DevServerCandidate[]),
     ]);
     panel.webview.postMessage({
       type: "preview:state",
