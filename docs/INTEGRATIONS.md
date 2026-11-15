@@ -88,11 +88,7 @@ The Preview Runtime is an ESM package in `packages/preview-runtime`. For any
 project HTML served through Design Studio (`/project/...`) the runtime is
 injected automatically — no integration code is needed in the project. If you
 run the app through its own dev server (bound via "Dev server…", localhost
-only), import the runtime once in the app entry point:
-
-```ts
-import "@design-studio/preview-runtime";
-```
+only), the runtime is also injected by the proxy — no import needed.
 
 Runtime behavior:
 
@@ -118,5 +114,30 @@ Runtime behavior:
 - Design Studio binds to the **project**: workspace HTML files (served by the
   built-in host) or the project's own localhost dev server. Arbitrary external
   URLs are not loadable.
-- A dev server preview still needs the runtime import in the project entry.
+- On client-side (SPA) navigation the document is not re-fetched through the
+  proxy, so the injected runtime may not survive soft navigations; a page
+  reload restores it. Known limitation, see ROADMAP backlog item 6.
 - Runtime missing is reported as a distinct state, not success.
+
+## Framework support: Next.js (current state)
+
+Next.js projects have no static HTML entry, so bind the preview through
+**Dev server…** (`http://localhost:3000`). The proxy injects the runtime into
+the served HTML automatically.
+
+| Capability | Status |
+| --- | --- |
+| Preview (`next dev` binding) | Works |
+| Edit mode: select, hover, styles readout | Works |
+| Inline text editing | Works; recorded as `pending` in the journal; the agent applies it to the TSX/MDX source and acknowledges via MCP |
+| Block ops (move/duplicate/delete) | Works visually; recorded as `pending` → agent applies to components |
+| Style save → global CSS (plain selectors in `*.css`) | Works via Save |
+| Style save → CSS Modules | Not reliable: DOM class names are hashed (`card_x3f2`), source matching may fail or hit the wrong rule. Backlog: source-map-based mapping |
+| Style save → Tailwind / styled-components | Not supported directly. The style edit still lands in the journal; the agent decides the idiomatic change (utility classes, tokens). Backlog: utility-class translation |
+
+Recommended flow for Next.js: make visual edits in Design Studio, press Save
+(where applicable). Structural and text changes stay `pending` in
+`.design-studio/`; the connected agent (Kilo Code / Mistral Vibe) picks them up
+through MCP `get_pending_changes`, edits the components, and calls
+`acknowledge_changes`. For targeted fixes use "Send to AI" on the selected
+element.
