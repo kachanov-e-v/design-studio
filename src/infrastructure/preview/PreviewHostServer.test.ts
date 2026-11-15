@@ -20,6 +20,10 @@ const stubHtmlWithStyle = `<!DOCTYPE html><html><head><style>.x { background: ur
 let stubServer: http.Server;
 let stubOrigin = "";
 
+function bs(parts: Buffer[]): string {
+  return Buffer.concat(parts).toString("utf8");
+}
+
 beforeAll(async () => {
   stubServer = http.createServer((req, res) => {
     const p = (req.url ?? "/").split("?")[0];
@@ -32,6 +36,23 @@ beforeAll(async () => {
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
+    } else if (p === "/echo-headers") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ rsc: req.headers["rsc"] ?? null, cookie: req.headers["cookie"] ?? null, origin: req.headers["origin"] ?? null }));
+    } else if (p === "/api/login") {
+      const parts: Buffer[] = [];
+      req.on("data", (c) => parts.push(c));
+      req.on("end", () => {
+        const body = bs(parts);
+        if (req.headers["content-type"] !== "application/json" || !body.includes("user")) {
+          res.writeHead(400);
+          res.end("bad");
+          return;
+        }
+        res.setHeader("Set-Cookie", ["sid=abc; Path=/", "other=1; Path=/"]);
+        res.writeHead(302, { Location: "/dashboard" });
+        res.end("ok");
+      });
     } else {
       res.writeHead(404);
       res.end("nf");
@@ -68,6 +89,22 @@ function get(url: string): Promise<{ status: number; body: string; headers: Reco
         );
       })
       .on("error", reject);
+  });
+}
+
+function request(
+  url: string,
+  options: http.RequestOptions & { body?: string }
+): Promise<{ status: number; body: string; headers: Record<string, string> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { ...options, headers: options.headers }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers as Record<string, string> }));
+    });
+    req.on("error", reject);
+    if (options.body !== undefined) req.write(options.body);
+    req.end();
   });
 }
 
@@ -160,6 +197,32 @@ describe("PreviewHostServer", () => {
   it("returns 400 before a project root is bound", async () => {
     const res = await get(`${server.origin}/project/index.html`);
     expect(res.status).toBe(400);
+  });
+
+  it("passes RSC, cookies and rewritten Origin to the upstream", async () => {
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
+      headers: { RSC: "1", Cookie: "session=x", Origin: server.origin, Accept: "*/*" },
+    });
+    const echo = JSON.parse(res.body) as { rsc: string | null; cookie: string | null; origin: string | null };
+    expect(echo.rsc).toBe("1");
+    expect(echo.cookie).toBe("session=x");
+    expect(echo.origin).toBe(stubOrigin);
+  });
+
+  it("proxies POST with body, forwards Set-Cookie and rewrites redirect Location", async () => {
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.origin },
+      body: JSON.stringify({ user: "u", pass: "p" }),
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(`${server.origin}/proxy/${stubOrigin}/dashboard`);
+    expect(res.headers["set-cookie"]).toEqual(["sid=abc; Path=/", "other=1; Path=/"]);
+  });
+
+  it("still rejects POST to non-proxy paths", async () => {
+    const res = await request(`${server.origin}/demo.html`, { method: "POST", body: "x" });
+    expect(res.status).toBe(405);
   });
 
   it("serves project files with runtime injection", async () => {

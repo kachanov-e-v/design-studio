@@ -6,7 +6,25 @@ import { targetFromProxyPath, DS_SERVICE_WORKER, candidateLoopbackTargets } from
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
+
+/** Request headers that must not be forwarded verbatim to the upstream dev server. */
+const REQUEST_HEADERS_TO_SKIP = new Set([
+  "host",
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+  "content-length",
+  "accept-encoding",
+  "cf-connecting-ip",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+]);
 
 export interface PreviewHostServerOptions {
   webviewRoot: string;
@@ -145,12 +163,24 @@ export class PreviewHostServer {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    if (req.method !== "GET" && req.method !== "HEAD") {
+    const method = req.method ?? "GET";
+    const allowed = method === "GET" || method === "HEAD" || method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE" || method === "OPTIONS";
+    if (!allowed) {
       res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Method not allowed");
       return;
     }
     const urlPath = (req.url ?? "/").split("?")[0];
+
+    if (urlPath.startsWith("/proxy/")) {
+      await this.handleProxy(req, res);
+      return;
+    }
+    if (method !== "GET" && method !== "HEAD") {
+      res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Method not allowed");
+      return;
+    }
 
     if (urlPath === "/demo.html") {
       this.serveFile(res, "demo.html", "text/html; charset=utf-8");
@@ -167,10 +197,6 @@ export class PreviewHostServer {
         "Cache-Control": "no-store",
       });
       res.end(DS_SERVICE_WORKER);
-      return;
-    }
-    if (urlPath.startsWith("/proxy/")) {
-      await this.handleProxy(req, res);
       return;
     }
     if (urlPath === "/project/" || urlPath === "/project") {
@@ -240,18 +266,65 @@ export class PreviewHostServer {
     res.end(content);
   }
 
+  private async readBody(req: http.IncomingMessage): Promise<Buffer | undefined> {
+    const chunk = await new Promise<Buffer | null>((resolve) => {
+      let size = 0;
+      const parts: Buffer[] = [];
+      req.on("data", (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_REQUEST_BODY_BYTES) {
+          req.destroy();
+          resolve(null);
+          return;
+        }
+        parts.push(c);
+      });
+      req.on("end", () => resolve(Buffer.concat(parts)));
+      req.on("error", () => resolve(null));
+    });
+    return chunk ?? undefined;
+  }
+
+  /**
+   * Forward the browser's request headers to the dev server: cookies, RSC and
+   * router state headers, content-type, etc. Origin/Referer are re-pointed at
+   * the upstream origin so server-action CSRF/Origin checks keep passing.
+   */
+  private buildForwardHeaders(req: http.IncomingMessage, target: URL): Record<string, string> {
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (REQUEST_HEADERS_TO_SKIP.has(key)) continue;
+      headers[key] = Array.isArray(value) ? value.join(", ") : (value ?? "");
+    }
+    const upstreamOrigin = target.origin;
+    if (headers["origin"]) headers["origin"] = upstreamOrigin;
+    if (headers["referer"]) {
+      try {
+        const ref = new URL(headers["referer"]);
+        headers["referer"] = `${upstreamOrigin}${ref.pathname}${ref.search}`;
+      } catch {
+        // keep as-is
+      }
+    }
+    return headers;
+  }
+
   private async fetchWithFallbacks(
     target: string,
-    req: http.IncomingMessage
+    method: string,
+    headers: Record<string, string>,
+    body?: Buffer
   ): Promise<{ upstream: Response | null; errors: { url: string; message: string }[] }> {
     const candidates = candidateLoopbackTargets(target);
     const errors: { url: string; message: string }[] = [];
     for (const candidate of candidates) {
       try {
-        const upstream = await fetch(candidate, {          method: req.method === "HEAD" ? "HEAD" : "GET",
-          redirect: "follow",
+        const upstream = await fetch(candidate, {
+          method: method === "HEAD" ? "HEAD" : method,
+          redirect: "manual",
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-          headers: { "user-agent": req.headers["user-agent"] ?? "design-studio-preview", accept: req.headers.accept ?? "*/*" },
+          headers,
+          body: method === "GET" || method === "HEAD" ? undefined : body ? new Uint8Array(body) : undefined,
         });
         return { upstream, errors };
       } catch (err) {
@@ -265,6 +338,19 @@ export class PreviewHostServer {
     return { upstream: null, errors };
   }
 
+  /** Rewrite a 3xx Location so the browser stays on the preview origin. */
+  private rewriteLocation(location: string | undefined, target: URL): string | undefined {
+    if (!location) return undefined;
+    try {
+      const u = new URL(location, target);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return location;
+      if (u.origin !== target.origin) return u.toString();
+      return `${this.origin}/proxy/${u.toString()}`;
+    } catch {
+      return location;
+    }
+  }
+
   private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const target = targetFromProxyPath(req.url ?? "");
     if (!target) {
@@ -272,7 +358,22 @@ export class PreviewHostServer {
       res.end("Invalid proxy target");
       return;
     }
-    const { upstream, errors } = await this.fetchWithFallbacks(target, req);
+    const method = req.method === "HEAD" ? "HEAD" : (req.method ?? "GET");
+    const body = method === "GET" || method === "HEAD" ? undefined : await this.readBody(req);
+    if (body === undefined && method !== "GET" && method !== "HEAD" && !res.writableEnded) {
+      // request body overflowed — the socket was destroyed by readBody
+      return;
+    }
+    let parsedTarget: URL;
+    try {
+      parsedTarget = new URL(target);
+    } catch {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Invalid proxy target");
+      return;
+    }
+    const forwardHeaders = this.buildForwardHeaders(req, parsedTarget);
+    const { upstream, errors } = await this.fetchWithFallbacks(target, method, forwardHeaders, body);
     if (!upstream) {
       res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(
@@ -288,31 +389,49 @@ export class PreviewHostServer {
         headers[key] = value;
       }
     });
+    // Forward the full cookie list (forEach collapses multiple Set-Cookie headers).
+    const setCookies = typeof upstream.headers.getSetCookie === "function" ? upstream.headers.getSetCookie() : [];
+    delete headers["set-cookie"];
+
+    const status = upstream.status;
+    // 3xx: pass through with a proxied Location so the browser stays on this origin.
+    if (status >= 300 && status < 400) {
+      const location = this.rewriteLocation(headers["location"], parsedTarget);
+      if (location) headers["location"] = location;
+      if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
+      res.writeHead(status, headers);
+      res.end();
+      return;
+    }
 
     const finalTarget = upstream.url || target;
     const contentType = headers["content-type"] ?? "application/octet-stream";
+    delete headers["location"];
 
-    if (/^text\/html/i.test(contentType) && req.method !== "HEAD") {
+    if (/^text\/html/i.test(contentType) && method !== "HEAD") {
       const buf = Buffer.from(await upstream.arrayBuffer());
       const html = buf.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
       const rewritten = rewriteProxiedHtml(html, finalTarget, `${this.origin}/__ds-runtime.js`, this.origin);
       headers["content-type"] = "text/html; charset=utf-8";
       headers["cache-control"] = "no-store";
-      res.writeHead(upstream.status, headers);
+      if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
+      res.writeHead(status, headers);
       res.end(rewritten);
       return;
     }
-    if (/^text\/css/i.test(contentType) && req.method !== "HEAD") {
+    if (/^text\/css/i.test(contentType) && method !== "HEAD") {
       const buf = Buffer.from(await upstream.arrayBuffer());
       const css = buf.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
       headers["cache-control"] = "no-store";
-      res.writeHead(upstream.status, headers);
+      res.writeHead(status, headers);
+      if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
       res.end(rewriteProxiedCss(css, finalTarget));
       return;
     }
 
-    res.writeHead(upstream.status, headers);
-    if (req.method === "HEAD") {
+    if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
+    res.writeHead(status, headers);
+    if (method === "HEAD") {
       res.end();
       return;
     }

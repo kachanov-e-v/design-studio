@@ -112,17 +112,16 @@ export const HEADERS_TO_STRIP = [
   "transfer-encoding",
 ] as const;
 
-/** Service worker injected into proxied pages: re-routes same-origin root-absolute requests through the proxy. */
+/** Service worker injected into proxied pages: re-routes same-origin requests (all methods) through the proxy. */
 export const DS_SERVICE_WORKER = `
 self.addEventListener("install", function (event) { self.skipWaiting(); });
 self.addEventListener("activate", function (event) { event.waitUntil(self.clients.claim()); });
 self.addEventListener("fetch", function (event) {
   var req = event.request;
-  if (req.method !== "GET" && req.method !== "HEAD") return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   var p = url.pathname;
-  if (p.indexOf("/proxy/") === 0 || p === "/__ds-runtime.js" || p === "/__ds-sw.js" || p === "/demo.html") return;
+  if (p.indexOf("/proxy/") === 0 || p === "/__ds-runtime.js" || p === "/__ds-sw.js" || p === "/demo.html" || p.indexOf("/project/") === 0) return;
   event.respondWith(
     self.clients.get(event.clientId).then(function (client) {
       var prefix = null;
@@ -132,7 +131,7 @@ self.addEventListener("fetch", function (event) {
       }
       if (!prefix) return fetch(req);
       var rewritten = prefix + p + url.search;
-      return fetch(rewritten, { headers: req.headers, method: req.method });
+      return fetch(new Request(rewritten, req));
     })
   );
 });
