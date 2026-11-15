@@ -1,3 +1,9 @@
+export interface SourceRule {
+  href: string;
+  selectorText: string;
+  cssText?: string;
+}
+
 export interface ElementPayload {
   selector: string;
   selectors?: string[];
@@ -5,6 +11,7 @@ export interface ElementPayload {
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
   text?: string;
+  rules?: SourceRule[];
 }
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";

@@ -145,6 +145,16 @@ var DesignStudioRuntime = (() => {
     if (keys.length > 64) return false;
     if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500)) return false;
     if (v.text !== void 0 && (typeof v.text !== "string" || v.text.length > 2e3)) return false;
+    if (v.rules !== void 0) {
+      if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
+      for (const rule of v.rules) {
+        if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false;
+        const r2 = rule;
+        if (typeof r2.href !== "string" || r2.href.length === 0 || r2.href.length > 2e3) return false;
+        if (typeof r2.selectorText !== "string" || r2.selectorText.length === 0 || r2.selectorText.length > 2e3) return false;
+        if (r2.cssText !== void 0 && (typeof r2.cssText !== "string" || r2.cssText.length > 3e3)) return false;
+      }
+    }
     return true;
   }
   var STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
@@ -270,6 +280,37 @@ var DesignStudioRuntime = (() => {
       const node = target;
       return node.parentElement ?? null;
     };
+    function collectSourceRules(el) {
+      const result = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const sheet of document.styleSheets) {
+        if (!sheet.href) continue;
+        let rules;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+        for (const rule of rules) {
+          if (!(rule instanceof CSSStyleRule)) continue;
+          const selectorText = rule.selectorText;
+          if (!selectorText) continue;
+          let matches = false;
+          try {
+            matches = el.matches(selectorText);
+          } catch {
+            continue;
+          }
+          if (!matches) continue;
+          const key = `${sheet.href}\0${selectorText}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          result.push({ href: sheet.href, selectorText, cssText: rule.cssText.slice(0, 2e3) });
+          if (result.length >= 8) return result;
+        }
+      }
+      return result.length > 0 ? result : void 0;
+    }
     function collect(el) {
       const rect = el.getBoundingClientRect();
       const cs = getComputedStyle(el);
@@ -284,6 +325,8 @@ var DesignStudioRuntime = (() => {
       };
       const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
       if (text.length > 0) payload.text = text.slice(0, 2e3);
+      const rules = collectSourceRules(el);
+      if (rules) payload.rules = rules;
       return payload;
     }
     function postToParent(msg) {

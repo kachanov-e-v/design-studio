@@ -1,5 +1,12 @@
 export const PROTOCOL_VERSION = "1";
 
+/** A CSS rule from a real stylesheet the element matches. */
+export interface SourceRule {
+  href: string;
+  selectorText: string;
+  cssText?: string;
+}
+
 export interface ElementPayload {
   selector: string;
   selectors?: string[];
@@ -7,6 +14,7 @@ export interface ElementPayload {
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
   text?: string;
+  rules?: SourceRule[];
 }
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
@@ -254,6 +262,16 @@ export function isElementPayload(value: unknown): value is ElementPayload {
   if (keys.length > 64) return false;
   if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && (styles[k] as string).length <= 500)) return false;
   if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000)) return false;
+  if (v.rules !== undefined) {
+    if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
+    for (const rule of v.rules) {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false;
+      const r = rule as Record<string, unknown>;
+      if (typeof r.href !== "string" || r.href.length === 0 || r.href.length > 2000) return false;
+      if (typeof r.selectorText !== "string" || r.selectorText.length === 0 || r.selectorText.length > 2000) return false;
+      if (r.cssText !== undefined && (typeof r.cssText !== "string" || r.cssText.length > 3000)) return false;
+    }
+  }
   return true;
 }
 

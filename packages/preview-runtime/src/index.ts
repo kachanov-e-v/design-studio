@@ -3,6 +3,7 @@ import {
   type ElementOp,
   type ElementPayload,
   type RuntimeMessage,
+  type SourceRule,
   isRuntimeMessage,
   STYLE_PROPS,
   STYLE_PROPERTY_PATTERN,
@@ -106,6 +107,39 @@ export function initDesignStudioRuntime(): void {
     return node.parentElement ?? null;
   };
 
+  /** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
+  function collectSourceRules(el: Element): SourceRule[] | undefined {
+    const result: SourceRule[] = [];
+    const seen = new Set<string>();
+    for (const sheet of document.styleSheets) {
+      if (!sheet.href) continue;
+      let rules: CSSRuleList;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of rules) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+        const selectorText = rule.selectorText;
+        if (!selectorText) continue;
+        let matches = false;
+        try {
+          matches = el.matches(selectorText);
+        } catch {
+          continue;
+        }
+        if (!matches) continue;
+        const key = `${sheet.href}\u0000${selectorText}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({ href: sheet.href, selectorText, cssText: rule.cssText.slice(0, 2000) });
+        if (result.length >= 8) return result;
+      }
+    }
+    return result.length > 0 ? result : undefined;
+  }
+
   function collect(el: Element): ElementPayload {
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
@@ -120,6 +154,8 @@ export function initDesignStudioRuntime(): void {
     };
     const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
     if (text.length > 0) payload.text = text.slice(0, 2000);
+    const rules = collectSourceRules(el);
+    if (rules) payload.rules = rules;
     return payload;
   }
 

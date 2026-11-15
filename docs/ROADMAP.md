@@ -21,12 +21,12 @@ Each EPIC has completion criteria; do not start next without explicit command.
 | Framework | Preview | Style persistence | Block/text edits |
 | --- | --- | --- | --- |
 | Static HTML project | Works (file entries) | Works (plain selectors in `*.css`) | Journal `pending` → agent applies |
-| Next.js (dev server) | Works (localhost binding + proxy-injected runtime) | Partial: global CSS works; CSS Modules (hashed class names) and Tailwind do not match source | Journal `pending` → agent applies to TSX |
+| Next.js (dev server) | Works (localhost binding + proxy-injected runtime) | Works: global CSS directly; CSS Modules via dev sourcemaps (`File_local__hash` heuristic fallback). Tailwind utility classes are not editable yet | Journal `pending` → agent applies to TSX |
 
 ## Improvement backlog (prioritized)
 
 1. **Autodetect dev server** (done) — reads workspace `package.json` scripts (`next dev`, `vite`, `react-scripts`, `astro`, etc., incl. `npm run x` references and explicit `-p/--port`), probes ports, and offers the candidate in the project dropdown before manual entry. Live candidates are verified over HTTP: dev-server fingerprints (Vite client injection, `x-powered-by: Next.js`, `astro-island`, webpack HMR) and a workspace `<title>` match demote foreign processes occupying a port.
-2. **CSS persistence via dev-source maps** — Next.js dev serves sourcemaps for CSS; map hashed CSS Modules class names in the DOM back to `*.module.css` sources, so Save works for CSS Modules too. Highest value.
+2. **CSS persistence via dev-source maps** (done) — the preview runtime reports the stylesheet rules the element matches (`href` + selector); the persistence path fetches the dev-server CSS, follows its dev sourcemap (inline or `*.map`), decodes the VLQ mappings to the rule's original position and recovers the unhashed selector from `sourcesContent`. A `File_local__hash` name-pattern heuristic covers servers without sourcemaps. Save then edits the mapped `*.module.css` rule in the workspace.
 3. **Tailwind inline edits** — instead of raw CSS properties, translate style edits into utility-class changes (or hand off to the agent with the target class list).
 4. **Structural DOM→source mapping** — for pure HTML projects, apply move/duplicate/delete directly to the HTML file with a position-based mapping; frameworks keep the MCP/agent path.
 5. **OpenCode + Cline** — MCP registration docs and availability probing; core is already agent-agnostic.

@@ -18,8 +18,11 @@ what you changed and never overwrites it.
   - style editor in the Inspector (color, sizing, spacing, typography, flex,
     borders, etc.).
 - **Persistence** — "Save" writes style edits into project CSS
-  (WorkspaceEdit + document save) and records every change in
-  `.design-studio/changes.jsonl` + regenerates `.design-studio/DESIGN_STATE.md`.
+  (WorkspaceEdit + document save): plain selectors are matched directly in
+  `*.css`, hashed CSS Modules classes from dev servers are mapped back to
+  `*.module.css` via dev source maps (with a name-pattern fallback).
+  Every change is recorded in `.design-studio/changes.jsonl` and
+  `.design-studio/DESIGN_STATE.md` is regenerated.
 - **AI agent integration via MCP** — `dist/mcp-server.js` exposes
   `get_pending_changes`, `get_changes_since`, `acknowledge_changes`,
   `get_selected_element`, `complete_handoff`, `get_project_state`. Pending

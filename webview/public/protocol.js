@@ -170,6 +170,21 @@ export function isElementPayload(value) {
         return false;
     if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000))
         return false;
+    if (v.rules !== undefined) {
+        if (!Array.isArray(v.rules) || v.rules.length > 8)
+            return false;
+        for (const rule of v.rules) {
+            if (!rule || typeof rule !== "object" || Array.isArray(rule))
+                return false;
+            const r = rule;
+            if (typeof r.href !== "string" || r.href.length === 0 || r.href.length > 2000)
+                return false;
+            if (typeof r.selectorText !== "string" || r.selectorText.length === 0 || r.selectorText.length > 2000)
+                return false;
+            if (r.cssText !== undefined && (typeof r.cssText !== "string" || r.cssText.length > 3000))
+                return false;
+        }
+    }
     return true;
 }
 export const STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;

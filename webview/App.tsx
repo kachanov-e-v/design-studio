@@ -4,7 +4,7 @@ import { PreviewContainer, type PreviewContainerHandle, type OpAppliedInfo } fro
 import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
-import type { ElementOp, ElementPayload, PreviewStateMessage } from "./types";
+import type { ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
 import styles from "./App.module.css";
 
 interface PendingStyleRequest {
@@ -21,6 +21,7 @@ interface PendingStyleEdit {
   selectors?: string[];
   property: string;
   value: string;
+  rules?: SourceRule[];
 }
 
 export function App(): React.ReactElement {
@@ -154,7 +155,7 @@ export function App(): React.ReactElement {
     if (selector) {
       setPendingStyles((prevStyles) => [
         ...prevStyles.filter((p) => !(p.selector === selector && p.property === info.property)),
-        { selector, selectors: payload?.selectors, property: info.property, value: info.value },
+        { selector, selectors: payload?.selectors, property: info.property, value: info.value, rules: payload?.rules },
       ]);
       setOperationStatus("Applied — press Save to commit");
     }

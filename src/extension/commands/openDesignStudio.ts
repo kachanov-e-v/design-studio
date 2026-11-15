@@ -193,6 +193,19 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
           property: String(msg.property ?? ""),
           value: String(msg.value ?? ""),
+          sourceRules: Array.isArray(msg.sourceRules)
+            ? msg.sourceRules
+                .slice(0, 8)
+                .filter((r: unknown): r is { href: string; selectorText: string } => {
+                  const rule = r as { href?: unknown; selectorText?: unknown };
+                  return (
+                    typeof rule?.href === "string" &&
+                    typeof rule?.selectorText === "string" &&
+                    rule.href.length > 0 &&
+                    rule.selectorText.length > 0
+                  );
+                })
+            : undefined,
         };
         const result = await persistence.apply(change);
         if (result.success) {
