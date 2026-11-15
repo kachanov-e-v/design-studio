@@ -4,6 +4,7 @@ import { PreviewContainer, type PreviewContainerHandle, type OpAppliedInfo } fro
 import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
+import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
 import type { ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
 import styles from "./App.module.css";
 
@@ -35,6 +36,7 @@ export function App(): React.ReactElement {
   const previewRef = useRef<PreviewContainerHandle | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingStyleRequest>>(new Map());
   const selectedRef = useRef<ElementPayload | null>(null);
+  const previousClassesRef = useRef<string[] | undefined>(undefined);
   selectedRef.current = selected;
 
   const clearPending = () => {
@@ -97,6 +99,16 @@ export function App(): React.ReactElement {
   }, [state.url]);
 
   const handleChange = (property: string, value: string) => {
+    const sel = selectedRef.current;
+    if (sel?.tailwind === true) {
+      const utils = styleToUtilities(property, value);
+      if (utils !== null) {
+        previousClassesRef.current = sel.classes ? [...sel.classes] : undefined;
+        applyOp("set-classes", resolveTailwindClassList(sel.classes ?? [], utils).join(" "));
+        return;
+      }
+      // Unsupported value: fall through to the raw-CSS path.
+    }
     const result = previewRef.current?.applyStyle(property, value) ?? null;
     if (!result) {
       setStyleError("Runtime not connected");
@@ -175,6 +187,22 @@ export function App(): React.ReactElement {
     }
     setSelected(info.payload ?? null);
     const selector = info.payload?.selector ?? selectedRef.current?.selector;
+    if (info.op === "set-classes") {
+      const classes = (info.value ?? "").split(" ").filter(Boolean);
+      if (selector && classes.length > 0) {
+        postToExtension({
+          type: "journal:recordChange",
+          kind: "style",
+          selector,
+          selectors: info.payload?.selectors,
+          classes,
+          previousClasses: previousClassesRef.current,
+        });
+        setOperationStatus("Tailwind classes recorded for the AI agent");
+      }
+      previousClassesRef.current = undefined;
+      return;
+    }
     if (info.op === "set-text") {
       if (selector) {
         postToExtension({

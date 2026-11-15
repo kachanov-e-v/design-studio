@@ -13,13 +13,16 @@ export interface ElementPayload {
   tag: string;
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
+  classes?: string[];
+  /** true when the page was detected to use Tailwind CSS. */
+  tailwind?: boolean;
   text?: string;
   rules?: SourceRule[];
 }
 
-export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
+export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
 
-export const ELEMENT_OPS: readonly ElementOp[] = ["set-text", "delete", "duplicate", "move-up", "move-down"];
+export const ELEMENT_OPS: readonly ElementOp[] = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes"];
 
 export interface ApplyOpMessage {
   type: "ds:apply-op";
@@ -262,6 +265,11 @@ export function isElementPayload(value: unknown): value is ElementPayload {
   if (keys.length > 64) return false;
   if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && (styles[k] as string).length <= 500)) return false;
   if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000)) return false;
+  if (v.classes !== undefined) {
+    if (!Array.isArray(v.classes) || v.classes.length > 30) return false;
+    if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
+  }
+  if (v.tailwind !== undefined && typeof v.tailwind !== "boolean") return false;
   if (v.rules !== undefined) {
     if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
     for (const rule of v.rules) {
@@ -276,6 +284,15 @@ export function isElementPayload(value: unknown): value is ElementPayload {
 }
 
 export const STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
+
+/** Validate the `value` of a `set-classes` op: a space-separated class list. */
+export function isValidClassListValue(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1000) return false;
+  const tokens = value.split(" ");
+  if (tokens.length > 30) return false;
+  return tokens.every((t) => t.length > 0 && t.length <= 100 && !/["<>\\]/.test(t));
+}
+
 export const STYLE_PROPS = [
   "display",
   "position",

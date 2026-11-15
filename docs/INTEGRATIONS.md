@@ -133,7 +133,8 @@ the served HTML automatically.
 | Block ops (move/duplicate/delete) | Works visually; recorded as `pending` → agent applies to components |
 | Style save → global CSS (plain selectors in `*.css`) | Works via Save |
 | Style save → CSS Modules | Not reliable: DOM class names are hashed (`card_x3f2`), source matching may fail or hit the wrong rule. Backlog: source-map-based mapping |
-| Style save → Tailwind / styled-components | Not supported directly. The style edit still lands in the journal; the agent decides the idiomatic change (utility classes, tokens). Backlog: utility-class translation |
+| Style save → Tailwind | Works: Tailwind pages are detected at runtime; Inspector style edits are translated into utility classes (default 3/4 scales + arbitrary values), applied live via the `set-classes` op and journaled as `pending` kind `style` with the final class list — the agent applies them to the source and acknowledges via MCP. Off-scale/unsupported values fall back to the raw-CSS path |
+| Style save → styled-components | Not supported directly. The style edit still lands in the journal; the agent decides the idiomatic change (tokens). |
 
 Recommended flow for Next.js: make visual edits in Design Studio, press Save
 (where applicable). Structural and text changes stay `pending` in

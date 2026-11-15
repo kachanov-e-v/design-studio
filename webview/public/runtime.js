@@ -29,7 +29,7 @@ var DesignStudioRuntime = (() => {
 
   // src/protocol.ts
   var PROTOCOL_VERSION = "1";
-  var ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down"];
+  var ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes"];
   var RUNTIME_TYPES = /* @__PURE__ */ new Set([
     "ds:runtime-ready",
     "ds:ping",
@@ -145,6 +145,11 @@ var DesignStudioRuntime = (() => {
     if (keys.length > 64) return false;
     if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500)) return false;
     if (v.text !== void 0 && (typeof v.text !== "string" || v.text.length > 2e3)) return false;
+    if (v.classes !== void 0) {
+      if (!Array.isArray(v.classes) || v.classes.length > 30) return false;
+      if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
+    }
+    if (v.tailwind !== void 0 && typeof v.tailwind !== "boolean") return false;
     if (v.rules !== void 0) {
       if (!Array.isArray(v.rules) || v.rules.length > 8) return false;
       for (const rule of v.rules) {
@@ -158,6 +163,12 @@ var DesignStudioRuntime = (() => {
     return true;
   }
   var STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
+  function isValidClassListValue(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 1e3) return false;
+    const tokens = value.split(" ");
+    if (tokens.length > 30) return false;
+    return tokens.every((t) => t.length > 0 && t.length <= 100 && !/["<>\\]/.test(t));
+  }
   var STYLE_PROPS = [
     "display",
     "position",
@@ -311,6 +322,35 @@ var DesignStudioRuntime = (() => {
       }
       return result.length > 0 ? result : void 0;
     }
+    let tailwindDetected = null;
+    function detectTailwindPage() {
+      if (tailwindDetected === null) tailwindDetected = scanForTailwind();
+      return tailwindDetected;
+    }
+    function scanForTailwind() {
+      try {
+        if (typeof window.tailwind === "object") return true;
+        if (document.querySelector('script[src*="tailwind"]')) return true;
+        let checked = 0;
+        for (const sheet of document.styleSheets) {
+          let rules;
+          try {
+            rules = sheet.cssRules;
+          } catch {
+            continue;
+          }
+          for (const rule of rules) {
+            if (checked >= 600) return false;
+            checked++;
+            const text = rule.cssText;
+            if (typeof text !== "string") continue;
+            if (text.includes("--tw-")) return true;
+          }
+        }
+      } catch {
+      }
+      return false;
+    }
     function collect(el) {
       const rect = el.getBoundingClientRect();
       const cs = getComputedStyle(el);
@@ -323,6 +363,9 @@ var DesignStudioRuntime = (() => {
         rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
         styles
       };
+      const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
+      if (classes.length > 0) payload.classes = classes;
+      if (detectTailwindPage()) payload.tailwind = true;
       const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
       if (text.length > 0) payload.text = text.slice(0, 2e3);
       const rules = collectSourceRules(el);
@@ -409,6 +452,16 @@ var DesignStudioRuntime = (() => {
             next.after(selectedElement);
             payload = collect(selectedElement);
             postOpApplied(op, void 0, true, void 0, payload, requestId);
+            return;
+          }
+          case "set-classes": {
+            if (!isValidClassListValue(value)) {
+              postOpApplied(op, value, false, "Invalid class list", null, requestId);
+              return;
+            }
+            selectedElement.className = value;
+            payload = collect(selectedElement);
+            postOpApplied(op, value, true, void 0, payload, requestId);
             return;
           }
           default:

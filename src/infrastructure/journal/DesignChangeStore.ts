@@ -80,20 +80,30 @@ export class DesignChangeStore {
   }
 
   recordPending(change: {
-    kind: "text" | "structure";
+    kind: "text" | "structure" | "style";
     selector: string;
     selectors?: string[];
     op?: string;
     text?: string;
+    classes?: string[];
+    previousClasses?: string[];
     note?: string;
   }): DesignChangeRecord {
+    if (change.kind === "style" && (!change.classes || change.classes.length === 0)) {
+      throw new Error("Style class changes need a non-empty class list");
+    }
     const record: DesignChangeRecord = {
       id: randomUUID(),
       ts: new Date().toISOString(),
       kind: change.kind,
       selector: change.selector,
       selectors: change.selectors,
-      details: { op: change.op as never, text: change.text },
+      details: {
+        op: change.op as never,
+        text: change.text,
+        classes: change.classes,
+        previousClasses: change.previousClasses,
+      },
       status: "pending",
       note: change.note,
     };

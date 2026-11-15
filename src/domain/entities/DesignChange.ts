@@ -9,6 +9,10 @@ export interface DesignChangeDetails {
   value?: string;
   op?: ElementOp;
   text?: string;
+  /** Final Tailwind class list for kind "style" class-level changes. */
+  classes?: string[];
+  /** Classes removed/replaced by the edit, for agent context. */
+  previousClasses?: string[];
 }
 
 export interface DesignChangeRecord {
@@ -31,6 +35,9 @@ export interface ElementHandoff {
 }
 
 export function designChangeToPrompt(change: DesignChangeRecord): string {
+  if (change.kind === "style" && change.details.classes) {
+    return `set Tailwind classes on ${change.selector} to \`${change.details.classes.join(" ")}\``;
+  }
   if (change.kind === "style" && change.details.property) {
     return `set CSS ${change.details.property} on ${change.selector} to ${change.details.value}`;
   }

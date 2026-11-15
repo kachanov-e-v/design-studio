@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isRuntimeMessage, PROTOCOL_VERSION } from "./protocol";
+import { isRuntimeMessage, isValidClassListValue, PROTOCOL_VERSION } from "./protocol";
 
 describe("isRuntimeMessage", () => {
   it("accepts valid runtime-ready", () => {
@@ -42,5 +42,20 @@ describe("isRuntimeMessage", () => {
   it("validates text-changed messages", () => {
     expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "Done" })).toBe(true);
     expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "x".repeat(5001) })).toBe(false);
+  });
+  it("validates element payload classes and tailwind flag", () => {
+    const base = { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} };
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, classes: ["p-4", "bg-white"], tailwind: true } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, classes: [] } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, classes: ["bad class"] } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, tailwind: "yes" } })).toBe(false);
+  });
+  it("validates set-classes op values", () => {
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-classes", value: "p-4 bg-white" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-classes" })).toBe(true);
+    expect(isValidClassListValue("p-4 bg-white")).toBe(true);
+    expect(isValidClassListValue("")).toBe(false);
+    expect(isValidClassListValue("a b<c")).toBe(false);
+    expect(isValidClassListValue(Array(31).fill("x").join(" "))).toBe(false);
   });
 });

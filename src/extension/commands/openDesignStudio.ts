@@ -233,6 +233,33 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           panel.webview.postMessage({ type: "journal:result", success: false, message: "Invalid change record" });
           return;
         }
+        if (kind === "style") {
+          const classes = Array.isArray(msg.classes)
+            ? msg.classes.slice(0, 30).map((c: unknown) => String(c)).filter((c: string) => c.length > 0 && c.length <= 100)
+            : [];
+          if (classes.length === 0) {
+            panel.webview.postMessage({ type: "journal:result", success: false, message: "Style class changes need a class list" });
+            return;
+          }
+          const record = store.recordPending({
+            kind: "style",
+            selector,
+            selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
+            classes,
+            previousClasses: Array.isArray(msg.previousClasses)
+              ? msg.previousClasses.slice(0, 30).map((c: unknown) => String(c))
+              : undefined,
+            note: "Tailwind class change made visually in Design Studio, not yet in source",
+          });
+          panel.webview.postMessage({
+            type: "journal:result",
+            success: true,
+            message: `Recorded pending change ${record.id.slice(0, 8)} — your AI agent will pick it up`,
+            changeId: record.id,
+            pendingChanges: store.pendingChanges().length,
+          });
+          return;
+        }
         const record = store.recordPending({
           kind: kind === "text" ? "text" : "structure",
           selector,

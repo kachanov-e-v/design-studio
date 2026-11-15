@@ -70,6 +70,23 @@ describe("DesignChangeStore", () => {
     expect(store.changesSince(after)).toHaveLength(0);
   });
 
+  it("records pending Tailwind class changes with the final class list", () => {
+    const { store } = makeStore();
+    const record = store.recordPending({
+      kind: "style",
+      selector: "button.cta",
+      classes: ["rounded-lg", "bg-blue-500", "px-4"],
+      previousClasses: ["rounded", "bg-gray-100", "px-2"],
+    });
+    expect(record.kind).toBe("style");
+    expect(record.status).toBe("pending");
+    expect(record.details.classes).toEqual(["rounded-lg", "bg-blue-500", "px-4"]);
+    const state = fs.readFileSync(store.statePath, "utf8");
+    expect(state).toContain("rounded-lg bg-blue-500 px-4");
+    expect(state).toContain("button.cta");
+    expect(() => store.recordPending({ kind: "style", selector: "x", classes: [] })).toThrow();
+  });
+
   it("writes and completes element handoff", () => {
     const { store } = makeStore();
     expect(store.readHandoff()).toBeNull();

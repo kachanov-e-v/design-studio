@@ -10,11 +10,14 @@ export interface ElementPayload {
   tag: string;
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
+  classes?: string[];
+  /** true when the page was detected to use Tailwind CSS. */
+  tailwind?: boolean;
   text?: string;
   rules?: SourceRule[];
 }
 
-export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
+export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
 
 export type DevServerKind = "vite" | "next" | "astro" | "webpack" | "static-http" | "unknown";
 

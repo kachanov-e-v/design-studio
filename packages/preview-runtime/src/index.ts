@@ -5,6 +5,7 @@ import {
   type RuntimeMessage,
   type SourceRule,
   isRuntimeMessage,
+  isValidClassListValue,
   STYLE_PROPS,
   STYLE_PROPERTY_PATTERN,
 } from "./protocol.js";
@@ -140,6 +141,39 @@ export function initDesignStudioRuntime(): void {
     return result.length > 0 ? result : undefined;
   }
 
+  /** Tailwind usage flag for the current document, cached per load. */
+  let tailwindDetected: boolean | null = null;
+  function detectTailwindPage(): boolean {
+    if (tailwindDetected === null) tailwindDetected = scanForTailwind();
+    return tailwindDetected;
+  }
+
+  function scanForTailwind(): boolean {
+    try {
+      if (typeof (window as { tailwind?: unknown }).tailwind === "object") return true;
+      if (document.querySelector('script[src*="tailwind"]')) return true;
+      let checked = 0;
+      for (const sheet of document.styleSheets) {
+        let rules: CSSRuleList;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+        for (const rule of rules) {
+          if (checked >= 600) return false;
+          checked++;
+          const text = rule.cssText;
+          if (typeof text !== "string") continue;
+          if (text.includes("--tw-")) return true;
+        }
+      }
+    } catch {
+      // ignore detection failures
+    }
+    return false;
+  }
+
   function collect(el: Element): ElementPayload {
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
@@ -152,6 +186,9 @@ export function initDesignStudioRuntime(): void {
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
       styles,
     };
+    const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
+    if (classes.length > 0) payload.classes = classes;
+    if (detectTailwindPage()) payload.tailwind = true;
     const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
     if (text.length > 0) payload.text = text.slice(0, 2000);
     const rules = collectSourceRules(el);
@@ -245,6 +282,16 @@ export function initDesignStudioRuntime(): void {
           next.after(selectedElement);
           payload = collect(selectedElement);
           postOpApplied(op, undefined, true, undefined, payload, requestId);
+          return;
+        }
+        case "set-classes": {
+          if (!isValidClassListValue(value)) {
+            postOpApplied(op, value, false, "Invalid class list", null, requestId);
+            return;
+          }
+          (selectedElement as HTMLElement).className = value;
+          payload = collect(selectedElement);
+          postOpApplied(op, value, true, undefined, payload, requestId);
           return;
         }
         default:

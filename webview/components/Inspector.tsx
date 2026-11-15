@@ -50,6 +50,11 @@ export function Inspector({
           <div className={styles.selector} title={selected.selector}>
             <strong>Selector:</strong> {selected.selector}
           </div>
+          <div className={styles.selector} title={(selected.classes ?? []).join(" ")}>
+            <strong>Classes:</strong>{" "}
+            {(selected.classes ?? []).length > 0 ? (selected.classes ?? []).join(" ") : "—"}
+            {selected.tailwind === true ? " (Tailwind)" : ""}
+          </div>
 
           <h3 className={styles.subheading}>Text</h3>
           <div className={styles.row}>
@@ -86,6 +91,11 @@ export function Inspector({
           </div>
 
           <h3 className={styles.subheading}>Styles</h3>
+          {selected.tailwind === true && (
+            <div className={styles.selector}>
+              Tailwind detected — style edits become utility classes and are recorded for your AI agent.
+            </div>
+          )}
           <div className={styles.editor}>
             {EDITABLE_STYLE_PROPS.map((prop) => (
               <label key={prop}>
