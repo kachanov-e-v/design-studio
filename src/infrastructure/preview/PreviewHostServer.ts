@@ -31,6 +31,8 @@ export interface PreviewHostServerOptions {
   host?: string;
   /** Workspace root served under /project/ (project binding). */
   projectRoot?: string | null;
+  /** Optional sink for compact proxy diagnostics (redirects, 4xx, 5xx). */
+  trace?: (line: string) => void;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -91,12 +93,14 @@ export class PreviewHostServer {
   private port = 0;
   private readonly host: string;
   private readonly webviewRoot: string;
+  private readonly trace: (line: string) => void;
   private projectRoot: string | null = null;
 
   constructor(options: PreviewHostServerOptions) {
     this.host = options.host ?? "127.0.0.1";
     this.webviewRoot = options.webviewRoot;
     this.projectRoot = options.projectRoot ?? null;
+    this.trace = options.trace ?? (() => {});
   }
 
   setProjectRoot(root: string | null): void {
@@ -211,6 +215,7 @@ export class PreviewHostServer {
         await this.handleProxy(req, res, bareTarget);
         return;
       }
+      this.trace(`[bare] ${method} ${urlPath} -> 405 (no proxy target; referer=${req.headers.referer ?? "-"}, sticky=${this.devTarget ?? "-"})`);
       res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Method not allowed");
       return;
@@ -249,6 +254,7 @@ export class PreviewHostServer {
       await this.handleProxy(req, res, refererTarget);
       return;
     }
+    this.trace(`[bare] GET ${urlPath} -> 404 (no proxy target; referer=${req.headers.referer ?? "-"}, sticky=${this.devTarget ?? "-"})`);
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found");
   }
@@ -417,6 +423,7 @@ export class PreviewHostServer {
     const forwardHeaders = this.buildForwardHeaders(req, parsedTarget);
     const { upstream, errors } = await this.fetchWithFallbacks(target, method, forwardHeaders, body);
     if (!upstream) {
+      this.trace(`[proxy] ${method} ${target} -> 502 (${errors.map((e) => `${e.url}: ${e.message}`).join("; ")})`);
       res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(
         `Preview host could not reach ${target}.\n` +
@@ -436,6 +443,9 @@ export class PreviewHostServer {
     delete headers["set-cookie"];
 
     const status = upstream.status;
+    if (status >= 300) {
+      this.trace(`[proxy] ${method} ${target} -> ${status} loc=${headers["location"] ?? "-"} action-redirect=${headers["x-action-redirect"] ?? "-"} type=${headers["content-type"] ?? "-"}`);
+    }
     // 3xx: pass through with a proxied Location so the browser stays on this origin.
     if (status >= 300 && status < 400) {
       const location = this.rewriteLocation(headers["location"], parsedTarget);

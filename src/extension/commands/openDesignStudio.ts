@@ -14,6 +14,15 @@ const PROJECT_ENTRY_KEY = "designStudio.projectEntry.v3";
 const DEV_SERVER_KEY = "designStudio.devServer.v3";
 
 let sharedHostServer: PreviewHostServer | null = null;
+let sharedTraceChannel: vscode.OutputChannel | null = null;
+
+function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
+  if (!sharedTraceChannel) {
+    sharedTraceChannel = vscode.window.createOutputChannel("Design Studio Preview");
+    context.subscriptions.push(sharedTraceChannel);
+  }
+  return sharedTraceChannel;
+}
 
 const AGENT_CHAT_COMMANDS: Record<string, string[]> = {
   "Kilo Code": ["kilo-code.new.openInTab", "kilo-code.new.focusChatInput", "kilo-code.*"],
@@ -26,9 +35,11 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
     return sharedHostServer;
   }
   try {
+    const traceChannel = ensureTraceChannel(context);
     const server = new PreviewHostServer({
       webviewRoot: path.join(context.extensionUri.fsPath, "dist", "webview"),
       projectRoot: workspaceRoot,
+      trace: (line) => traceChannel.appendLine(`${new Date().toISOString()} ${line}`),
     });
     await server.start();
     sharedHostServer = server;
