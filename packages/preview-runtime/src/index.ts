@@ -292,7 +292,7 @@ export function initDesignStudioRuntime(): void {
             postOpApplied(op, value, false, "Invalid class list", null, requestId);
             return;
           }
-          (selectedElement as HTMLElement).className = value;
+          selectedElement.setAttribute("class", value.trim());
           payload = collect(selectedElement);
           postOpApplied(op, value, true, undefined, payload, requestId);
           return;
@@ -383,7 +383,7 @@ export function initDesignStudioRuntime(): void {
         });
         return;
       }
-      if (typeof value !== "string" || value.length === 0 || value.length > 500) {
+      if (typeof value !== "string" || value.length > 500) {
         postToParent({
           type: "ds:style-applied",
           version: PROTOCOL_VERSION,

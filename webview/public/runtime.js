@@ -81,7 +81,7 @@ var DesignStudioRuntime = (() => {
         return isElementPayload(v.payload);
       case "ds:apply-style":
         if (typeof v.property !== "string" || !STYLE_PROPERTY_PATTERN.test(v.property)) return false;
-        if (typeof v.value !== "string" || v.value.length === 0 || v.value.length > 500) return false;
+        if (typeof v.value !== "string" || v.value.length > 500) return false;
         if (v.requestId !== void 0 && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         if (v.selectors !== void 0) {
@@ -176,10 +176,11 @@ var DesignStudioRuntime = (() => {
     }
     return true;
   }
-  var STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
+  var STYLE_PROPERTY_PATTERN = /^(?:--[a-zA-Z0-9_-]+|-?[a-zA-Z][a-zA-Z0-9-]*)$/;
   function isValidClassListValue(value) {
-    if (typeof value !== "string" || value.length === 0 || value.length > 1e3) return false;
-    const tokens = value.split(" ");
+    if (typeof value !== "string" || value.length > 1e3) return false;
+    if (value.trim() === "") return true;
+    const tokens = value.trim().split(/\s+/);
     if (tokens.length > 30) return false;
     return tokens.every((t) => t.length > 0 && t.length <= 100 && !/["<>\\]/.test(t));
   }
@@ -191,29 +192,66 @@ var DesignStudioRuntime = (() => {
     "min-width",
     "max-width",
     "min-height",
+    "max-height",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "inset",
     "margin",
     "padding",
     "color",
+    "background",
     "background-color",
+    "background-image",
+    "background-size",
+    "background-position",
+    "box-sizing",
     "font-size",
     "font-family",
     "font-weight",
     "line-height",
     "letter-spacing",
     "text-align",
+    "text-decoration",
+    "text-transform",
+    "white-space",
+    "word-break",
+    "vertical-align",
     "flex-direction",
     "justify-content",
     "align-items",
+    "align-self",
     "flex-wrap",
+    "flex",
+    "flex-basis",
+    "flex-grow",
+    "flex-shrink",
+    "order",
     "gap",
+    "grid-template-columns",
+    "grid-template-rows",
+    "grid-column",
+    "grid-row",
     "border",
     "border-color",
     "border-width",
     "border-style",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
     "border-radius",
     "box-shadow",
+    "outline",
     "opacity",
     "overflow",
+    "overflow-x",
+    "overflow-y",
+    "object-fit",
+    "aspect-ratio",
+    "transform",
+    "transition",
     "z-index",
     "cursor"
   ];
@@ -574,7 +612,7 @@ var DesignStudioRuntime = (() => {
               postOpApplied(op, value, false, "Invalid class list", null, requestId);
               return;
             }
-            selectedElement.className = value;
+            selectedElement.setAttribute("class", value.trim());
             payload = collect(selectedElement);
             postOpApplied(op, value, true, void 0, payload, requestId);
             return;
@@ -657,7 +695,7 @@ var DesignStudioRuntime = (() => {
           });
           return;
         }
-        if (typeof value !== "string" || value.length === 0 || value.length > 500) {
+        if (typeof value !== "string" || value.length > 500) {
           postToParent({
             type: "ds:style-applied",
             version: PROTOCOL_VERSION,

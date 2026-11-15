@@ -1,48 +1,39 @@
 import React, { useState } from "react";
 import styles from "./FloatingPanel.module.css";
 import type { ElementPayload } from "../types";
+import type { DesignEdit } from "../../src/domain/entities/DesignEdit";
+import { translate, type Language } from "@design-studio/shared/i18n";
 
 export function FloatingPanel({
   selected,
   status,
-  pendingChanges,
-  onSendToAgent,
-  onCopyMcpConfig,
+  edits,
+  language,
+  onCopyInstruction,
 }: {
   selected: ElementPayload | null;
   status: string;
-  pendingChanges: number;
-  onSendToAgent: (instruction: string) => void;
-  onCopyMcpConfig: () => void;
+  edits: DesignEdit[];
+  language: Language;
+  onCopyInstruction: (instruction: string) => void;
 }): React.ReactElement {
   const [instruction, setInstruction] = useState("");
-
-  const send = () => {
-    if (!selected) return;
-    onSendToAgent(instruction);
-  };
+  const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   return (
-    <div className={styles.panel} role="dialog" aria-label="AI agent handoff">
+    <div className={styles.panel} role="group" aria-label={t("floating.aria")}>
       <input
         className={styles.input}
-        placeholder="Describe what to change on the selected element…"
+        placeholder={t("floating.instruction")}
         value={instruction}
-        onChange={(e) => setInstruction(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") send();
-        }}
+        onChange={(event) => setInstruction(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Enter" && selected) onCopyInstruction(instruction); }}
       />
-      <button type="button" onClick={send} disabled={!selected} title="Send selected element + instruction to the AI agent chat">
-        Send to AI
+      <button className={styles.copyButton} type="button" disabled={!selected} onClick={() => onCopyInstruction(instruction)}>
+        {t("floating.copyInstruction")}
       </button>
-      <button type="button" onClick={onCopyMcpConfig} title="Copy MCP server config for Kilo Code / Mistral Vibe">
-        MCP setup
-      </button>
-      <span className={styles.pending} title=".design-studio/changes.jsonl">
-        Pending: {pendingChanges}
-      </span>
-      {status && <span className={styles.status}>{status}</span>}
+      <span className={styles.count}>{t("floating.edits")}: {edits.length}</span>
+      {status && <span className={styles.status} role="status">{status}</span>}
     </div>
   );
 }

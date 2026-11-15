@@ -62,7 +62,7 @@ export function isRuntimeMessage(value) {
         case "ds:apply-style":
             if (typeof v.property !== "string" || !STYLE_PROPERTY_PATTERN.test(v.property))
                 return false;
-            if (typeof v.value !== "string" || v.value.length === 0 || v.value.length > 500)
+            if (typeof v.value !== "string" || v.value.length > 500)
                 return false;
             if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
                 return false;
@@ -212,12 +212,14 @@ export function isElementPayload(value) {
     }
     return true;
 }
-export const STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
+export const STYLE_PROPERTY_PATTERN = /^(?:--[a-zA-Z0-9_-]+|-?[a-zA-Z][a-zA-Z0-9-]*)$/;
 /** Validate the `value` of a `set-classes` op: a space-separated class list. */
 export function isValidClassListValue(value) {
-    if (typeof value !== "string" || value.length === 0 || value.length > 1000)
+    if (typeof value !== "string" || value.length > 1000)
         return false;
-    const tokens = value.split(" ");
+    if (value.trim() === "")
+        return true;
+    const tokens = value.trim().split(/\s+/);
     if (tokens.length > 30)
         return false;
     return tokens.every((t) => t.length > 0 && t.length <= 100 && !/["<>\\]/.test(t));
@@ -230,29 +232,66 @@ export const STYLE_PROPS = [
     "min-width",
     "max-width",
     "min-height",
+    "max-height",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "inset",
     "margin",
     "padding",
     "color",
+    "background",
     "background-color",
+    "background-image",
+    "background-size",
+    "background-position",
+    "box-sizing",
     "font-size",
     "font-family",
     "font-weight",
     "line-height",
     "letter-spacing",
     "text-align",
+    "text-decoration",
+    "text-transform",
+    "white-space",
+    "word-break",
+    "vertical-align",
     "flex-direction",
     "justify-content",
     "align-items",
+    "align-self",
     "flex-wrap",
+    "flex",
+    "flex-basis",
+    "flex-grow",
+    "flex-shrink",
+    "order",
     "gap",
+    "grid-template-columns",
+    "grid-template-rows",
+    "grid-column",
+    "grid-row",
     "border",
     "border-color",
     "border-width",
     "border-style",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
     "border-radius",
     "box-shadow",
+    "outline",
     "opacity",
     "overflow",
+    "overflow-x",
+    "overflow-y",
+    "object-fit",
+    "aspect-ratio",
+    "transform",
+    "transition",
     "z-index",
     "cursor",
 ];

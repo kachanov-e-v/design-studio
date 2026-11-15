@@ -28,7 +28,7 @@ const MAX_HINTS = 8;
  * Find likely source-file locations for a preview element by searching the
  * workspace for its distinctive tokens: visible text (whole snippet and
  * individual words), element id, and semantic (non-utility) class names.
- * Pure fs-based, no VS Code dependency; best-effort hints for the AI agent.
+ * Pure fs-based, no VS Code dependency; best-effort source hints for prompts.
  */
 export function findSourceHints(root: string, payload: ElementPayload): SourceHint[] {
   const tokens = collectTokens(payload);

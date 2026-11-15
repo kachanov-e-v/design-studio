@@ -40,5 +40,5 @@ export interface PreviewStateMessage {
   projectEntries?: string[];
   devServer?: string;
   devServerSuggestions?: DevServerSuggestion[];
-  pendingChanges?: number;
+  language?: "ru" | "en";
 }
