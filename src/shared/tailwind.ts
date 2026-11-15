@@ -484,6 +484,18 @@ export function resolveTailwindClassList(current: readonly string[], added: read
   return result;
 }
 
+/** True for class names that are Tailwind utility names (not semantic component classes). */
+export function isTailwindUtilityName(cls: string): boolean {
+  return (
+    isFontSizeClassOrArbitrary(cls) ||
+    isFontWeightClass(cls) ||
+    isDisplayClass(cls) ||
+    isTextAlignClass(cls) ||
+    /^(p|m|px|py|pt|pr|pb|pl|mx|my|mt|mr|mb|ml|w|h|min-w|max-w|min-h|max-h|gap|rounded|opacity|bg|text|border|font|flex|justify|items|leading|tracking|z|overflow|cursor|shadow|duration|transition)-/.test(cls) ||
+    /^-[pm][ytrblx]?-/.test(cls)
+  );
+}
+
 /**
  * True when an element's class list looks Tailwind-authored. Used as a
  * fallback when the runtime could not detect Tailwind at page level.
@@ -492,14 +504,7 @@ export function looksLikeTailwindClasses(classes: readonly string[]): boolean {
   if (classes.length === 0) return false;
   let hits = 0;
   for (const c of classes) {
-    if (
-      isFontSizeClassOrArbitrary(c) ||
-      isFontWeightClass(c) ||
-      isDisplayClass(c) ||
-      isTextAlignClass(c) ||
-      /^(p|m|px|py|pt|pr|pb|pl|mx|my|mt|mr|mb|ml|w|h|gap|rounded|opacity|bg|text|border|flex|justify|items|font)-/.test(c) ||
-      /^-[pm][ytrblx]?-/.test(c)
-    ) {
+    if (isTailwindUtilityName(c)) {
       hits++;
     }
   }

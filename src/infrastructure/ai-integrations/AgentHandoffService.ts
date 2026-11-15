@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { ElementPayload } from "../../../packages/preview-runtime/src/protocol";
 import { contextToPrompt, toSelectionContext, type ElementSelectionContext } from "../../domain/entities/DesignElementContext";
+import { findSourceHints } from "./SourceHintFinder";
 import type { DesignChangeStore } from "../journal/DesignChangeStore";
 
 export interface ElementHandoffResult {
@@ -21,14 +22,23 @@ export interface ElementHandoffResult {
 export class AgentHandoffService {
   constructor(
     private readonly store: DesignChangeStore | null,
-    private readonly chatCommandCandidates: Record<string, string[]>
+    private readonly chatCommandCandidates: Record<string, string[]>,
+    private readonly workspaceRoot: string | null = null
   ) {}
 
   async send(element: ElementPayload, instruction: string): Promise<ElementHandoffResult> {
     if (!this.store) {
       return { success: false, agents: [], message: "Open a project folder first" };
     }
-    const ctx: ElementSelectionContext = toSelectionContext(element);
+    let hints: ReturnType<typeof findSourceHints> = [];
+    if (this.workspaceRoot) {
+      try {
+        hints = findSourceHints(this.workspaceRoot, element);
+      } catch {
+        hints = [];
+      }
+    }
+    const ctx: ElementSelectionContext = toSelectionContext(element, hints);
     this.store.writeHandoff(element, instruction);
     const prompt = contextToPrompt(ctx, instruction);
 

@@ -134,7 +134,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
 
   const store = root ? new DesignChangeStore(root) : null;
   const persistence = new StylePersistenceAdapter();
-  const handoffService = new AgentHandoffService(store, AGENT_CHAT_COMMANDS);
+  const handoffService = new AgentHandoffService(store, AGENT_CHAT_COMMANDS, root);
 
   const projectUrl = (): string | null => {
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
