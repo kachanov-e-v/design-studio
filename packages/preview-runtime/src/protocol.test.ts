@@ -24,4 +24,23 @@ describe("isRuntimeMessage", () => {
   it("rejects invalid element payload", () => {
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { selector: "x", tag: "div", rect: { top: NaN, left: 0, width: 1, height: 1 }, styles: {} } })).toBe(false);
   });
+  it("accepts element payload with optional text", () => {
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {}, text: "Hello" } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {}, text: 123 } })).toBe(false);
+  });
+  it("validates apply-op messages", () => {
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "delete" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "New" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "explode" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "duplicate", value: null })).toBe(false);
+  });
+  it("validates op-applied messages", () => {
+    expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "duplicate", success: true, payload: null })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "move-up", success: false, reason: "No previous sibling" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "move-up" })).toBe(false);
+  });
+  it("validates text-changed messages", () => {
+    expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "Done" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "x".repeat(5001) })).toBe(false);
+  });
 });

@@ -13,3 +13,12 @@
 .empty { opacity: 0.7; font-size: 12px; }
 .list li { padding: 4px 6px; border-radius: 4px; cursor: default; }
 .list li:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+.subheading { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin: 10px 0 4px; opacity: 0.8; }
+.selector { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row { display: flex; gap: 4px; margin: 4px 0; }
+.row input { flex: 1; background: var(--vscode-input-background, #3c3c3c); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--vscode-input-border, #555); border-radius: 4px; padding: 2px 6px; }
+.row button { background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+.blockOps { display: flex; flex-wrap: wrap; gap: 4px; }
+.blockOps button { background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ccc); border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 11px; }
+.blockOps button:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+.error { color: #f48771; font-size: 11px; margin-bottom: 6px; }

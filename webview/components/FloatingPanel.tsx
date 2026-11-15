@@ -4,40 +4,44 @@ import type { ElementPayload } from "../types";
 
 export function FloatingPanel({
   selected,
-  lastChange,
   status,
-  onSave,
-  onSendContext,
+  pendingChanges,
+  onSendToAgent,
+  onCopyMcpConfig,
 }: {
   selected: ElementPayload | null;
-  lastChange: { selector: string; property: string; value: string } | null;
   status: string;
-  onSave: () => void;
-  onSendContext: (instruction: string) => void;
+  pendingChanges: number;
+  onSendToAgent: (instruction: string) => void;
+  onCopyMcpConfig: () => void;
 }): React.ReactElement {
   const [instruction, setInstruction] = useState("");
 
-  const sendPersist = () => {
-    if (!lastChange) {
-      return;
-    }
-    onSave();
-  };
   const send = () => {
     if (!selected) return;
-    onSendContext(instruction);
+    onSendToAgent(instruction);
   };
 
   return (
-    <div className={styles.panel} role="dialog" aria-label="Kilo actions">
+    <div className={styles.panel} role="dialog" aria-label="AI agent handoff">
       <input
         className={styles.input}
-        placeholder="Instruction for Kilo"
+        placeholder="Describe what to change on the selected element…"
         value={instruction}
         onChange={(e) => setInstruction(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") send();
+        }}
       />
-      <button type="button" onClick={send}>Copy to Kilo</button>
-      <button type="button" onClick={sendPersist} disabled={!lastChange}>Save to source</button>
+      <button type="button" onClick={send} disabled={!selected} title="Send selected element + instruction to the AI agent chat">
+        Send to AI
+      </button>
+      <button type="button" onClick={onCopyMcpConfig} title="Copy MCP server config for Kilo Code / Mistral Vibe">
+        MCP setup
+      </button>
+      <span className={styles.pending} title=".design-studio/changes.jsonl">
+        Pending: {pendingChanges}
+      </span>
       {status && <span className={styles.status}>{status}</span>}
     </div>
   );

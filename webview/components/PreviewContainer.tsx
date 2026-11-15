@@ -1,10 +1,11 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
-import type { ElementPayload } from "../types";
+import type { ElementOp, ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 
 export interface PreviewContainerHandle {
   applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
+  applyOp: (op: ElementOp, value?: string) => { requestId: string; sessionId: string } | null;
 }
 
 type RuntimeStatus =
@@ -16,6 +17,14 @@ type RuntimeStatus =
   | "protocol-mismatch"
   | "blocked-or-load-error"
   | "error";
+
+export interface OpAppliedInfo {
+  op: ElementOp;
+  value?: string;
+  success: boolean;
+  reason?: string;
+  payload?: ElementPayload | null;
+}
 
 function getTargetOrigin(url: string): string {
   try {
@@ -39,6 +48,10 @@ function makeSessionId(): string {
   return `ds-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function makeRequestId(): string {
+  return makeSessionId();
+}
+
 export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   url: string;
   status: string;
@@ -47,6 +60,8 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   onRefresh: () => void;
   onSelect: (payload: ElementPayload | null) => void;
   onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => void;
+  onOpApplied?: (info: OpAppliedInfo) => void;
+  onTextChanged?: (info: { text: string; payload?: ElementPayload }) => void;
 }>(function PreviewContainer(
   {
     url,
@@ -56,12 +71,16 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onRefresh,
     onSelect,
     onStyleApplied,
+    onOpApplied,
+    onTextChanged,
   },
   ref
 ): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const onSelectRef = useRef(onSelect);
   const onStyleAppliedRef = useRef(onStyleApplied);
+  const onOpAppliedRef = useRef(onOpApplied);
+  const onTextChangedRef = useRef(onTextChanged);
   const onEditModeChangeRef = useRef(onEditModeChange);
   const editModeRef = useRef(editMode);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
@@ -78,6 +97,8 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   useEffect(() => {
     onSelectRef.current = onSelect;
     onStyleAppliedRef.current = onStyleApplied;
+    onOpAppliedRef.current = onOpApplied;
+    onTextChangedRef.current = onTextChanged;
     onEditModeChangeRef.current = onEditModeChange;
     editModeRef.current = editMode;
   });
@@ -131,9 +152,19 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     applyStyle: (property, value) => {
       const iframe = iframeRef.current;
       if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return null;
-      const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+      const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, sessionId: sessionIdRef.current },
+        getTargetOrigin(url)
+      );
+      return { requestId, sessionId: sessionIdRef.current };
+    },
+    applyOp: (op, value) => {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return null;
+      const requestId = makeRequestId();
+      iframe.contentWindow.postMessage(
+        { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, requestId, sessionId: sessionIdRef.current },
         getTargetOrigin(url)
       );
       return { requestId, sessionId: sessionIdRef.current };
@@ -220,6 +251,20 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
           value: data.value,
           payload: data.payload,
         });
+        return;
+      }
+      if (data.type === "ds:op-applied") {
+        onOpAppliedRef.current?.({
+          op: data.op as ElementOp,
+          value: data.value,
+          success: data.success,
+          reason: data.reason,
+          payload: data.payload ?? null,
+        });
+        return;
+      }
+      if (data.type === "ds:text-changed") {
+        onTextChangedRef.current?.({ text: data.text, payload: data.payload });
         return;
       }
       if (data.type === "ds:runtime-error") {

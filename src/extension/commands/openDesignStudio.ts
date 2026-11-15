@@ -1,21 +1,32 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isAllowedUrl } from "../../shared/url";
-import { KiloCodeAdapter } from "../../infrastructure/ai-integrations/kilo-code/KiloCodeAdapter";
+import { isLocalhostUrl } from "../../shared/url";
+import { AgentHandoffService } from "../../infrastructure/ai-integrations/AgentHandoffService";
 import { StylePersistenceAdapter } from "../../infrastructure/persistence/StylePersistenceAdapter";
+import { DesignChangeStore } from "../../infrastructure/journal/DesignChangeStore";
 import { PreviewHostServer } from "../../infrastructure/preview/PreviewHostServer";
-import type { DesignElementContext } from "../../domain/entities/DesignElementContext";
+import type { DesignChangeKind } from "../../domain/entities/DesignChange";
 
-const PREVIEW_URL_KEY = "designStudio.previewUrl.v2";
+const PROJECT_ENTRY_KEY = "designStudio.projectEntry.v3";
+const DEV_SERVER_KEY = "designStudio.devServer.v3";
 
 let sharedHostServer: PreviewHostServer | null = null;
 
-async function ensureHostServer(context: vscode.ExtensionContext): Promise<PreviewHostServer | null> {
-  if (sharedHostServer?.running) return sharedHostServer;
+const AGENT_CHAT_COMMANDS: Record<string, string[]> = {
+  "Kilo Code": ["kilo-code.new.openInTab", "kilo-code.new.focusChatInput", "kilo-code.*"],
+  "Mistral Vibe": ["mistral-vibe.*", "vibe.*"],
+};
+
+async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot: string | null): Promise<PreviewHostServer | null> {
+  if (sharedHostServer?.running) {
+    sharedHostServer.setProjectRoot(workspaceRoot);
+    return sharedHostServer;
+  }
   try {
     const server = new PreviewHostServer({
       webviewRoot: path.join(context.extensionUri.fsPath, "dist", "webview"),
+      projectRoot: workspaceRoot,
     });
     await server.start();
     sharedHostServer = server;
@@ -27,38 +38,54 @@ async function ensureHostServer(context: vscode.ExtensionContext): Promise<Previ
   }
 }
 
-/** Re-point a stored URL at the current preview host instance (ports change between sessions). */
-function migrateStoredUrl(stored: string, hostOrigin: string): string {
-  if (typeof stored !== "string" || stored.length === 0) return stored;
-  try {
-    const u = new URL(stored);
-    const isLocalHostServer = u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost");
-    if (isLocalHostServer && u.pathname.startsWith("/proxy/")) {
-      const target = stored.slice(stored.indexOf("/proxy/") + "/proxy/".length);
-      return `${hostOrigin}/proxy/${target}`;
+function getWorkspaceRoot(): string | null {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) return null;
+  return folders[0].uri.fsPath;
+}
+
+/** Scan the bound project for previewable HTML entry points. */
+export async function findProjectEntries(root: string): Promise<string[]> {
+  const results: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 4 || results.length >= 100) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
-    if (isLocalHostServer && (u.pathname === "/demo.html" || u.pathname === "/__ds-runtime.js")) {
-      return `${hostOrigin}${u.pathname}`;
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (["node_modules", "dist", "build", ".git", ".vscode", ".next", "coverage"].includes(entry.name)) continue;
+        walk(full, depth + 1);
+        continue;
+      }
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(".html") && !entry.name.startsWith(".")) {
+        const rel = path.relative(root, full).replace(/\\/g, "/");
+        results.push(rel);
+      }
     }
-    if (u.hostname.endsWith(".vscode-cdn.net") && u.pathname.endsWith("demo.html")) {
-      return `${hostOrigin}/demo.html`;
-    }
-  } catch {
-    // fall through
-  }
-  if (isAllowedUrl(stored)) {
-    return `${hostOrigin}/proxy/${stored}`;
-  }
-  return stored;
+  };
+  walk(root, 0);
+  results.sort((a, b) => {
+    const at = path.basename(a).toLowerCase() === "index.html" ? 0 : 1;
+    const bt = path.basename(b).toLowerCase() === "index.html" ? 0 : 1;
+    if (at !== bt) return at - bt;
+    return a.localeCompare(b);
+  });
+  return results;
 }
 
 export async function openDesignStudio(context: vscode.ExtensionContext): Promise<void> {
-  const host = await ensureHostServer(context);
+  const root = getWorkspaceRoot();
+  const host = await ensureHostServer(context, root);
 
   const panel = vscode.window.createWebviewPanel(
     "designStudio",
     "Design Studio",
-    vscode.ViewColumn.One,
+    vscode.ViewColumn.Beside,
     {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -68,33 +95,40 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
 
   panel.webview.html = getWebviewHtml(panel.webview, context.extensionUri);
 
-  const adapter = new KiloCodeAdapter();
+  const store = root ? new DesignChangeStore(root) : null;
   const persistence = new StylePersistenceAdapter();
+  const handoffService = new AgentHandoffService(store, AGENT_CHAT_COMMANDS);
 
-  const resolveStoredUrl = (): string => {
-    const stored = context.workspaceState.get<string>(PREVIEW_URL_KEY, "");
-    return host ? migrateStoredUrl(stored, host.origin) : stored;
+  const projectUrl = (): string | null => {
+    const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
+    return host && entry ? `${host.origin}/project/${entry}` : null;
   };
 
-  const postState = () => {
-    const url = resolveStoredUrl();
-    const status = url ? (url.includes("demo.html") ? "demo" : "configured") : "idle";
-    panel.webview.postMessage({ type: "preview:state", url, status });
+  const postState = async () => {
+    const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
+    const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
+    const url = projectUrl() ?? (devServer && host ? `${host.origin}/proxy/${devServer}` : "");
+    const entries = root ? await findProjectEntries(root) : [];
+    const pending = store ? store.pendingChanges().length : 0;
+    panel.webview.postMessage({
+      type: "preview:state",
+      url,
+      status: url ? (url.includes("/project/") ? "project" : "devserver") : "idle",
+      projectRoot: root,
+      projectEntry: entry,
+      projectEntries: entries,
+      devServer,
+      pendingChanges: pending,
+    });
   };
 
   panel.webview.onDidReceiveMessage(async (msg) => {
     try {
       if (!msg || typeof msg.type !== "string") return;
-      if (JSON.stringify(msg).length > 100000) return;
+      if (JSON.stringify(msg).length > 300_000) return;
 
       if (msg.type === "preview:ready") {
-        if (host) {
-          const migrated = resolveStoredUrl();
-          if (migrated !== context.workspaceState.get<string>(PREVIEW_URL_KEY, "")) {
-            await context.workspaceState.update(PREVIEW_URL_KEY, migrated);
-          }
-        }
-        postState();
+        await postState();
         return;
       }
       if (msg.type === "preview:demo") {
@@ -106,26 +140,45 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
             .asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"))
             .toString();
         }
-        await context.workspaceState.update(PREVIEW_URL_KEY, url);
-        postState();
+        await context.workspaceState.update(PROJECT_ENTRY_KEY, "");
+        await context.workspaceState.update(DEV_SERVER_KEY, "");
+        panel.webview.postMessage({ type: "preview:state", url, status: "demo", projectEntries: [] });
         return;
       }
-      if (msg.type === "preview:setUrl") {
-        const url = typeof msg.url === "string" ? msg.url.trim() : "";
-        if (url && !isAllowedUrl(url)) {
-          panel.webview.postMessage({ type: "preview:error", message: "Invalid preview URL" });
+      if (msg.type === "project:setEntry") {
+        const entry = typeof msg.path === "string" ? msg.path.replace(/\\/g, "/").replace(/^\//, "") : "";
+        if (!entry || entry.includes("..")) {
+          panel.webview.postMessage({ type: "preview:error", message: "Invalid project entry" });
           return;
         }
-        const stored = host && url ? `${host.origin}/proxy/${url}` : url;
-        await context.workspaceState.update(PREVIEW_URL_KEY, stored);
-        postState();
+        await context.workspaceState.update(PROJECT_ENTRY_KEY, entry);
+        await context.workspaceState.update(DEV_SERVER_KEY, "");
+        await postState();
+        return;
+      }
+      if (msg.type === "project:setDevServer") {
+        const url = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (url && !isLocalhostUrl(url)) {
+          panel.webview.postMessage({
+            type: "preview:error",
+            message: "Only localhost dev servers of this project are allowed",
+          });
+          return;
+        }
+        await context.workspaceState.update(PROJECT_ENTRY_KEY, "");
+        await context.workspaceState.update(DEV_SERVER_KEY, url);
+        await postState();
         return;
       }
       if (msg.type === "preview:refresh") {
-        postState();
+        await postState();
         return;
       }
       if (msg.type === "style:persist") {
+        if (!store) {
+          panel.webview.postMessage({ type: "persist:result", success: false, message: "Open a project folder first" });
+          return;
+        }
         const change = {
           selector: String(msg.selector ?? ""),
           selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
@@ -133,29 +186,93 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
           value: String(msg.value ?? ""),
         };
         const result = await persistence.apply(change);
-        panel.webview.postMessage({ type: "persist:result", success: result.success, message: result.message, file: result.file });
+        if (result.success) {
+          const record = store.recordStyleApplied({ ...change, file: result.file });
+          panel.webview.postMessage({
+            type: "persist:result",
+            success: true,
+            message: `${result.message} (recorded ${record.id.slice(0, 8)})`,
+            file: result.file,
+            changeId: record.id,
+          });
+        } else {
+          panel.webview.postMessage({ type: "persist:result", success: false, message: result.message });
+        }
         return;
       }
-      if (msg.type === "kilo:sendContext") {
-        const payload = msg.payload;
-        const instruction = typeof msg.instruction === "string" ? msg.instruction : "";
-        if (!payload) {
-          panel.webview.postMessage({ type: "kilo:result", success: false, message: "No element selected" });
+      if (msg.type === "journal:recordChange") {
+        if (!store) {
+          panel.webview.postMessage({ type: "journal:result", success: false, message: "Open a project folder first" });
           return;
         }
-        const ctx: DesignElementContext = {
-          version: "1",
-          selector: String(payload.selector ?? ""),
-          tag: String(payload.tag ?? ""),
-          styles: (payload.styles as Record<string, string>) ?? {},
-          instruction,
-        };
-        const result = await adapter.sendContext(ctx, instruction);
-        panel.webview.postMessage({ type: "kilo:result", success: result.success, message: result.message, method: result.method });
+        const kind = msg.kind as DesignChangeKind;
+        const selector = String(msg.selector ?? "");
+        if (!kind || !selector) {
+          panel.webview.postMessage({ type: "journal:result", success: false, message: "Invalid change record" });
+          return;
+        }
+        const record = store.recordPending({
+          kind: kind === "text" ? "text" : "structure",
+          selector,
+          selectors: Array.isArray(msg.selectors) ? msg.selectors.map((s: unknown) => String(s)) : undefined,
+          op: typeof msg.op === "string" ? msg.op : undefined,
+          text: typeof msg.text === "string" ? msg.text : undefined,
+          note: "made visually in Design Studio, not yet in source",
+        });
+        panel.webview.postMessage({
+          type: "journal:result",
+          success: true,
+          message: `Recorded pending change ${record.id.slice(0, 8)} — your AI agent will pick it up`,
+          changeId: record.id,
+          pendingChanges: store.pendingChanges().length,
+        });
         return;
       }
-    } catch {
-      panel.webview.postMessage({ type: "error", message: "Internal error" });
+      if (msg.type === "ai:sendElement") {
+        if (!store) {
+          panel.webview.postMessage({ type: "ai:result", success: false, message: "Open a project folder first" });
+          return;
+        }
+        const payload = msg.payload;
+        const instruction = typeof msg.instruction === "string" ? msg.instruction : "";
+        if (!payload || typeof payload.selector !== "string") {
+          panel.webview.postMessage({ type: "ai:result", success: false, message: "No element selected" });
+          return;
+        }
+        const result = await handoffService.send(payload, instruction);
+        panel.webview.postMessage({
+          type: "ai:result",
+          success: result.success,
+          message: result.message,
+          agents: result.agents,
+        });
+        return;
+      }
+      if (msg.type === "mcp:copyConfig") {
+        if (!root) {
+          panel.webview.postMessage({ type: "mcp:result", success: false, message: "Open a project folder first" });
+          return;
+        }
+        const serverJs = path.join(context.extensionUri.fsPath, "dist", "mcp-server.js");
+        const config = {
+          mcpServers: {
+            "design-studio": {
+              command: "node",
+              args: [serverJs, root],
+            },
+          },
+        };
+        await vscode.env.clipboard.writeText(JSON.stringify(config, null, 2));
+        panel.webview.postMessage({
+          type: "mcp:result",
+          success: true,
+          message: "MCP config copied. Add it to the Kilo Code / Mistral Vibe MCP settings and reload.",
+        });
+        return;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      panel.webview.postMessage({ type: "error", message });
     }
   });
 }

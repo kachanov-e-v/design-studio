@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PreviewHostServer } from "./PreviewHostServer";
+import { PreviewHostServer, resolveProjectPath } from "./PreviewHostServer";
 import {
   injectIntoHtml,
   rewriteProxiedCss,
@@ -155,5 +155,73 @@ describe("PreviewHostServer", () => {
   it("returns 502 when the target is unreachable", async () => {
     const res = await get(`${server.origin}/proxy/http://127.0.0.1:9/`);
     expect(res.status).toBe(502);
+  });
+
+  it("returns 400 before a project root is bound", async () => {
+    const res = await get(`${server.origin}/project/index.html`);
+    expect(res.status).toBe(400);
+  });
+
+  it("serves project files with runtime injection", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-project-"));
+    fs.mkdirSync(path.join(projectRoot, "assets"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, "index.html"),
+      "<!DOCTYPE html><html><head><title>P</title></head><body><main>Project page</main></body></html>"
+    );
+    fs.writeFileSync(path.join(projectRoot, "assets", "app.js"), "console.log('app')");
+    const projectServer = new PreviewHostServer({ webviewRoot, projectRoot });
+    await projectServer.start();
+    try {
+      const page = await get(`${projectServer.origin}/project/index.html`);
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("Project page");
+      expect(page.body).toContain('<script src="/__ds-runtime.js"></script>');
+      expect(page.headers["content-type"]).toContain("text/html");
+
+      const nested = await get(`${projectServer.origin}/project/assets/app.js`);
+      expect(nested.status).toBe(200);
+      expect(nested.headers["content-type"]).toContain("javascript");
+
+      const dirIndex = await get(`${projectServer.origin}/project/`);
+      expect(dirIndex.status).toBe(200);
+      expect(dirIndex.body).toContain("Project page");
+
+      const missing = await get(`${projectServer.origin}/project/nope.html`);
+      expect(missing.status).toBe(404);
+    } finally {
+      await projectServer.stop();
+    }
+  });
+
+  it("jails project requests inside the project root", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-project-"));
+    fs.writeFileSync(path.join(projectRoot, "index.html"), "<html></html>");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ds-outside-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "no");
+    const projectServer = new PreviewHostServer({ webviewRoot, projectRoot });
+    await projectServer.start();
+    try {
+      const traversal = await get(`${projectServer.origin}/project/%2E%2E/%2E%2E/%2E%2E/etc/passwd`);
+      expect([403, 404]).toContain(traversal.status);
+    } finally {
+      await projectServer.stop();
+    }
+  });
+
+  it("resolveProjectPath rejects escaping paths and accepts project files", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-jail-"));
+    fs.writeFileSync(path.join(projectRoot, "index.html"), "<html></html>");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ds-jail-out-"));
+    const escape = path.relative(projectRoot, path.join(outside, "secret.txt"));
+    const escapeEncoded = escape.split(path.sep).map((s) => encodeURIComponent(s)).join("/");
+
+    expect(resolveProjectPath(projectRoot, "index.html")).toMatchObject({ ok: true });
+    const indexResolution = resolveProjectPath(projectRoot, "");
+    expect(indexResolution.ok).toBe(true);
+    expect(indexResolution.ok && indexResolution.filePath).toContain("index.html");
+    expect(resolveProjectPath(projectRoot, escapeEncoded)).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "%2E%2E%2Fetc")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "a%ZZb")).toMatchObject({ ok: false, reason: "encoding" });
   });
 });

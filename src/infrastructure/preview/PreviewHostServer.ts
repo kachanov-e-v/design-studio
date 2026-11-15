@@ -11,6 +11,61 @@ const FETCH_TIMEOUT_MS = 30_000;
 export interface PreviewHostServerOptions {
   webviewRoot: string;
   host?: string;
+  /** Workspace root served under /project/ (project binding). */
+  projectRoot?: string | null;
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+/** Replace or inject the Design Studio runtime script into project HTML. */
+export function injectRuntimeIntoHtml(html: string, runtimeSrc: string): string {
+  if (html.includes("/__ds-runtime.js")) return html;
+  const tag = `<script src="${runtimeSrc}"></script>`;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (m) => `${m}\n${tag}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (m) => `${m}\n${tag}`);
+  }
+  return `${tag}\n${html}`;
+}
+
+export type ProjectPathResolution =
+  | { ok: true; filePath: string }
+  | { ok: false; reason: "forbidden" | "encoding" };
+
+/** Resolve a project-relative request path inside the project root jail. */
+export function resolveProjectPath(projectRoot: string, relativePathRaw: string): ProjectPathResolution {
+  let relativePath: string;
+  try {
+    relativePath = relativePathRaw ? decodeURIComponent(relativePathRaw) : "index.html";
+  } catch {
+    return { ok: false, reason: "encoding" };
+  }
+  const rootResolved = path.resolve(projectRoot);
+  const resolved = path.resolve(rootResolved, relativePath);
+  const rel = path.relative(rootResolved, resolved);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return { ok: false, reason: "forbidden" };
+  }
+  return { ok: true, filePath: resolved };
 }
 
 export class PreviewHostServer {
@@ -18,10 +73,16 @@ export class PreviewHostServer {
   private port = 0;
   private readonly host: string;
   private readonly webviewRoot: string;
+  private projectRoot: string | null = null;
 
   constructor(options: PreviewHostServerOptions) {
     this.host = options.host ?? "127.0.0.1";
     this.webviewRoot = options.webviewRoot;
+    this.projectRoot = options.projectRoot ?? null;
+  }
+
+  setProjectRoot(root: string | null): void {
+    this.projectRoot = root;
   }
 
   get origin(): string {
@@ -112,8 +173,71 @@ export class PreviewHostServer {
       await this.handleProxy(req, res);
       return;
     }
+    if (urlPath === "/project/" || urlPath === "/project") {
+      this.handleProjectFile(res, "");
+      return;
+    }
+    if (urlPath.startsWith("/project/")) {
+      this.handleProjectFile(res, urlPath.slice("/project/".length));
+      return;
+    }
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found");
+  }
+
+  private handleProjectFile(res: http.ServerResponse, relativePathRaw: string): void {
+    if (!this.projectRoot) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("No project bound to preview host");
+      return;
+    }
+    const resolution = resolveProjectPath(this.projectRoot, relativePathRaw);
+    if (!resolution.ok) {
+      res.writeHead(resolution.reason === "encoding" ? 400 : 403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(resolution.reason === "encoding" ? "Invalid project path encoding" : "Forbidden path");
+      return;
+    }
+    const resolved = resolution.filePath;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+      if (stat.isDirectory()) {
+        const index = path.join(resolved, "index.html");
+        if (fs.existsSync(index)) {
+          this.serveProjectPath(res, index);
+          return;
+        }
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Directory has no index.html");
+        return;
+      }
+    } catch {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(`Not found in project: ${relativePathRaw}`);
+      return;
+    }
+    this.serveProjectPath(res, resolved);
+  }
+
+  private serveProjectPath(res: http.ServerResponse, filePath: string): void {
+    let content: Buffer;
+    try {
+      content = fs.readFileSync(filePath);
+    } catch {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(`Not found in project: ${this.projectRoot ? path.relative(this.projectRoot, filePath) : filePath}`);
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
+    if (ext === ".html" && contentType.startsWith("text/html")) {
+      const injected = injectRuntimeIntoHtml(content.toString("utf8"), "/__ds-runtime.js");
+      res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+      res.end(injected);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+    res.end(content);
   }
 
   private async fetchWithFallbacks(

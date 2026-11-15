@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION,
+  type ElementOp,
   type ElementPayload,
   type RuntimeMessage,
   isRuntimeMessage,
@@ -8,7 +9,7 @@ import {
 } from "./protocol.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
-export type { ElementPayload } from "./protocol.js";
+export type { ElementPayload, ElementOp } from "./protocol.js";
 
 export function getSelector(el: Element): string {
   if (el.id) return `#${CSS.escape(el.id)}`;
@@ -85,6 +86,7 @@ export function initDesignStudioRuntime(): void {
 
   let editMode = false;
   let selectedElement: Element | null = null;
+  let editingElement: HTMLElement | null = null;
   let parentOrigin = "*";
   let activeSessionId = "";
 
@@ -109,13 +111,16 @@ export function initDesignStudioRuntime(): void {
     const cs = getComputedStyle(el);
     const styles: Record<string, string> = {};
     for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
-    return {
+    const payload: ElementPayload = {
       selector: getSelector(el),
       selectors: getSelectorCandidates(el),
       tag: el.tagName.toLowerCase(),
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
       styles,
     };
+    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    if (text.length > 0) payload.text = text.slice(0, 2000);
+    return payload;
   }
 
   function postToParent(msg: RuntimeMessage): void {
@@ -135,6 +140,113 @@ export function initDesignStudioRuntime(): void {
     if (el === document.body || el === document.documentElement) return;
     const payload = collect(el);
     postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || undefined });
+  }
+
+  function postOpApplied(op: ElementOp, value: string | undefined, success: boolean, reason: string | undefined, payload: ElementPayload | null | undefined, requestId?: string): void {
+    postToParent({
+      type: "ds:op-applied",
+      version: PROTOCOL_VERSION,
+      op,
+      value,
+      success,
+      reason,
+      payload,
+      requestId,
+      sessionId: activeSessionId || undefined,
+    });
+  }
+
+  function applyElementOp(op: ElementOp, value: string | undefined, requestId?: string): void {
+    if (!selectedElement) {
+      postOpApplied(op, value, false, "No selected element", null, requestId);
+      return;
+    }
+    let payload: ElementPayload | null = null;
+    try {
+      switch (op) {
+        case "set-text": {
+          const text = typeof value === "string" ? value.slice(0, 5000) : "";
+          selectedElement.textContent = text;
+          payload = collect(selectedElement);
+          postOpApplied(op, text, true, undefined, payload, requestId);
+          return;
+        }
+        case "delete": {
+          const parent = selectedElement.parentElement;
+          selectedElement.remove();
+          selectedElement = parent && parent !== document.body ? parent : null;
+          payload = selectedElement ? collect(selectedElement) : null;
+          postOpApplied(op, undefined, true, undefined, payload, requestId);
+          return;
+        }
+        case "duplicate": {
+          const clone = selectedElement.cloneNode(true) as HTMLElement;
+          if (clone.id) clone.removeAttribute("id");
+          clone.setAttribute("data-ds-clone", Date.now().toString(36));
+          selectedElement.after(clone);
+          selectedElement = clone;
+          payload = collect(clone);
+          postOpApplied(op, undefined, true, undefined, payload, requestId);
+          return;
+        }
+        case "move-up": {
+          const prev = selectedElement.previousElementSibling;
+          if (!prev) {
+            postOpApplied(op, undefined, false, "No previous sibling", payload, requestId);
+            return;
+          }
+          selectedElement.parentElement?.insertBefore(selectedElement, prev);
+          payload = collect(selectedElement);
+          postOpApplied(op, undefined, true, undefined, payload, requestId);
+          return;
+        }
+        case "move-down": {
+          const next = selectedElement.nextElementSibling;
+          if (!next) {
+            postOpApplied(op, undefined, false, "No next sibling", payload, requestId);
+            return;
+          }
+          next.after(selectedElement);
+          payload = collect(selectedElement);
+          postOpApplied(op, undefined, true, undefined, payload, requestId);
+          return;
+        }
+        default:
+          postOpApplied(op, value, false, "Unknown op", null, requestId);
+      }
+    } catch {
+      postOpApplied(op, value, false, "Failed to apply op", null, requestId);
+    }
+  }
+
+  function postTextChanged(el: Element): void {
+    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 5000);
+    postToParent({
+      type: "ds:text-changed",
+      version: PROTOCOL_VERSION,
+      text,
+      payload: collect(el),
+      sessionId: activeSessionId || undefined,
+    });
+  }
+
+  function startInlineEdit(el: Element): void {
+    if (!(el instanceof HTMLElement)) return;
+    if (el.isContentEditable) return;
+    editingElement = el;
+    el.contentEditable = "true";
+    el.setAttribute("data-ds-editing", "");
+    el.focus({ preventScroll: true });
+  }
+
+  function endInlineEdit(cancel: boolean): void {
+    const el = editingElement;
+    if (!el) return;
+    el.contentEditable = "false";
+    el.removeAttribute("data-ds-editing");
+    editingElement = null;
+    if (cancel) return;
+    postTextChanged(el);
   }
 
   window.addEventListener("message", (event) => {
@@ -239,7 +351,56 @@ export function initDesignStudioRuntime(): void {
       }
       return;
     }
+    if (msg.type === "ds:apply-op") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      applyElementOp(msg.op, msg.value, msg.requestId);
+      return;
+    }
   });
+
+  document.addEventListener(
+    "dblclick",
+    (e) => {
+      if (!editMode) return;
+      const target = toElement(e.target);
+      if (!target) return;
+      if (isDesignStudioElement(target)) return;
+      if (target === document.body || target === document.documentElement) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectedElement = target;
+      sendHoverOrSelect("ds:select", target);
+      startInlineEdit(target);
+    },
+    true
+  );
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (!editingElement) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        endInlineEdit(true);
+      } else if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        endInlineEdit(false);
+      }
+    },
+    true
+  );
+
+  document.addEventListener(
+    "focusout",
+    (e) => {
+      if (!editingElement) return;
+      if (e.target !== editingElement) return;
+      endInlineEdit(false);
+    },
+    true
+  );
 
   let lastHover = 0;
   document.addEventListener(
@@ -260,6 +421,7 @@ export function initDesignStudioRuntime(): void {
     "click",
     (e) => {
       if (!editMode) return;
+      if (editingElement) return;
       const target = toElement(e.target);
       if (!target) return;
       if (isDesignStudioElement(target)) return;

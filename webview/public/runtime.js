@@ -29,6 +29,7 @@ var DesignStudioRuntime = (() => {
 
   // src/protocol.ts
   var PROTOCOL_VERSION = "1";
+  var ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down"];
   var RUNTIME_TYPES = /* @__PURE__ */ new Set([
     "ds:runtime-ready",
     "ds:ping",
@@ -39,6 +40,9 @@ var DesignStudioRuntime = (() => {
     "ds:select",
     "ds:apply-style",
     "ds:style-applied",
+    "ds:apply-op",
+    "ds:op-applied",
+    "ds:text-changed",
     "ds:runtime-error"
   ]);
   function isFiniteNumber(value) {
@@ -94,6 +98,30 @@ var DesignStudioRuntime = (() => {
       case "ds:runtime-error":
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return typeof v.message === "string" && v.message.length <= 500;
+      case "ds:apply-op":
+        if (!v.op || typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op)) return false;
+        if (v.value !== void 0 && (typeof v.value !== "string" || v.value.length > 5e3)) return false;
+        if (v.requestId !== void 0 && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        if (v.selectors !== void 0) {
+          if (!Array.isArray(v.selectors) || v.selectors.length > 20) return false;
+          if (!v.selectors.every((s) => typeof s === "string" && s.length > 0 && s.length <= 500)) return false;
+        }
+        return true;
+      case "ds:op-applied":
+        if (typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op)) return false;
+        if (v.value !== void 0 && (typeof v.value !== "string" || v.value.length > 5e3)) return false;
+        if (typeof v.success !== "boolean") return false;
+        if (v.reason !== void 0 && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
+        if (v.payload !== void 0 && v.payload !== null && !isElementPayload(v.payload)) return false;
+        if (v.requestId !== void 0 && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
+      case "ds:text-changed":
+        if (typeof v.text !== "string" || v.text.length > 5e3) return false;
+        if (v.payload !== void 0 && !isElementPayload(v.payload)) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
       default:
         return false;
     }
@@ -115,7 +143,9 @@ var DesignStudioRuntime = (() => {
     const styles = v.styles;
     const keys = Object.keys(styles);
     if (keys.length > 64) return false;
-    return keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500);
+    if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500)) return false;
+    if (v.text !== void 0 && (typeof v.text !== "string" || v.text.length > 2e3)) return false;
+    return true;
   }
   var STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
   var STYLE_PROPS = [
@@ -123,15 +153,34 @@ var DesignStudioRuntime = (() => {
     "position",
     "width",
     "height",
+    "min-width",
+    "max-width",
+    "min-height",
     "margin",
     "padding",
     "color",
     "background-color",
     "font-size",
     "font-family",
+    "font-weight",
+    "line-height",
+    "letter-spacing",
+    "text-align",
+    "flex-direction",
+    "justify-content",
+    "align-items",
+    "flex-wrap",
+    "gap",
     "border",
+    "border-color",
+    "border-width",
+    "border-style",
     "border-radius",
-    "opacity"
+    "box-shadow",
+    "opacity",
+    "overflow",
+    "z-index",
+    "cursor"
   ];
 
   // src/index.ts
@@ -204,6 +253,7 @@ var DesignStudioRuntime = (() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     let editMode = false;
     let selectedElement = null;
+    let editingElement = null;
     let parentOrigin = "*";
     let activeSessionId = "";
     const isDesignStudioElement = (el) => {
@@ -225,13 +275,16 @@ var DesignStudioRuntime = (() => {
       const cs = getComputedStyle(el);
       const styles = {};
       for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
-      return {
+      const payload = {
         selector: getSelector(el),
         selectors: getSelectorCandidates(el),
         tag: el.tagName.toLowerCase(),
         rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
         styles
       };
+      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text.length > 0) payload.text = text.slice(0, 2e3);
+      return payload;
     }
     function postToParent(msg) {
       try {
@@ -246,6 +299,108 @@ var DesignStudioRuntime = (() => {
       if (el === document.body || el === document.documentElement) return;
       const payload = collect(el);
       postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || void 0 });
+    }
+    function postOpApplied(op, value, success, reason, payload, requestId) {
+      postToParent({
+        type: "ds:op-applied",
+        version: PROTOCOL_VERSION,
+        op,
+        value,
+        success,
+        reason,
+        payload,
+        requestId,
+        sessionId: activeSessionId || void 0
+      });
+    }
+    function applyElementOp(op, value, requestId) {
+      if (!selectedElement) {
+        postOpApplied(op, value, false, "No selected element", null, requestId);
+        return;
+      }
+      let payload = null;
+      try {
+        switch (op) {
+          case "set-text": {
+            const text = typeof value === "string" ? value.slice(0, 5e3) : "";
+            selectedElement.textContent = text;
+            payload = collect(selectedElement);
+            postOpApplied(op, text, true, void 0, payload, requestId);
+            return;
+          }
+          case "delete": {
+            const parent = selectedElement.parentElement;
+            selectedElement.remove();
+            selectedElement = parent && parent !== document.body ? parent : null;
+            payload = selectedElement ? collect(selectedElement) : null;
+            postOpApplied(op, void 0, true, void 0, payload, requestId);
+            return;
+          }
+          case "duplicate": {
+            const clone = selectedElement.cloneNode(true);
+            if (clone.id) clone.removeAttribute("id");
+            clone.setAttribute("data-ds-clone", Date.now().toString(36));
+            selectedElement.after(clone);
+            selectedElement = clone;
+            payload = collect(clone);
+            postOpApplied(op, void 0, true, void 0, payload, requestId);
+            return;
+          }
+          case "move-up": {
+            const prev = selectedElement.previousElementSibling;
+            if (!prev) {
+              postOpApplied(op, void 0, false, "No previous sibling", payload, requestId);
+              return;
+            }
+            selectedElement.parentElement?.insertBefore(selectedElement, prev);
+            payload = collect(selectedElement);
+            postOpApplied(op, void 0, true, void 0, payload, requestId);
+            return;
+          }
+          case "move-down": {
+            const next = selectedElement.nextElementSibling;
+            if (!next) {
+              postOpApplied(op, void 0, false, "No next sibling", payload, requestId);
+              return;
+            }
+            next.after(selectedElement);
+            payload = collect(selectedElement);
+            postOpApplied(op, void 0, true, void 0, payload, requestId);
+            return;
+          }
+          default:
+            postOpApplied(op, value, false, "Unknown op", null, requestId);
+        }
+      } catch {
+        postOpApplied(op, value, false, "Failed to apply op", null, requestId);
+      }
+    }
+    function postTextChanged(el) {
+      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 5e3);
+      postToParent({
+        type: "ds:text-changed",
+        version: PROTOCOL_VERSION,
+        text,
+        payload: collect(el),
+        sessionId: activeSessionId || void 0
+      });
+    }
+    function startInlineEdit(el) {
+      if (!(el instanceof HTMLElement)) return;
+      if (el.isContentEditable) return;
+      editingElement = el;
+      el.contentEditable = "true";
+      el.setAttribute("data-ds-editing", "");
+      el.focus({ preventScroll: true });
+    }
+    function endInlineEdit(cancel) {
+      const el = editingElement;
+      if (!el) return;
+      el.contentEditable = "false";
+      el.removeAttribute("data-ds-editing");
+      editingElement = null;
+      if (cancel) return;
+      postTextChanged(el);
     }
     window.addEventListener("message", (event) => {
       if (event.source !== window.parent) return;
@@ -345,7 +500,53 @@ var DesignStudioRuntime = (() => {
         }
         return;
       }
+      if (msg.type === "ds:apply-op") {
+        if (activeSessionId && msg.sessionId !== activeSessionId) return;
+        applyElementOp(msg.op, msg.value, msg.requestId);
+        return;
+      }
     });
+    document.addEventListener(
+      "dblclick",
+      (e) => {
+        if (!editMode) return;
+        const target = toElement(e.target);
+        if (!target) return;
+        if (isDesignStudioElement(target)) return;
+        if (target === document.body || target === document.documentElement) return;
+        e.preventDefault();
+        e.stopPropagation();
+        selectedElement = target;
+        sendHoverOrSelect("ds:select", target);
+        startInlineEdit(target);
+      },
+      true
+    );
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (!editingElement) return;
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          endInlineEdit(true);
+        } else if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          endInlineEdit(false);
+        }
+      },
+      true
+    );
+    document.addEventListener(
+      "focusout",
+      (e) => {
+        if (!editingElement) return;
+        if (e.target !== editingElement) return;
+        endInlineEdit(false);
+      },
+      true
+    );
     let lastHover = 0;
     document.addEventListener(
       "mouseover",
@@ -364,6 +565,7 @@ var DesignStudioRuntime = (() => {
       "click",
       (e) => {
         if (!editMode) return;
+        if (editingElement) return;
         const target = toElement(e.target);
         if (!target) return;
         if (isDesignStudioElement(target)) return;

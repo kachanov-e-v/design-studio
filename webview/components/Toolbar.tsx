@@ -1,70 +1,92 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState } from "react";
 import styles from "./Toolbar.module.css";
 import { postToExtension } from "../bridge";
-import { isAllowedUrl } from "@design-studio/shared/url";
 
 export function Toolbar({
-  onSetUrl,
-  currentUrl,
+  projectRoot,
+  projectEntry,
+  projectEntries,
+  devServer,
   editMode,
   onInspect,
   onSave,
   canSave,
 }: {
-  onSetUrl: (url: string) => void;
-  currentUrl: string;
+  projectRoot?: string | null;
+  projectEntry?: string;
+  projectEntries?: string[];
+  devServer?: string;
   editMode: boolean;
   onInspect: () => void;
   onSave: () => void;
   canSave?: boolean;
 }): React.ReactElement {
-  const [value, setValue] = useState(currentUrl);
-  const [error, setError] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [devServerValue, setDevServerValue] = useState(devServer ?? "");
+  const [showDevServer, setShowDevServer] = useState(Boolean(devServer));
 
-  useEffect(() => {
-    if (document.activeElement !== inputRef.current) {
-      setValue(currentUrl);
-    }
-  }, [currentUrl]);
-
-  const handleLoad = () => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      setError("Enter a URL");
+  const handleEntryChange = (value: string) => {
+    if (value === "__devserver") {
+      setShowDevServer(true);
       return;
     }
-    if (!isAllowedUrl(trimmed)) {
-      setError("Invalid URL (http/https only)");
+    if (value === "__demo") {
+      postToExtension({ type: "preview:demo" });
       return;
     }
-    setError("");
-    onSetUrl(trimmed);
+    if (value) postToExtension({ type: "project:setEntry", path: value });
+  };
+
+  const handleDevServerSubmit = () => {
+    postToExtension({ type: "project:setDevServer", url: devServerValue.trim() });
   };
 
   return (
     <header className={styles.toolbar} role="toolbar" aria-label="Design Studio toolbar">
       <span className={styles.title}>Design Studio</span>
-      <div className={styles.urlBar}>
-        <input
-          ref={inputRef}
-          type="url"
-          placeholder="Preview URL"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleLoad();
-          }}
-        />
-        <button type="button" onClick={handleLoad}>Load</button>
-        {error && <span className={styles.error}>{error}</span>}
-      </div>
+      {projectRoot ? (
+        <div className={styles.urlBar}>
+          <label className={styles.entryLabel}>
+            Project
+            <select
+              value={showDevServer ? "__devserver" : projectEntry ?? ""}
+              onChange={(e) => handleEntryChange(e.target.value)}
+              aria-label="Bound project page"
+            >
+              {showDevServer && <option value="__devserver">Dev server: {devServerValue || "…"}</option>}
+              <option value="__demo">Built-in Demo</option>
+              {(projectEntries ?? []).map((entry) => (
+                <option key={entry} value={entry}>
+                  {entry}
+                </option>
+              ))}
+            </select>
+          </label>
+          {showDevServer ? (
+            <>
+              <input
+                type="url"
+                placeholder="http://localhost:5173 (project dev server)"
+                value={devServerValue}
+                onChange={(e) => setDevServerValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleDevServerSubmit();
+                }}
+              />
+              <button type="button" onClick={handleDevServerSubmit}>Use</button>
+              <button type="button" onClick={() => setShowDevServer(false)}>Files</button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setShowDevServer(true)}>Dev server…</button>
+          )}
+        </div>
+      ) : (
+        <span className={styles.error}>Open a project folder to bind Design Studio</span>
+      )}
       <nav className={styles.actions}>
-        <button type="button" onClick={() => postToExtension({ type: "preview:demo" })}>Demo</button>
-        <button type="button" onClick={onInspect} aria-pressed={editMode} title="Toggle edit mode">
-          {editMode ? "Inspect: On" : "Inspect"}
+        <button type="button" onClick={onInspect} aria-pressed={editMode} title="Toggle edit mode (hover, click, double-click to edit text)">
+          {editMode ? "Edit: On" : "Edit"}
         </button>
-        <button type="button" onClick={onSave} disabled={!canSave} title="Save last style change to source">Save</button>
+        <button type="button" onClick={onSave} disabled={!canSave} title="Save pending changes to source and journal">Save</button>
       </nav>
     </header>
   );

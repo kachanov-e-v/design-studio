@@ -1,4 +1,5 @@
 export const PROTOCOL_VERSION = "1";
+export const ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down"];
 const RUNTIME_TYPES = new Set([
     "ds:runtime-ready",
     "ds:ping",
@@ -9,8 +10,12 @@ const RUNTIME_TYPES = new Set([
     "ds:select",
     "ds:apply-style",
     "ds:style-applied",
+    "ds:apply-op",
+    "ds:op-applied",
+    "ds:text-changed",
     "ds:runtime-error",
 ]);
+;
 function isFiniteNumber(value) {
     return typeof value === "number" && Number.isFinite(value);
 }
@@ -90,6 +95,46 @@ export function isRuntimeMessage(value) {
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return typeof v.message === "string" && v.message.length <= 500;
+        case "ds:apply-op":
+            if (!v.op || typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op))
+                return false;
+            if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000))
+                return false;
+            if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
+                return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            if (v.selectors !== undefined) {
+                if (!Array.isArray(v.selectors) || v.selectors.length > 20)
+                    return false;
+                if (!v.selectors.every((s) => typeof s === "string" && s.length > 0 && s.length <= 500))
+                    return false;
+            }
+            return true;
+        case "ds:op-applied":
+            if (typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op))
+                return false;
+            if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000))
+                return false;
+            if (typeof v.success !== "boolean")
+                return false;
+            if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500))
+                return false;
+            if (v.payload !== undefined && v.payload !== null && !isElementPayload(v.payload))
+                return false;
+            if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
+                return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            return true;
+        case "ds:text-changed":
+            if (typeof v.text !== "string" || v.text.length > 5000)
+                return false;
+            if (v.payload !== undefined && !isElementPayload(v.payload))
+                return false;
+            if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
+                return false;
+            return true;
         default:
             return false;
     }
@@ -121,7 +166,11 @@ export function isElementPayload(value) {
     const keys = Object.keys(styles);
     if (keys.length > 64)
         return false;
-    return keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500);
+    if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && styles[k].length <= 500))
+        return false;
+    if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000))
+        return false;
+    return true;
 }
 export const STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
 export const STYLE_PROPS = [
@@ -129,13 +178,32 @@ export const STYLE_PROPS = [
     "position",
     "width",
     "height",
+    "min-width",
+    "max-width",
+    "min-height",
     "margin",
     "padding",
     "color",
     "background-color",
     "font-size",
     "font-family",
+    "font-weight",
+    "line-height",
+    "letter-spacing",
+    "text-align",
+    "flex-direction",
+    "justify-content",
+    "align-items",
+    "flex-wrap",
+    "gap",
     "border",
+    "border-color",
+    "border-width",
+    "border-style",
     "border-radius",
+    "box-shadow",
     "opacity",
+    "overflow",
+    "z-index",
+    "cursor",
 ];

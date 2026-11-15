@@ -6,6 +6,41 @@ export interface ElementPayload {
   tag: string;
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
+  text?: string;
+}
+
+export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
+
+export const ELEMENT_OPS: readonly ElementOp[] = ["set-text", "delete", "duplicate", "move-up", "move-down"];
+
+export interface ApplyOpMessage {
+  type: "ds:apply-op";
+  version: string;
+  op: ElementOp;
+  value?: string;
+  requestId?: string;
+  sessionId?: string;
+  selectors?: string[];
+}
+
+export interface OpAppliedMessage {
+  type: "ds:op-applied";
+  version: string;
+  op: ElementOp;
+  value?: string;
+  success: boolean;
+  reason?: string;
+  payload?: ElementPayload | null;
+  requestId?: string;
+  sessionId?: string;
+}
+
+export interface TextChangedMessage {
+  type: "ds:text-changed";
+  version: string;
+  text: string;
+  payload?: ElementPayload;
+  sessionId?: string;
 }
 
 export interface RuntimeReadyMessage {
@@ -96,6 +131,9 @@ export type RuntimeMessage =
   | SelectMessage
   | ApplyStyleMessage
   | StyleAppliedMessage
+  | ApplyOpMessage
+  | OpAppliedMessage
+  | TextChangedMessage
   | RuntimeErrorMessage;
 
 const RUNTIME_TYPES = new Set([
@@ -108,8 +146,11 @@ const RUNTIME_TYPES = new Set([
   "ds:select",
   "ds:apply-style",
   "ds:style-applied",
+  "ds:apply-op",
+  "ds:op-applied",
+  "ds:text-changed",
   "ds:runtime-error",
-]);
+]);;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -165,6 +206,30 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
     case "ds:runtime-error":
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.message === "string" && v.message.length <= 500;
+    case "ds:apply-op":
+      if (!v.op || typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op as ElementOp)) return false;
+      if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000)) return false;
+      if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      if (v.selectors !== undefined) {
+        if (!Array.isArray(v.selectors) || v.selectors.length > 20) return false;
+        if (!v.selectors.every((s) => typeof s === "string" && s.length > 0 && s.length <= 500)) return false;
+      }
+      return true;
+    case "ds:op-applied":
+      if (typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op as ElementOp)) return false;
+      if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000)) return false;
+      if (typeof v.success !== "boolean") return false;
+      if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
+      if (v.payload !== undefined && v.payload !== null && !isElementPayload(v.payload)) return false;
+      if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:text-changed":
+      if (typeof v.text !== "string" || v.text.length > 5000) return false;
+      if (v.payload !== undefined && !isElementPayload(v.payload)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
     default:
       return false;
   }
@@ -187,7 +252,9 @@ export function isElementPayload(value: unknown): value is ElementPayload {
   const styles = v.styles as Record<string, unknown>;
   const keys = Object.keys(styles);
   if (keys.length > 64) return false;
-  return keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && (styles[k] as string).length <= 500);
+  if (!keys.every((k) => typeof k === "string" && k.length <= 64 && typeof styles[k] === "string" && (styles[k] as string).length <= 500)) return false;
+  if (v.text !== undefined && (typeof v.text !== "string" || v.text.length > 2000)) return false;
+  return true;
 }
 
 export const STYLE_PROPERTY_PATTERN = /^[a-zA-Z-]+$/;
@@ -196,13 +263,32 @@ export const STYLE_PROPS = [
   "position",
   "width",
   "height",
+  "min-width",
+  "max-width",
+  "min-height",
   "margin",
   "padding",
   "color",
   "background-color",
   "font-size",
   "font-family",
+  "font-weight",
+  "line-height",
+  "letter-spacing",
+  "text-align",
+  "flex-direction",
+  "justify-content",
+  "align-items",
+  "flex-wrap",
+  "gap",
   "border",
+  "border-color",
+  "border-width",
+  "border-style",
   "border-radius",
+  "box-shadow",
   "opacity",
+  "overflow",
+  "z-index",
+  "cursor",
 ];
