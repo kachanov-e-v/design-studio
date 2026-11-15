@@ -62,6 +62,7 @@ export function App(): React.ReactElement {
           projectEntry: msg.projectEntry,
           projectEntries: msg.projectEntries,
           devServer: msg.devServer,
+          devServerSuggestions: msg.devServerSuggestions,
           pendingChanges: msg.pendingChanges,
         });
       } else if (msg.type === "preview:error") {
@@ -238,6 +239,7 @@ export function App(): React.ReactElement {
         projectEntry={state.projectEntry}
         projectEntries={state.projectEntries}
         devServer={state.devServer}
+        devServerSuggestions={state.devServerSuggestions}
         editMode={editMode}
         onInspect={() => setEditMode((v) => !v)}
         onSave={handleSave}

@@ -6,6 +6,7 @@ import { AgentHandoffService } from "../../infrastructure/ai-integrations/AgentH
 import { StylePersistenceAdapter } from "../../infrastructure/persistence/StylePersistenceAdapter";
 import { DesignChangeStore } from "../../infrastructure/journal/DesignChangeStore";
 import { PreviewHostServer } from "../../infrastructure/preview/PreviewHostServer";
+import { detectDevServers, type DevServerCandidate } from "../../infrastructure/preview/DevServerDetector";
 import type { DesignChangeKind } from "../../domain/entities/DesignChange";
 
 const PROJECT_ENTRY_KEY = "designStudio.projectEntry.v3";
@@ -109,7 +110,10 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
     const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
     const url = projectUrl() ?? (devServer && host ? `${host.origin}/proxy/${devServer}` : "");
     const entries = root ? await findProjectEntries(root) : [];
-    const pending = store ? store.pendingChanges().length : 0;
+    const [pending, devServerSuggestions] = await Promise.all([
+      Promise.resolve(store ? store.pendingChanges().length : 0),
+      devServer || entry ? Promise.resolve([] as DevServerCandidate[]) : root ? detectDevServers(root) : Promise.resolve([] as DevServerCandidate[]),
+    ]);
     panel.webview.postMessage({
       type: "preview:state",
       url,
@@ -118,6 +122,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
       projectEntry: entry,
       projectEntries: entries,
       devServer,
+      devServerSuggestions,
       pendingChanges: pending,
     });
   };

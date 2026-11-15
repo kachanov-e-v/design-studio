@@ -25,7 +25,7 @@ Each EPIC has completion criteria; do not start next without explicit command.
 
 ## Improvement backlog (prioritized)
 
-1. **Autodetect dev server** — read workspace `package.json` scripts (`next dev`, `vite`, etc.), propose the binding URL automatically instead of manual entry. Cheapest win.
+1. **Autodetect dev server** (done) — reads workspace `package.json` scripts (`next dev`, `vite`, `react-scripts`, `astro`, etc., incl. `npm run x` references and explicit `-p/--port`), probes ports, and offers the candidate in the project dropdown before manual entry.
 2. **CSS persistence via dev-source maps** — Next.js dev serves sourcemaps for CSS; map hashed CSS Modules class names in the DOM back to `*.module.css` sources, so Save works for CSS Modules too. Highest value.
 3. **Tailwind inline edits** — instead of raw CSS properties, translate style edits into utility-class changes (or hand off to the agent with the target class list).
 4. **Structural DOM→source mapping** — for pure HTML projects, apply move/duplicate/delete directly to the HTML file with a position-based mapping; frameworks keep the MCP/agent path.

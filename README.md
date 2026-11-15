@@ -58,8 +58,9 @@ Launch Extension Development Host: open project in VS Code, press F5.
 ## Usage
 
 1. Command Palette → "Design Studio: Open Design Studio".
-2. Choose a project entry (HTML file) from the dropdown — or "Dev server…" to
-   bind the project's localhost dev server. Demo is available for a quick check.
+2. Choose a project entry (HTML file) from the dropdown — the project's dev
+   server is detected from `package.json` and offered automatically, or use
+   "Dev server…" to bind it manually. Demo is available for a quick check.
 3. Toggle **Edit** mode. Click to select; double-click to edit text; use the
    Inspector for styles and block ops.
 4. Press **Save** to commit style edits to source; block/text edits are

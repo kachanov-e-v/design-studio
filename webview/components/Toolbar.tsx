@@ -1,12 +1,14 @@
 import React, { useState } from "react";
 import styles from "./Toolbar.module.css";
 import { postToExtension } from "../bridge";
+import type { DevServerSuggestion } from "../types";
 
 export function Toolbar({
   projectRoot,
   projectEntry,
   projectEntries,
   devServer,
+  devServerSuggestions,
   editMode,
   onInspect,
   onSave,
@@ -16,6 +18,7 @@ export function Toolbar({
   projectEntry?: string;
   projectEntries?: string[];
   devServer?: string;
+  devServerSuggestions?: DevServerSuggestion[];
   editMode: boolean;
   onInspect: () => void;
   onSave: () => void;
@@ -24,9 +27,17 @@ export function Toolbar({
   const [devServerValue, setDevServerValue] = useState(devServer ?? "");
   const [showDevServer, setShowDevServer] = useState(Boolean(devServer));
 
+  const suggestions = devServerSuggestions ?? [];
+  const suggested = (suggestions.find((s) => s.running) ?? suggestions[0] ?? null);
+
   const handleEntryChange = (value: string) => {
     if (value === "__devserver") {
       setShowDevServer(true);
+      setDevServerValue((current) => current || suggested?.url || "");
+      return;
+    }
+    if (value.startsWith("__suggest:")) {
+      postToExtension({ type: "project:setDevServer", url: value.slice("__suggest:".length) });
       return;
     }
     if (value === "__demo") {
@@ -54,6 +65,11 @@ export function Toolbar({
             >
               {showDevServer && <option value="__devserver">Dev server: {devServerValue || "…"}</option>}
               <option value="__demo">Built-in Demo</option>
+              {suggested && !showDevServer && (
+                <option value={`__suggest:${suggested.url}`}>
+                  {suggested.url} — detected{suggested.running ? ", running" : ""}
+                </option>
+              )}
               {(projectEntries ?? []).map((entry) => (
                 <option key={entry} value={entry}>
                   {entry}

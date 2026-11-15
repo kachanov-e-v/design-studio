@@ -9,6 +9,12 @@ export interface ElementPayload {
 
 export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down";
 
+export interface DevServerSuggestion {
+  url: string;
+  script: string;
+  running: boolean;
+}
+
 export interface PreviewStateMessage {
   url: string;
   status: string;
@@ -16,5 +22,6 @@ export interface PreviewStateMessage {
   projectEntry?: string;
   projectEntries?: string[];
   devServer?: string;
+  devServerSuggestions?: DevServerSuggestion[];
   pendingChanges?: number;
 }
