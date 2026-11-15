@@ -13,7 +13,7 @@ import { collectReactComponents } from "./fiber.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
-export { collectReactComponents, parseOwnerStack } from "./fiber.js";
+export { collectReactComponents, findFiber, parseOwnerStack } from "./fiber.js";
 export function getSelector(el: Element): string {
   if (el.id) return `#${CSS.escape(el.id)}`;
   const parts: string[] = [];

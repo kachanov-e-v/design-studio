@@ -97,29 +97,56 @@ function pushOwner(out: ComponentInfo[], seen: Set<string>, owner: FiberLike, so
   out.push({ ...(name !== undefined ? { name } : {}), ...(file !== undefined ? { file, line } : {}) });
 }
 
-/**
- * Walk the React owner chain for an element and return component info,
- * nearest owner first. Returns an empty array outside React dev builds.
- */
-export function collectReactComponents(el: Element): ComponentInfo[] {
+export function findFiber(el: Element): FiberLike | undefined {
   try {
     const holder = el as unknown as Record<string, unknown>;
     const fiberKey = Object.keys(holder).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternal$"));
-    if (!fiberKey) return [];
-    let fiber = holder[fiberKey] as FiberLike | undefined;
-    if (!fiber || typeof fiber !== "object") return [];
-    const out: ComponentInfo[] = [];
+    if (!fiberKey) return undefined;
+    const fiber = holder[fiberKey];
+    return fiber && typeof fiber === "object" ? (fiber as FiberLike) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Walk the React owner chain for an element and return component info,
+ * nearest owner first. Primary strategy is the `_debugOwner` chain; when it
+ * is unavailable (React 19 dev builds), walk `fiber.return` up and collect
+ * the function/class component fibers on the way to the root — the same
+ * approach React DevTools uses for its component stack. Returns an empty
+ * array outside React dev builds.
+ */
+export function collectReactComponents(el: Element): ComponentInfo[] {
+  try {
+    const fiber = findFiber(el);
+    if (!fiber) return [];
     const seen = new Set<string>();
     // The element's own `_debugSource` points at its JSX inside the nearest
     // owning component — the most precise location available.
     const ownSource = sourceFromFiber(fiber);
+    const out: ComponentInfo[] = [];
+
+    let cur: FiberLike | null | undefined = fiber._debugOwner;
     let guard = 0;
-    while (fiber && guard++ < 32) {
-      const owner: FiberLike | null | undefined = fiber._debugOwner;
-      if (!owner || typeof owner !== "object") break;
-      pushOwner(out, seen, owner, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
-      fiber = owner;
+    while (cur && typeof cur === "object" && guard++ < 32) {
+      pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
+      cur = cur._debugOwner;
     }
+
+    if (out.length === 0) {
+      cur = fiber.return;
+      guard = 0;
+      while (cur && typeof cur === "object" && guard++ < 48) {
+        if (cur.type === undefined || cur.type === null) break; // above the component root (HostRoot/Offscreen)
+        if (typeof cur.type !== "string") {
+          // skip host fibers (type is a tag string); collect component fibers
+          pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
+        }
+        cur = cur.return;
+      }
+    }
+
     return out.slice(0, 6);
   } catch {
     return [];

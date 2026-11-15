@@ -76,6 +76,35 @@ describe("collectReactComponents", () => {
     expect(comps).toEqual([{ name: "EmailField", file: "./src/ui/EmailField.tsx", line: 12 }]);
   });
 
+  it("walks fiber.return when _debugOwner is absent (React 19 owner-less fibers)", () => {
+    const comps = collectReactComponents(
+      fiberEl({
+        type: "div",
+        return: {
+          type: function EmailField() {},
+          return: {
+            type: "form",
+            return: { type: function LoginForm() {}, return: { type: null, return: null } },
+          },
+        },
+      })
+    );
+    expect(comps).toEqual([{ name: "EmailField" }, { name: "LoginForm" }]);
+  });
+
+  it("skips host fibers and stops at the root in return-chain mode; names win over empty receivers", () => {
+    const comps = collectReactComponents(
+      fiberEl({
+        type: "input",
+        return: {
+          type: "label",
+          return: { type: Symbol.for("react.fragment"), return: { type: function Field() {}, return: { type: null } } },
+        },
+      })
+    );
+    expect(comps).toEqual([{ name: "Field" }]);
+  });
+
   it("never throws and stops after the guard", () => {
     const a: Record<string, unknown> = { type: "div" };
     const b: Record<string, unknown> = { type: "div" };

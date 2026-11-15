@@ -23,6 +23,7 @@ var DesignStudioRuntime = (() => {
   __export(src_exports, {
     PROTOCOL_VERSION: () => PROTOCOL_VERSION,
     collectReactComponents: () => collectReactComponents,
+    findFiber: () => findFiber,
     getSelector: () => getSelector,
     getSelectorCandidates: () => getSelectorCandidates,
     initDesignStudioRuntime: () => initDesignStudioRuntime,
@@ -275,22 +276,40 @@ var DesignStudioRuntime = (() => {
     if (name) seen.add(name);
     out.push({ ...name !== void 0 ? { name } : {}, ...file !== void 0 ? { file, line } : {} });
   }
-  function collectReactComponents(el) {
+  function findFiber(el) {
     try {
       const holder = el;
       const fiberKey = Object.keys(holder).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternal$"));
-      if (!fiberKey) return [];
-      let fiber = holder[fiberKey];
-      if (!fiber || typeof fiber !== "object") return [];
-      const out = [];
+      if (!fiberKey) return void 0;
+      const fiber = holder[fiberKey];
+      return fiber && typeof fiber === "object" ? fiber : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function collectReactComponents(el) {
+    try {
+      const fiber = findFiber(el);
+      if (!fiber) return [];
       const seen = /* @__PURE__ */ new Set();
       const ownSource = sourceFromFiber(fiber);
+      const out = [];
+      let cur = fiber._debugOwner;
       let guard = 0;
-      while (fiber && guard++ < 32) {
-        const owner = fiber._debugOwner;
-        if (!owner || typeof owner !== "object") break;
-        pushOwner(out, seen, owner, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : void 0);
-        fiber = owner;
+      while (cur && typeof cur === "object" && guard++ < 32) {
+        pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : void 0);
+        cur = cur._debugOwner;
+      }
+      if (out.length === 0) {
+        cur = fiber.return;
+        guard = 0;
+        while (cur && typeof cur === "object" && guard++ < 48) {
+          if (cur.type === void 0 || cur.type === null) break;
+          if (typeof cur.type !== "string") {
+            pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : void 0);
+          }
+          cur = cur.return;
+        }
       }
       return out.slice(0, 6);
     } catch {
