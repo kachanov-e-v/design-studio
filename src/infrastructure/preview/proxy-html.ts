@@ -1,35 +1,55 @@
 const RUNTIME_SCRIPT_ATTRS = ` data-design-studio="1" defer`;
 
 export function proxyPathFor(targetUrl: string): string {
-  return `/proxy/${targetUrl}`;
+  try {
+    const target = new URL(targetUrl);
+    if (target.protocol !== "http:" && target.protocol !== "https:") return "/proxy/";
+    return `/proxy/${target.protocol.slice(0, -1)}/${target.host}${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return "/proxy/";
+  }
 }
 
 export function targetFromProxyPath(rawPath: string): string | null {
   const raw = rawPath.startsWith("/proxy/") ? rawPath.slice("/proxy/".length) : rawPath;
   if (!raw) return null;
+  const structured = /^(https?)\/([^/?#]+)(\/[^?#]*)?(\?[^#]*)?(?:#.*)?$/i.exec(raw);
+  if (structured) {
+    try {
+      const u = new URL(`${structured[1]}://${structured[2]}${structured[3] ?? "/"}${structured[4] ?? ""}`);
+      return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const u = new URL(raw);
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     return u.toString();
   } catch {
-    return null;
+    // Older webviews may have normalized `http://` inside the path to `http:/`.
+    const normalized = /^(https?):\/([^/]+)(\/.*)?$/i.exec(raw);
+    if (!normalized) return null;
+    try {
+      return new URL(`${normalized[1]}://${normalized[2]}${normalized[3] ?? "/"}`).toString();
+    } catch {
+      return null;
+    }
   }
 }
 
 /**
- * Fallback proxy targeting: requests that bypassed /proxy/ rewriting (SPA
- * router fetches, window.location redirects) still carry the proxied document
- * URL in Referer. Extract the target origin from it and keep the request path.
+ * Fallback for legacy proxy documents: use their upstream origin and the
+ * request path when a browser navigation bypasses an explicit proxy route.
  */
 export function targetFromReferer(referer: string | undefined, requestPath: string): string | null {
   if (!referer) return null;
-  const m = /\/proxy\/(https?:\/\/[^/]+)/.exec(referer);
-  if (!m || !m[1]) return null;
   try {
-    const idx = requestPath.indexOf("?");
-    const pathname = idx === -1 ? requestPath : requestPath.slice(0, idx);
-    const search = idx === -1 ? "" : requestPath.slice(idx);
-    const u = new URL(`${pathname}${search || ""}`, m[1]);
+    const refererUrl = new URL(referer);
+    const refererTarget = targetFromProxyPath(refererUrl.pathname);
+    if (!refererTarget) return null;
+    const upstreamOrigin = new URL(refererTarget).origin;
+    const u = new URL(requestPath, upstreamOrigin);
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     return u.toString();
   } catch {
@@ -79,7 +99,7 @@ function rewriteCssUrls(css: string, proxyPrefix: string): string {
 
 function targetOriginPrefix(finalTargetUrl: string): string {
   try {
-    return `/proxy/${new URL(finalTargetUrl).origin}`;
+    return proxyPathFor(new URL(finalTargetUrl).origin).replace(/\/$/, "");
   } catch {
     return "/proxy";
   }
@@ -91,12 +111,11 @@ export function prependProxyOriginToPathUrls(content: string, proxyPrefix: strin
 
 export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string): string {
   const prefix = targetOriginPrefix(finalTargetUrl);
-  let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}/proxy/${finalTargetUrl}`);
-  // Root-absolute attribute values (href/src/action) are intentionally left
-  // untouched: rewriting them desynchronizes SSR markup from what React
-  // renders on the client (hydration mismatch). Same-origin bare paths are
-  // covered instead by the Referer fallback on the preview host and by the
-  // injected service worker.
+  const target = new URL(finalTargetUrl);
+  let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}${target.pathname}${target.search}${target.hash}`);
+  // Root-absolute attributes stay untouched so Next.js sees the same route
+  // during hydration. The preview host proxies app routes through its sticky
+  // dev-server target; CSS URLs use explicit proxy routes below.
   const styleBlock = /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi;
   out = out.replace(styleBlock, (m, open: string, css: string, close: string) =>
     open + rewriteCssUrls(css, prefix) + close
@@ -145,8 +164,8 @@ self.addEventListener("fetch", function (event) {
     self.clients.get(event.clientId).then(function (client) {
       var prefix = null;
       if (client) {
-        var m = /\\/proxy\\/https?:\\/\\/[^/]+/.exec(client.url);
-        if (m) prefix = m[0];
+        var m = /\\/proxy\\/(https?)\\/([^/]+)/.exec(client.url);
+        if (m) prefix = "/proxy/" + m[1] + "/" + m[2];
       }
       if (!prefix) return fetch(req);
       var rewritten = prefix + p + url.search;

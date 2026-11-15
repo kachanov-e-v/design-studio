@@ -109,11 +109,7 @@ export class PreviewHostServer {
 
   private devTarget: string | null = null;
 
-  /**
-   * Sticky dev-server target: after a hard navigation the document URL loses
-   * the /proxy/ prefix, so Referer no longer identifies the upstream. The
-   * extension sets the dev-server URL here and bare paths keep working.
-   */
+  /** Sticky dev-server target lets app routes stay at the preview origin's root. */
   setDevTarget(target: string | null): void {
     if (!target) {
       this.devTarget = null;
@@ -127,7 +123,7 @@ export class PreviewHostServer {
     }
   }
 
-  /** Target of a bare-path request: explicit /proxy/, else Referer, else sticky dev target. */
+  /** Target of an explicit proxy route, referer-based request, or app route. */
   private barePathTarget(req: http.IncomingMessage, rawUrl: string): string | null {
     const explicit = targetFromProxyPath(rawUrl);
     if (explicit) return explicit;
@@ -212,6 +208,25 @@ export class PreviewHostServer {
     const urlPath = (req.url ?? "/").split("?")[0];
 
     if (urlPath.startsWith("/proxy/")) {
+      const proxiedTarget = targetFromProxyPath(req.url ?? "");
+      const accept = req.headers.accept ?? "";
+      if (method === "GET" && accept.includes("text/html") && proxiedTarget && this.devTarget) {
+        try {
+          const target = new URL(proxiedTarget);
+          if (target.origin === this.devTarget) {
+            // Keep app routers and auth libraries on the real route instead
+            // of exposing the internal proxy transport path in window.location.
+            res.writeHead(307, {
+              Location: `${this.origin}${target.pathname}${target.search}`,
+              "Cache-Control": "no-store",
+            });
+            res.end();
+            return;
+          }
+        } catch {
+          // Let handleProxy return the standard invalid-target response.
+        }
+      }
       await this.handleProxy(req, res);
       return;
     }
@@ -255,9 +270,8 @@ export class PreviewHostServer {
       this.handleProjectFile(res, urlPath.slice("/project/".length));
       return;
     }
-    // Browser-initiated references that bypassed /proxy/ rewriting (SPA router
-    // fetches, hard navigations, HMR websocket handshakes) hit bare paths on
-    // this origin; proxy them upstream via Referer or the sticky dev target.
+    // The project is hosted on bare paths so client-side routers see the real
+    // app route (for example /login) instead of a /proxy/... URL prefix.
     const refererTarget = this.barePathTarget(req, req.url ?? "/");
     if (refererTarget) {
       await this.handleProxy(req, res, refererTarget);
@@ -402,9 +416,26 @@ export class PreviewHostServer {
       const u = new URL(location, target);
       if (u.protocol !== "http:" && u.protocol !== "https:") return location;
       if (u.origin !== target.origin) return u.toString();
-      return `${this.origin}/proxy/${u.toString()}`;
+      return `${this.origin}${u.pathname}${u.search}${u.hash}`;
     } catch {
       return location;
+    }
+  }
+
+  /** Keep Next.js server-action redirects on the preview host and route. */
+  private rewriteActionRedirect(value: string | undefined, target: URL): string | undefined {
+    if (!value) return undefined;
+    const match = /^(.*?);(push|replace)$/i.exec(value);
+    const rawUrl = match?.[1] ?? value;
+    const navigationMode = match ? `;${match[2]}` : "";
+    try {
+      const url = new URL(rawUrl, target);
+      if (url.origin === target.origin) {
+        return `${url.pathname}${url.search}${url.hash}${navigationMode}`;
+      }
+      return `${url.toString()}${navigationMode}`;
+    } catch {
+      return value;
     }
   }
 
@@ -459,6 +490,8 @@ export class PreviewHostServer {
     if (status >= 300 && status < 400) {
       const location = this.rewriteLocation(headers["location"], parsedTarget);
       if (location) headers["location"] = location;
+      const actionRedirect = this.rewriteActionRedirect(headers["x-action-redirect"], parsedTarget);
+      if (actionRedirect) headers["x-action-redirect"] = actionRedirect;
       if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
       res.writeHead(status, headers);
       if (method === "HEAD") {

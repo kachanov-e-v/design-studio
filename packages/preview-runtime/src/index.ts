@@ -15,7 +15,10 @@ export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
 export { collectReactComponents, findFiber, parseOwnerStack } from "./fiber.js";
 export function getSelector(el: Element): string {
-  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (el.id) {
+    const idSelector = `#${CSS.escape(el.id)}`;
+    if (idSelector.length <= 500) return idSelector;
+  }
   const parts: string[] = [];
   let current: Element | null = el;
   let depth = 0;
@@ -36,50 +39,42 @@ export function getSelector(el: Element): string {
     depth++;
     if (current === document.body || current === null) break;
   }
+  while (parts.length > 1 && parts.join(" > ").length > 500) parts.shift();
   return parts.join(" > ");
 }
 
 export function getSelectorCandidates(el: Element): string[] {
-  const candidates: string[] = [];
   const tag = el.tagName.toLowerCase();
-  if (el.id) candidates.push(`#${CSS.escape(el.id)}`);
-
-  const classes = Array.from(el.classList).map((c) => CSS.escape(c));
-  if (classes.length > 0) {
-    const subsets: string[][] = [];
-    for (let size = 1; size <= classes.length; size++) {
-      const combine = (start: number, current: string[]) => {
-        if (current.length === size) {
-          subsets.push([...current]);
-          return;
-        }
-        for (let i = start; i < classes.length; i++) {
-          current.push(classes[i]);
-          combine(i + 1, current);
-          current.pop();
-        }
-      };
-      combine(0, []);
-    }
-    for (const subset of subsets) {
-      candidates.push(`.${subset.join(".")}`);
-      candidates.push(`${tag}.${subset.join(".")}`);
-    }
-  } else {
-    candidates.push(tag);
-  }
-
   const path = getSelector(el);
-  if (!candidates.includes(path)) candidates.push(path);
-
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const candidate of candidates) {
+  const maxCandidates = 19; // Reserve one slot for the exact DOM path below.
+  const add = (candidate: string) => {
     const normalized = candidate.trim();
-    if (!normalized || normalized.length > 500 || seen.has(normalized)) continue;
+    if (!normalized || normalized.length > 500 || seen.has(normalized) || result.length >= maxCandidates) return;
     seen.add(normalized);
     result.push(normalized);
-    if (result.length >= 60) break;
+  };
+
+  if (el.id) add(`#${CSS.escape(el.id)}`);
+  const classes = Array.from(el.classList).map((c) => CSS.escape(c));
+  for (const className of classes) {
+    add(`.${className}`);
+    add(`${tag}.${className}`);
+    if (result.length >= maxCandidates) break;
+  }
+
+  for (let left = 0; left < classes.length && result.length < maxCandidates; left++) {
+    for (let right = left + 1; right < classes.length && result.length < maxCandidates; right++) {
+      const pair = `.${classes[left]}.${classes[right]}`;
+      add(pair);
+      add(`${tag}${pair}`);
+    }
+  }
+  if (classes.length === 0) add(tag);
+
+  if (!seen.has(path)) {
+    result.push(path);
   }
   return result;
 }
@@ -221,6 +216,15 @@ export function initDesignStudioRuntime(): void {
 
   function currentApplicationPath(): string {
     const current = new URL(window.location.href);
+    const structuredProxy = /^\/proxy\/(https?)\/([^/]+)(\/.*)?$/i.exec(current.pathname);
+    if (structuredProxy) {
+      try {
+        const upstream = new URL(`${structuredProxy[1]}://${structuredProxy[2]}${structuredProxy[3] ?? "/"}${current.search}${current.hash}`);
+        return `${upstream.pathname}${upstream.search}${upstream.hash}`;
+      } catch {
+        // Fall through to support old preview links and ordinary app routes.
+      }
+    }
     const proxyMarker = "/proxy/";
     const proxyIndex = current.pathname.indexOf(proxyMarker);
     if (proxyIndex !== -1) {

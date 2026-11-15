@@ -371,7 +371,10 @@ var DesignStudioRuntime = (() => {
 
   // src/index.ts
   function getSelector(el) {
-    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.id) {
+      const idSelector = `#${CSS.escape(el.id)}`;
+      if (idSelector.length <= 500) return idSelector;
+    }
     const parts = [];
     let current = el;
     let depth = 0;
@@ -392,46 +395,38 @@ var DesignStudioRuntime = (() => {
       depth++;
       if (current === document.body || current === null) break;
     }
+    while (parts.length > 1 && parts.join(" > ").length > 500) parts.shift();
     return parts.join(" > ");
   }
   function getSelectorCandidates(el) {
-    const candidates = [];
     const tag = el.tagName.toLowerCase();
-    if (el.id) candidates.push(`#${CSS.escape(el.id)}`);
-    const classes = Array.from(el.classList).map((c) => CSS.escape(c));
-    if (classes.length > 0) {
-      const subsets = [];
-      for (let size = 1; size <= classes.length; size++) {
-        const combine = (start, current) => {
-          if (current.length === size) {
-            subsets.push([...current]);
-            return;
-          }
-          for (let i = start; i < classes.length; i++) {
-            current.push(classes[i]);
-            combine(i + 1, current);
-            current.pop();
-          }
-        };
-        combine(0, []);
-      }
-      for (const subset of subsets) {
-        candidates.push(`.${subset.join(".")}`);
-        candidates.push(`${tag}.${subset.join(".")}`);
-      }
-    } else {
-      candidates.push(tag);
-    }
     const path = getSelector(el);
-    if (!candidates.includes(path)) candidates.push(path);
     const seen = /* @__PURE__ */ new Set();
     const result = [];
-    for (const candidate of candidates) {
+    const maxCandidates = 19;
+    const add = (candidate) => {
       const normalized = candidate.trim();
-      if (!normalized || normalized.length > 500 || seen.has(normalized)) continue;
+      if (!normalized || normalized.length > 500 || seen.has(normalized) || result.length >= maxCandidates) return;
       seen.add(normalized);
       result.push(normalized);
-      if (result.length >= 60) break;
+    };
+    if (el.id) add(`#${CSS.escape(el.id)}`);
+    const classes = Array.from(el.classList).map((c) => CSS.escape(c));
+    for (const className of classes) {
+      add(`.${className}`);
+      add(`${tag}.${className}`);
+      if (result.length >= maxCandidates) break;
+    }
+    for (let left = 0; left < classes.length && result.length < maxCandidates; left++) {
+      for (let right = left + 1; right < classes.length && result.length < maxCandidates; right++) {
+        const pair = `.${classes[left]}.${classes[right]}`;
+        add(pair);
+        add(`${tag}${pair}`);
+      }
+    }
+    if (classes.length === 0) add(tag);
+    if (!seen.has(path)) {
+      result.push(path);
     }
     return result;
   }
@@ -556,6 +551,14 @@ var DesignStudioRuntime = (() => {
     }
     function currentApplicationPath() {
       const current = new URL(window.location.href);
+      const structuredProxy = /^\/proxy\/(https?)\/([^/]+)(\/.*)?$/i.exec(current.pathname);
+      if (structuredProxy) {
+        try {
+          const upstream = new URL(`${structuredProxy[1]}://${structuredProxy[2]}${structuredProxy[3] ?? "/"}${current.search}${current.hash}`);
+          return `${upstream.pathname}${upstream.search}${upstream.hash}`;
+        } catch {
+        }
+      }
       const proxyMarker = "/proxy/";
       const proxyIndex = current.pathname.indexOf(proxyMarker);
       if (proxyIndex !== -1) {

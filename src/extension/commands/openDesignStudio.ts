@@ -122,9 +122,15 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         ? `${host.origin}/demo.html?lang=${language}`
         : `${panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"))}?lang=${language}`
       : "";
+    let devUrl: URL | null = null;
+    try {
+      if (devServer) devUrl = new URL(devServer);
+    } catch {
+      // Ignore stale malformed dev-server state.
+    }
     const url = demo
       ? demoUrl
-      : projectUrl() ?? (devServer && host ? `${host.origin}/proxy/${devServer}` : "");
+      : projectUrl() ?? (devUrl && host ? `${host.origin}${devUrl.pathname}${devUrl.search}${devUrl.hash}` : "");
     // Keep the host's sticky dev target in sync (see PreviewHostServer.setDevTarget).
     host?.setDevTarget(entry ? null : devServer || null);
     const entries = root ? await findProjectEntries(root) : [];

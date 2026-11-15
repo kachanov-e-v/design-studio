@@ -38,8 +38,9 @@ export function toSelectionContext(payload: ElementPayload, sourceHints?: Source
 
 function shortHref(href: string): string {
   // Dev-server hrefs often come through the Design Studio proxy; strip its prefix.
-  const m = /\/proxy\/(https?:\/\/.+)/.exec(href);
-  const clean = m ? m[1] : href;
+  const legacy = /\/proxy\/(https?:\/\/.+)/.exec(href);
+  const structured = /\/proxy\/(https?)\/([^/]+)(\/.*)$/.exec(href);
+  const clean = legacy ? legacy[1] : structured ? `${structured[1]}://${structured[2]}${structured[3]}` : href;
   try {
     const u = new URL(clean);
     return u.pathname + u.search;

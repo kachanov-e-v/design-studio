@@ -121,13 +121,13 @@ describe("proxy-html helpers", () => {
 
   it("rewrites root-absolute css urls through the proxy", () => {
     const out = rewriteProxiedCss(stubCss, "http://localhost:3000/");
-    expect(out).toContain(`url("/proxy/http://localhost:3000/img/bg.png")`);
+    expect(out).toContain(`url("/proxy/http/localhost:3000/img/bg.png")`);
     expect(out).not.toContain(`url("/img/bg.png")`);
   });
 
   it("rewrites style blocks inside html", () => {
     const out = rewriteProxiedHtml(stubHtmlWithStyle, "http://localhost:3000/app", "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1");
-    expect(out).toContain(`url("/proxy/http://localhost:3000/a.png")`);
+    expect(out).toContain(`url("/proxy/http/localhost:3000/a.png")`);
     expect(out).toContain("__ds-runtime.js");
   });
 
@@ -135,7 +135,8 @@ describe("proxy-html helpers", () => {
     expect(targetFromProxyPath("/proxy/http://localhost:3000/a?b=1")).toBe("http://localhost:3000/a?b=1");
     expect(targetFromProxyPath("/proxy/ftp://x")).toBeNull();
     expect(targetFromProxyPath("/proxy/")).toBeNull();
-    expect(proxyPathFor("http://localhost:3000/")).toBe("/proxy/http://localhost:3000/");
+    expect(targetFromProxyPath("/proxy/http/localhost:3000/a?b=1")).toBe("http://localhost:3000/a?b=1");
+    expect(proxyPathFor("http://localhost:3000/")).toBe("/proxy/http/localhost:3000/");
   });
 
   it("builds loopback fallback candidates", () => {
@@ -178,13 +179,13 @@ describe("PreviewHostServer", () => {
     const res = await get(`${server.origin}/proxy/${stubOrigin}/`);
     expect(res.status).toBe(200);
     expect(res.body).toContain("__ds-runtime.js");
-    expect(res.body).toContain(`<base href="${server.origin}/proxy/${stubOrigin}/">`);
+    expect(res.body).toContain(`<base href="${server.origin}/">`);
   });
 
   it("proxies css with rewritten urls", async () => {
     const res = await get(`${server.origin}/proxy/${stubOrigin}/style.css`);
     expect(res.status).toBe(200);
-    expect(res.body).toContain(`/proxy/${stubOrigin}/img/bg.png`);
+    expect(res.body).toContain(`/proxy/http/127.0.0.1:${new URL(stubOrigin).port}/img/bg.png`);
   });
 
   it("rejects invalid proxy targets", async () => {
@@ -219,7 +220,7 @@ describe("PreviewHostServer", () => {
       body: JSON.stringify({ user: "u", pass: "p" }),
     });
     expect(res.status).toBe(302);
-    expect(res.headers["location"]).toBe(`${server.origin}/proxy/${stubOrigin}/dashboard`);
+    expect(res.headers["location"]).toBe(`${server.origin}/dashboard`);
     expect(res.headers["set-cookie"]).toEqual(["sid=abc; Path=/", "other=1; Path=/"]);
   });
 
