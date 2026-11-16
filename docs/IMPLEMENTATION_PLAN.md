@@ -507,3 +507,52 @@ Development Host, F5).
 
 Гейты после Фаз A+B: typecheck OK, lint 0 ошибок (3 известных warning),
 test 317 (25 файлов), build verify-build зелёный.
+
+## NAV-02 (P1) — Фаза C
+- Корневая причина: browse-mode клик-обработчик (`packages/preview-runtime/src/index.ts`)
+  для КАЖДОЙ разрешённой ссылки делал `preventDefault()` + `location.assign(path)` →
+  Next.js-роутер видел `defaultPrevented` и не работал; каждый клик = полная
+  перезагрузка с потерей клиентского состояния.
+- Исправлено: новый модуль `packages/preview-runtime/src/navigation.ts` —
+  чистая функция `shouldHijackToAssign(locationPathname, hrefOrigin, previewOrigin)`.
+  Нативный переход (без hijack) для same-origin ссылок на голых маршрутах
+  (sticky-режим, pathname не начинается с `/proxy/`); hijack через `location.assign`
+  сохранён только под структурированным `/proxy/…` и когда origin документа
+  неопределим. Блокировки (внешние/опасные схемы/target) не изменились.
+- Тесты: `index.test.ts` — same-origin клик на голом пути: `defaultPrevented === false`,
+  `ds:navigate-blocked` нет (НАВ-02); preview-origin/`/proxy/`-пути: hijack сохранён.
+  Протокол не менялся.
+- Коммит: fix(runtime): NAV-02 pass same-origin clicks natively on bare-path routes.
+- DOC: `docs/ARCHITECTURE.md` §8, `docs/TROUBLESHOOTING.md`, `CHANGELOG.md` —
+  формулировка политики после NAV-02.
+
+## Фаза D (частично, остальное — backlog)
+- ENG-07: CSP webview (`src/extension/commands/openDesignStudio.ts`) — убран `data:`
+  из `frame-src`. Тестов по CSP нет (строка шаблона); покрытие ручной проверкой.
+- ENG-08: `.vscodeignore` — `*.map` исключены из VSIX (раньше .map шипился без
+  *.ts, на которые он ссылается, — рассинхрон устранён запретом обоих).
+- ENG-06: `docs/SECURITY.md` — задокументирована компенсация `Secure`/`SameSite`
+  в cookie-jar для http-preview origin (`rewriteSetCookieForPreview`).
+- ENG-03 (ОТКЛОНЕНИЕ ОТ ПЛАНА, осознанное): нестандартное поле `allowScripts`
+  в `package.json` ОСТАВЛЕНО — современный npm потребляет это поле
+  (предупреждение install-scripts), удаление меняет поведение установки.
+  displayName/NLS для маркетплейса уже решены в P3-4/P3-5.
+- ENG-02: `vitest.config.ts` — coverage-порог для области `webview/**` (lines 54,
+  измеренный baseline 54.57%); требование поднять до 80% зафиксировано в
+  комментарии. Тест: сам прогон `npm test:coverage`.
+- CSS-01 (по плану «если не успеваешь — задокументируй»): НЕ реализован, требует
+  protocol bump (флаг `inline` в SourceRule + обе стороны + валидаторы).
+  Ограничение задокументировано в `docs/TROUBLESHOOTING.md`; остаётся в backlog.
+- Не делались (backlog, требуют отдельных решений/среды): ENG-01 (E2E Playwright),
+  ENG-04 (WS backpressure), ENG-05 (connect-timeout), ENG-09 (все серверы в
+  Toolbar), ENG-10 (кнопка «Открыть снаружи»), ENG-11 (батч-скан CSS).
+
+## DOC-01 (P2) — завершение
+- `docs/AI_AGENT_INSTRUCTIONS.md` синхронизирован с кодом: протокол v6 (не v4),
+  `EDITABLE_ATTRIBUTES` = 40, `STYLE_PROPS` = 70 (проверено по
+  `packages/preview-runtime/src/protocol.ts`), P2-13 помечен закрытым
+  (у runtime-ready/error есть продюсеры), добавлена ссылка на
+  `docs/AI_AGENT_FIX_PLAN.md`.
+
+Гейты после Фаз C+D+DOC-01: typecheck OK, lint OK, test OK,
+build (verify-build) OK — финальный прогон см. отчёт сессии.

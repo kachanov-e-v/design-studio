@@ -5,6 +5,8 @@
 > Основание: полный аудит исходников, конфигов, тестов и документации; ключевые баги
 > подтверждены воспроизведением логики кода. Работай фазами, каждое исправление —
 > с регрессионным тестом и обновлением документации.
+> См. также актуальный план закрытия аудита: `docs/AI_AGENT_FIX_PLAN.md` (навигация,
+> runtime-анонс, журнал правок, бюджеты; частично замещает устаревшие места этого файла).
 
 ---
 
@@ -27,7 +29,7 @@
 - Сборочный конвейер и маркеры `scripts/verify-build.js` (`initDesignStudioRuntime`, IIFE
   `DesignStudioRuntime`); сборочные артефакты `webview/public/runtime.js|protocol.js` не коммитить.
 - При изменении протокола: обновлять ОБЕ стороны (runtime + webview), валидаторы, тесты и
-  `PROTOCOL_VERSION` (сейчас "4"); пересобирать `npm run build`.
+  `PROTOCOL_VERSION` (сейчас "6"); пересобирать `npm run build`.
 
 **Baseline перед любыми правками (всё должно быть зелёным):**
 
@@ -242,7 +244,7 @@ SECURITY.md. Учесть: `ensureHostServer` пушит новый dispose-subs
 
 | ID | Где | Проблема | Фикс |
 | --- | --- | --- | --- |
-| P2-1 | `webview/types.ts` | Дублирует типы протокола; `EditableAttribute` = 8 значений против 41 в `protocol.ts`; `ElementPayload`/`ElementOp`/`SourceRule` копируются. Касты `as EditableAttribute` в Inspector скрывают расхождение | Импортировать типы из `@design-studio/preview-runtime/protocol`; `types.ts` оставить только для webview-специфичного (`PreviewStateMessage`, `DevServerSuggestion`) |
+| P2-1 | `webview/types.ts` | Дублирует типы протокола; `EditableAttribute` = 8 значений против 40 в `protocol.ts`; `ElementPayload`/`ElementOp`/`SourceRule` копируются. Касты `as EditableAttribute` в Inspector скрывают расхождение | Импортировать типы из `@design-studio/preview-runtime/protocol`; `types.ts` оставить только для webview-специфичного (`PreviewStateMessage`, `DevServerSuggestion`) |
 | P2-2 | `propertyRegistry.ts` + `protocol.ts` | Редактор `filter` есть, но `filter` нет в `STYLE_PROPS` → значение никогда не собирается/не показывается, before-value пустой | Добавить `filter` в `STYLE_PROPS` (и иные редакторы без пары — сверить полным diff), bump `PROTOCOL_VERSION`, обновить тесты валидатора |
 | P2-3 | runtime `collectSourceRules` | Итерирует только верхний уровень `cssRules`: правила внутри `@media/@supports/@layer/@container` (Tailwind v4!) невидимы для «Сохранить стили» и промпта | Рекурсивно обходить `CSSGroupingRule.cssRules` (с общим лимитом scanned); тест с @media-правилом |
 | P2-4 | `tailwind.ts conflicts()` | Грубые группы: добавление `pt-4` удаляет `px-8`/`py-2` (все `p*` конфликтуют со всеми `p*`); теряются несоответствующие оси/стороны | Конфликт по точной оси/стороне (p↔p/px/py/pt..., pt↔pt/py/p), аналогично m; тесты на сохранение px при pt |
@@ -254,7 +256,7 @@ SECURITY.md. Учесть: `ensureHostServer` пушит новый dispose-subs
 | P2-10 | `openDesignStudio.postState` | `status` определяется `url.includes("/project/")` — dev-маршрут `/project/x` классифицируется как project | Явный режим в состоянии (entry/demo/devserver), не подстрока URL |
 | P2-11 | `i18n.ts` + `Toolbar.tsx` | `toolbar.serverDown` = «Сервер обнаружен» (должно быть «не запущен»); кнопка режима показывает СОСТОЯНИЕ («Просмотр»), а README говорит «Нажмите Редактировать» | Исправить подпись serverDown; кнопку сделать действием («Редактировать»/«Просмотр» как целевой режим) либо синхронизировать README/docs; `toolbar.edit/editOn` переименовать по смыслу |
 | P2-12 | `fiber.ts findFiber` | `startsWith("__reactInternal$")` никогда не матчит React 16 `__reactInternalInstance$...` | Исправить префикс или убрать legacy-ветку с комментарием |
-| P2-13 | протокол/статусы | Мёртвые сущности: `ds:runtime-ready` и `ds:runtime-error` не отправляются никем; статусы `iframe-loading`/`blocked-or-load-error` недостижимы (iframe `onError` не срабатывает на HTTP-ошибки); demo-fallback через `asWebviewUri` недостижим (host всегда есть); `protocol.js` копируется и проверяется, но нигде не загружается | Либо реализовать продюсеров (runtime-ready после init — ускорит handshake; runtime-error из catch), либо удалить типы/статусы/артефакт и обновить LEGACY_CLEANUP + verify-build |
+| P2-13 | протокол/статусы | Аудит считал `ds:runtime-ready` и `ds:runtime-error` мёртвыми сущностями; с тех пор продюсеры реализованы (runtime-ready отправляется runtime-ом после init, runtime-error — из catch), статус мгновенного подключения работает | Закрыто; webview слушает оба события (см. `docs/AI_AGENT_FIX_PLAN.md`, RT-01 — origin непосредственного родителя) |
 | P2-14 | `PreviewHostServer` | `MIME_TYPES` без `.wasm/.map/.avif/.mp4/.webm/.otf/.eot`; нет Range для `/project/` (seek видео не работает); синхронные `fs.readFileSync` блокируют extension host | Дополнить MIME; поддержать Range/206 для статики; перевести чтение на `fs.promises`/streams |
 | P2-15 | cookie jar | Ключ `origin\|name` игнорирует Path — одноимённые cookie разных путей затирают друг друга; jar не ограничен по размеру | Ключ `origin\|path\|name` с матчингом путей (или документировать упрощение); LRU-лимит |
 | P2-16 | `DevServerDetector` | `probePort` только 127.0.0.1 (серверы на ::1 считаются «down»); `vite preview` → порт 5173 вместо 4173; `-p4000` и `PORT=4000` не парсятся; `build`-скрипты дают кандидатов | Пробовать оба loopback; паттерн `vite preview`→4173; парсить слитный `-p` и env `PORT=`; фильтровать не-dev скрипты |
@@ -414,11 +416,11 @@ ID задач (P0-1…), корневая причина, файл/функци�
 
 ## 10. Приложение: ключевые контракты (справка)
 
-- Протокол `ds:*` v4: ping/pong (nonce+sessionId), set-mode/mode-changed, select (ElementPayload),
+- Протокол `ds:*` v6: ping/pong (nonce+sessionId), set-mode/mode-changed, select (ElementPayload),
   apply-style/style-applied (requestId), apply-op/op-applied (op, attribute, requestId),
-  navigate/navigate-history/navigate-blocked/reload; runtime-ready/runtime-error — зарезервированы
-  (продюсеров нет, см. P2-13). Валидаторы: `isRuntimeMessage`, `isElementPayload`,
-  `isValidClassListValue`, `STYLE_PROPERTY_PATTERN`, `EDITABLE_ATTRIBUTES` (41), `STYLE_PROPS` (68).
+  navigate/navigate-history/navigate-blocked/reload; runtime-ready/runtime-error отправляются
+  runtime-ом (ready после init, error из catch). Валидаторы: `isRuntimeMessage`, `isElementPayload`,
+  `isValidClassListValue`, `STYLE_PROPERTY_PATTERN`, `EDITABLE_ATTRIBUTES` (40), `STYLE_PROPS` (70).
 - Пути preview-хоста: `/proxy/{http|https}/{host}{path}` (явный), голые маршруты (sticky/Referer),
   `/project/{rel}` (jail), `/demo.html`, `/__ds-runtime.js`, `/__ds-sw.js`.
 - Инъекция в проксированный HTML: `<base href=previewOrigin+appPath>` + runtime (defer) +
