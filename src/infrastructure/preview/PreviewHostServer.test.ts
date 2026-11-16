@@ -229,8 +229,10 @@ describe("proxy-html helpers", () => {
     expect(out.indexOf("<base")).toBeLessThan(out.indexOf("<title>"));
   });
 
-  // P0-3: proxied HTML must carry the upstream origin so the runtime can
-  // enforce the browse-mode link policy.
+  // P0-3 / NAV-01: proxied HTML carries the upstream origin for the runtime's
+  // browse-mode link policy. The attribute keeps the upstream dev-server
+  // origin navigable; the runtime ALSO allows the document's own (preview
+  // host) origin, which is what <base>-resolved links actually target.
   it("stamps data-upstream-origin on the proxied runtime script", () => {
     const out = rewriteProxiedHtml(stubHtml, "https://upstream.example:3443/app/", "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1");
     expect(out).toContain('data-upstream-origin="https://upstream.example:3443"');

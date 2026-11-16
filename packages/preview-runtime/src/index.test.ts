@@ -1,4 +1,11 @@
+/*!
+ * NAV-01: the jsdom URL mirrors a real dev-mode preview document — the proxy
+ * origin serving bare app routes. The `data-upstream-origin` tests below point
+ * at a DIFFERENT upstream (the actual dev server), so the two-origin link
+ * allowlist (preview origin + upstream origin) is exercised for real.
+ */
 // @vitest-environment jsdom
+// @vitest-environment-options {"url": "http://127.0.0.1:9533/boards/current"}
 import { describe, it, expect, vi } from "vitest";
 import { PROTOCOL_VERSION } from "./protocol";
 
@@ -157,6 +164,38 @@ describe("browse-mode link policy", () => {
     // Same-origin links are hijacked into a known-route navigation, not blocked.
     expect(posted.event.defaultPrevented).toBe(true);
     expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
+  });
+
+  it("NAV-01: navigates preview-origin links when data-upstream-origin points at the dev server", async () => {
+    await prepared(' data-upstream-origin="http://127.0.0.1:4600"'); // upstream differs from the proxy origin
+    document.body.innerHTML = '<a id="board" href="/boards/cmwgbjgec0002veccx0ufeoyh">board</a>';
+    const posted = withClick("board");
+    expect(posted.event.defaultPrevented).toBe(true); // hijacked into location.assign
+    expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
+  });
+
+  it("NAV-01: does not block absolute links to the upstream origin", async () => {
+    await prepared(' data-upstream-origin="http://127.0.0.1:4600"');
+    document.body.innerHTML = '<a id="up" href="http://127.0.0.1:4600/x">up</a>';
+    const posted = withClick("up");
+    expect(posted.event.defaultPrevented).toBe(true);
+    expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
+  });
+
+  it("NAV-01: blocks external origins even when the upstream attribute is set", async () => {
+    await prepared(' data-upstream-origin="http://127.0.0.1:4600"');
+    document.body.innerHTML = '<a id="ext" href="https://example.com/">ext</a>';
+    const posted = withClick("ext");
+    expect(posted.event.defaultPrevented).toBe(true);
+    expect(posted.messages.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(true);
+  });
+
+  it("NAV-01: blocks target=_blank links on internal routes", async () => {
+    await prepared(' data-upstream-origin="http://127.0.0.1:4600"');
+    document.body.innerHTML = '<a id="newtab" href="/boards/next" target="_blank">newtab</a>';
+    const posted = withClick("newtab");
+    expect(posted.event.defaultPrevented).toBe(true);
+    expect(posted.messages.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(true);
   });
 });
 

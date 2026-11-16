@@ -271,6 +271,18 @@ export function initDesignStudioRuntime(): void {
     }
   })();
 
+  // The preview host serves the app both at its own origin (sticky bare paths,
+  // /proxy/ routes) and at the upstream origin: a link is navigable when it
+  // targets either of them. Everything else stays blocked (NAV-01).
+  const previewOrigin = (() => {
+    try {
+      const origin = window.location.origin;
+      return origin && origin !== "null" ? origin : null;
+    } catch {
+      return null;
+    }
+  })();
+
   const parentOriginsAllowlist: string[] = (() => {
     const raw = runtimeScript?.dataset.parentOrigins;
     if (!raw) return [];
@@ -851,9 +863,11 @@ export function initDesignStudioRuntime(): void {
     const anchor = target.closest<HTMLAnchorElement>("a[href]");
     if (!anchor || !upstreamOrigin || anchor.hasAttribute("download")) return;
     // Predictable link policy for the preview iframe (browse mode):
-    // - same-origin upstream routes navigate inside the preview frame (proxy stays alive);
-    // - links whose target cannot be served by the preview host (any upstream route after an
-    //   href edit, other origins, and dangerous schemes) are blocked with a UI notification.
+    // - links targeting the upstream origin OR the preview host origin (the
+    //   document's own origin: sticky bare paths, /proxy/ routes) navigate
+    //   inside the preview frame (NAV-01);
+    // - links whose target cannot be served by the preview host (other origins,
+    //   dangerous schemes) are blocked with a UI notification.
     let href: URL;
     try {
       href = new URL(anchor.href, window.location.href);
@@ -864,7 +878,10 @@ export function initDesignStudioRuntime(): void {
     const dangerousScheme = ["javascript:", "data:", "vbscript:", "blob:", "about:"].includes(href.protocol);
     if (!dangerousScheme && href.protocol !== "http:" && href.protocol !== "https:") return; // mailto:, tel: — native
     const escapesFrame = Boolean(anchor.target) && anchor.target !== "_self";
-    if (dangerousScheme || href.origin !== upstreamOrigin || escapesFrame) {
+    const navigable =
+      href.origin === upstreamOrigin ||
+      (previewOrigin !== null && href.origin === previewOrigin);
+    if (dangerousScheme || !navigable || escapesFrame) {
       event.preventDefault();
       postToParent({
         type: "ds:navigate-blocked",
