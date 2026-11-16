@@ -240,3 +240,12 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > `.ssh/`, `.aws/`, `.gnupg/`, `.envrc`, `.htpasswd`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
 > `id_rsa*`, `credentials*`. Tests: symlink laundering red->green (junction/dir symlink where
 > the platform allows), extended denylist cases, legit assets still served. SECURITY.md updated.
+
+> P1-4 (incoming Origin policy + sec-fetch normalization) — FIXED: `handle` returns 403 and
+> `handleUpgrade` tears the socket down when a request carries an `Origin` that is neither the
+> preview origin nor `vscode-webview://*` (`Origin: null` rejected); absent Origin (navigations)
+> still allowed. `buildForwardHeaders` and the WS handshake rewrite now set
+> `sec-fetch-site: same-origin` whenever `origin` is rewritten to the upstream, so fetch-metadata
+> heuristics (Next.js server actions) don't reject valid proxied calls. Tests: foreign/`null`
+> Origin -> 403, local/webview/absent -> 200, upstream sees `sec-fetch-site: same-origin`;
+> legacy WS test updated to send the preview origin. SECURITY.md: Origin-policy bullet added.

@@ -60,7 +60,7 @@ beforeAll(async () => {
       res.end('<!DOCTYPE html><html><head><title>Dashboard</title></head><body><main>Dash</main></body></html>');
     } else if (p === "/echo-headers") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ rsc: req.headers["rsc"] ?? null, cookie: req.headers["cookie"] ?? null, origin: req.headers["origin"] ?? null }));
+      res.end(JSON.stringify({ rsc: req.headers["rsc"] ?? null, cookie: req.headers["cookie"] ?? null, origin: req.headers["origin"] ?? null, "sec-fetch-site": req.headers["sec-fetch-site"] ?? null }));
     } else if (p === "/api/login") {
       const parts: Buffer[] = [];
       req.on("data", (c) => parts.push(c));
@@ -682,6 +682,46 @@ describe("PreviewHostServer", () => {
     expect(proper.status).toBe(200);
   });
 
+  // P1-4: requests carrying a foreign Origin must be refused so malicious
+  // pages cannot drive the loopback host as a proxy (no-cors POST etc.).
+  // Navigations legitimately omit Origin and keep working.
+  it("rejects foreign Origin headers (P1-4)", async () => {
+    const evil = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
+      method: "POST",
+      headers: { Origin: "https://evil.example" },
+    });
+    expect(evil.status).toBe(403);
+    const nullOrigin = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
+      method: "POST",
+      headers: { Origin: "null" },
+    });
+    expect(nullOrigin.status).toBe(403);
+    const local = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
+      method: "POST",
+      headers: { Origin: server.origin },
+    });
+    expect(local.status).toBe(200);
+    const noOrigin = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+    expect(noOrigin.status).toBe(200);
+    const webviewOrigin = await request(`${server.origin}/demo.html`, {
+      headers: { Origin: "vscode-webview://webview-abc" },
+    });
+    expect(webviewOrigin.status).toBe(200);
+  });
+
+  // P1-4: once the forward headers rewrite `origin` to the upstream, the
+  // request looks same-origin to the upstream — sec-fetch-site must agree.
+  it("normalizes sec-fetch-site to same-origin when rewriting origin (P1-4)", async () => {
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
+      headers: { Origin: server.origin, "Sec-Fetch-Site": "cross-site" },
+    });
+    expect(res.status).toBe(200);
+    const echo = JSON.parse(res.body) as { origin: string | null; "sec-fetch-site": string | null };
+    expect(echo.origin).toContain("127.0.0.1");
+    expect(echo.origin).not.toBe(server.origin);
+    expect(echo["sec-fetch-site"]).toBe("same-origin");
+  });
+
   it("keeps the cookie jar scoped per upstream origin", async () => {
     const isolateServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
     await isolateServer.start();
@@ -834,7 +874,9 @@ describe("PreviewHostServer", () => {
             "Connection: Upgrade\r\n" +
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
             "Sec-WebSocket-Version: 13\r\n" +
-            "Origin: http://127.0.0.1:1\r\n" +
+            // P1-4: a browser frame sends its own (preview) origin; foreign
+            // origins are now rejected outright.
+            `Origin: ${server.origin}\r\n` +
             "\r\n"
         );
       });

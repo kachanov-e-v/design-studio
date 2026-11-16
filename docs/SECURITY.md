@@ -34,6 +34,7 @@
 - Обмен строго привязан к origin с обеих сторон (P1-1):
   - webview → iframe: все `postMessage` уходят с явным `targetOrigin` (origin preview-хоста), никогда с `"*"`; входящие сообщения принимаются только при `event.origin === origin preview-хоста`.
   - runtime → webview: `ds:ping` принимается только от доверенного родителя — `vscode-webview://*`, list из атрибута `data-parent-origins` (прокидывается при инъекции, содержит origin preview-хоста) либо same-origin; до принятия ping'а runtime ничего не отправляет родителю, ответы уходят строго на `event.origin` ping'а, никогда на `"*"`.
+- **Проверка Origin входящих запросов (P1-4).** Запрос с заголовком `Origin`, не равным origin preview-хоста (или `vscode-webview://*`), отклоняется с 403 (для WebSocket-upgrade — соединение закрывается). Это закрывает no-cors CSRF: чужая веб-страница не может использовать preview-хост как прокси к другим loopback-сервисам. Запросы без `Origin` (обычные навигации) принимаются; `Origin: null` отклоняется. При проксировании `origin` переписывается на upstream и `sec-fetch-site` устанавливается в `same-origin` (в HTTP-прокси и WS-handshake), чтобы fetch-metadata приложений (например, Next.js server actions) не отклоняли валидные запросы.
 - Канал **Design Studio Preview** предназначен для диагностики и записывает маршрут запроса, URL upstream, статус ответа и redirect metadata. При диагностике не публикуйте логи без проверки: query-параметры URL могут содержать данные вашего локального приложения.
 
 ## Граница доверия

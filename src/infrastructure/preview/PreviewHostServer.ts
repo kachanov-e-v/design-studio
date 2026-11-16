@@ -308,6 +308,20 @@ export class PreviewHostServer {
     return host === `${this.host}:${this.port}` || host === `localhost:${this.port}` || host === `[::1]:${this.port}`;
   }
 
+  /**
+   * P1-4: an incoming request that carries an Origin must claim this preview
+   * origin (or the VS Code webview) — otherwise a hostile web page could drive
+   * the loopback host as a no-cors proxy. Navigations legitimately omit
+   * Origin, so an absent header is accepted.
+   */
+  private originAllowed(rawOrigin: string | undefined): boolean {
+    if (!rawOrigin) return true;
+    const origin = rawOrigin.toLowerCase().trim();
+    if (origin === "null") return false;
+    if (origin.startsWith("vscode-webview://")) return true;
+    return origin === this.origin.toLowerCase();
+  }
+
   async start(): Promise<number> {
     if (this.server) return this.port;
     const server = http.createServer((req, res) => {
@@ -382,6 +396,11 @@ export class PreviewHostServer {
     if (!this.hostAllowed(req.headers.host)) {
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Forbidden Host header");
+      return;
+    }
+    if (!this.originAllowed(req.headers.origin)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Forbidden Origin header");
       return;
     }
     const method = req.method ?? "GET";
@@ -579,7 +598,13 @@ export class PreviewHostServer {
       headers[key] = Array.isArray(value) ? value.join(", ") : (value ?? "");
     }
     const upstreamOrigin = target.origin;
-    if (headers["origin"]) headers["origin"] = upstreamOrigin;
+    if (headers["origin"]) {
+      headers["origin"] = upstreamOrigin;
+      // P1-4: after the origin rewrite the request reads as same-origin to the
+      // upstream; a forwarded cross-site fetch-metadata would contradict it
+      // and make Next.js-style server actions reject the call.
+      headers["sec-fetch-site"] = "same-origin";
+    }
     if (headers["referer"]) {
       try {
         const ref = new URL(headers["referer"]);
@@ -916,6 +941,10 @@ export class PreviewHostServer {
       socket.destroy();
       return;
     }
+    if (!this.originAllowed(req.headers.origin)) {
+      socket.destroy();
+      return;
+    }
     const raw = req.url ?? "";
     const target = this.barePathTarget(req, raw);
     if (!target) {
@@ -1007,7 +1036,7 @@ export class PreviewHostServer {
   private writeUpgradeRequest(upstreamSocket: net.Socket, req: http.IncomingMessage, parsedTarget: URL): void {
     const headers = [`${req.method ?? "GET"} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
     for (const [key, value] of Object.entries(req.headers)) {
-      if (key === "host" || key === "origin") continue;
+      if (key === "host" || key === "origin" || key === "sec-fetch-site") continue;
       if (Array.isArray(value)) {
         for (const item of value) if (item) headers.push(`${key}: ${item}`);
       } else if (value) {
@@ -1016,6 +1045,8 @@ export class PreviewHostServer {
     }
     headers.push(`Host: ${parsedTarget.host}`);
     headers.push(`Origin: ${parsedTarget.origin}`);
+    // P1-4: the origin is rewritten above, so the fetch metadata must agree.
+    headers.push("Sec-Fetch-Site: same-origin");
     upstreamSocket.write(headers.join("\r\n") + "\r\n\r\n");
   }
 }
