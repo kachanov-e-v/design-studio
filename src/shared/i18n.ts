@@ -7,7 +7,8 @@ const messages = {
   "toolbar.server": { ru: "Сервер", en: "Server" },
   "toolbar.useServer": { ru: "Открыть", en: "Open" },
   "toolbar.files": { ru: "Файлы", en: "Files" },
-  "toolbar.serverPlaceholder": { ru: "http://localhost:3000 или путь страницы", en: "http://localhost:3000 or a page path" },
+  "toolbar.serverPlaceholder": { ru: "http://localhost:3000", en: "http://localhost:3000" }, // P2-19: only full dev-server URLs are accepted
+  "toolbar.noEntry": { ru: "Выберите страницу", en: "Select a page" }, // P2-19
   "toolbar.projectMissing": { ru: "Откройте папку проекта", en: "Open a project folder" },
   "toolbar.edit": { ru: "Просмотр", en: "Browse" },
   "toolbar.editOn": { ru: "Редактировать", en: "Edit" },
@@ -82,6 +83,7 @@ const messages = {
   "popup.placeholder": { ru: "Что изменить в этом элементе", en: "What to change in this element" },
   "popup.copyForAi": { ru: "Скопировать для ИИ", en: "Copy for AI" },
   "popup.unnamedElement": { ru: "Безымянный элемент", en: "Unnamed element" },
+  "popup.close": { ru: "Закрыть", en: "Close" }, // P2-6
   "status.sourceTooLarge": { ru: "Файл компонента слишком большой для буфера обмена", en: "Component file is too large for the clipboard" },
   "status.styleApplied": { ru: "Стиль применён к предпросмотру", en: "Style applied to preview" },
   "status.styleSaved": { ru: "Стили сохранены: {file}", en: "Styles saved: {file}" },
@@ -98,6 +100,8 @@ const messages = {
   "status.styleTimeout": { ru: "Превышено время ожидания стиля", en: "Style update timed out" },
   "status.operationFailed": { ru: "Не удалось изменить элемент", en: "Could not update element" },
   "status.previewError": { ru: "Ошибка предпросмотра", en: "Preview error" },
+  "app.errorTitle": { ru: "Интерфейс упал", en: "The UI crashed" }, // P2-20
+  "app.reload": { ru: "Перезагрузить", en: "Reload" }, // P2-20
   "status.extensionError": { ru: "Ошибка расширения: {error}", en: "Extension error: {error}" },
 } as const;
 

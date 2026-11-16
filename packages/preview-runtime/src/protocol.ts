@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = "5";
+export const PROTOCOL_VERSION = "6";
 
 /** A CSS rule from a real stylesheet the element matches. */
 export interface SourceRule {
@@ -102,6 +102,14 @@ export interface ReloadMessage {
   sessionId?: string;
 }
 
+/** Fresh viewport rect of the selected element (P2-6: popup follows scroll/resize). */
+export interface RectMessage {
+  type: "ds:rect";
+  version: string;
+  rect: { top: number; left: number; width: number; height: number };
+  sessionId?: string;
+}
+
 export interface RuntimeReadyMessage {
   type: "ds:runtime-ready";
   version: string;
@@ -188,6 +196,7 @@ export type RuntimeMessage =
   | NavigateHistoryMessage
   | NavigateBlockedMessage
   | ReloadMessage
+  | RectMessage
   | RuntimeErrorMessage;
 
 const RUNTIME_TYPES = new Set([
@@ -205,6 +214,7 @@ const RUNTIME_TYPES = new Set([
   "ds:navigate-history",
   "ds:navigate-blocked",
   "ds:reload",
+  "ds:rect",
   "ds:runtime-error",
 ]);
 
@@ -262,6 +272,12 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
       if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
+    case "ds:rect": {
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      if (!v.rect || typeof v.rect !== "object" || Array.isArray(v.rect)) return false;
+      const rr = v.rect as Record<string, unknown>;
+      return isFiniteNumber(rr.top) && isFiniteNumber(rr.left) && isFiniteNumber(rr.width) && isFiniteNumber(rr.height);
+    }
     case "ds:runtime-error":
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.message === "string" && v.message.length <= 500;

@@ -12,6 +12,7 @@ export interface SelectionPopupProps {
   language: Language;
   onReveal: (components: { name?: string; file?: string; line?: number }[]) => void;
   onCopyInstruction: (instruction: string) => void;
+  onClose?: () => void;
 }
 
 const MARGIN = 8;
@@ -27,6 +28,7 @@ export const SelectionPopup = function SelectionPopup({
   language,
   onReveal,
   onCopyInstruction,
+  onClose,
 }: SelectionPopupProps): React.ReactElement {
   const popupRef = useRef<HTMLDivElement | null>(null);
   const [popupSize, setPopupSize] = useState<{ width: number; height: number } | null>(null);
@@ -88,6 +90,17 @@ export const SelectionPopup = function SelectionPopup({
         >
           {translate(language, "popup.goTo")}
         </button>
+        {onClose && (
+          <button
+            type="button"
+            className={styles.goButton}
+            aria-label={translate(language, "popup.close")}
+            title={translate(language, "popup.close")}
+            onClick={onClose}
+          >
+            x
+          </button>
+        )}
       </div>
       <textarea
         className={styles.input}
@@ -95,7 +108,7 @@ export const SelectionPopup = function SelectionPopup({
         rows={1}
         onInput={(event) => autoGrow(event.currentTarget)}
         onKeyDown={(event) => {
-          if (event.key === "Escape") event.currentTarget.blur();
+          if (event.key === "Escape") { event.currentTarget.blur(); onClose?.(); }
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) submit();
         }}
       />

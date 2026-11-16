@@ -88,6 +88,9 @@ export function Toolbar({
             aria-label={t("toolbar.projectPage")}
           >
             {showDevServer && <option value="__devserver">{devServerValue || "Next.js"}</option>}
+            {!showDevServer && !projectEntry && (
+              <option value="" disabled>{t("toolbar.noEntry")}</option>
+            )}
             <option value="__demo">{t("toolbar.demo")}</option>
             {suggested && !showDevServer && <option value={`__suggest:${suggested.url}`}>{suggestLabel(suggested)}</option>}
             {(projectEntries ?? []).map((entry) => <option key={entry} value={entry}>{entry}</option>)}

@@ -279,6 +279,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         );
         return;
       }
+      if (data.type === "ds:rect") {
+        // P2-6: the popup follows the selected element on scroll/resize.
+        setPopupTarget((current) => (current ? { ...current, rect: data.rect } : current));
+        return;
+      }
       if (data.type === "ds:style-applied") {
         onStyleAppliedRef.current?.({
           success: data.success,
@@ -472,6 +477,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 language={language}
                 onReveal={(components) => onRevealSource?.(components)}
                 onCopyInstruction={(instruction) => onCopyInstruction?.(instruction)}
+                onClose={() => setPopupTarget(null)}
               />
             )}
           </>

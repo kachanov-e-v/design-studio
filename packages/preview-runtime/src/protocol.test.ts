@@ -90,3 +90,15 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: Array(7).fill({ name: "X" }) } })).toBe(false);
   });
 });
+
+describe("ds:rect validation (P2-6)", () => {
+  it("accepts a finite rect", () => {
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: 1, left: 2, width: 3, height: 4 } })).toBe(true);
+  });
+
+  it("rejects missing or non-finite rect", () => {
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: NaN, left: 2, width: 3, height: 4 } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: 1, left: 2, width: 3 } })).toBe(false);
+  });
+});

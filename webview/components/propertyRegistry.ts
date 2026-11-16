@@ -179,8 +179,6 @@ export function attributeDefinitionsForTag(tag: string): AttributeDefinition[] {
   const result: AttributeDefinition[] = [];
   for (const def of ATTRIBUTE_DEFINITIONS) {
     if (def.tags.length > 0 && !def.tags.includes(tag)) continue;
-    // A tag-specific `type` (e.g. button) wins over the generic list of input types.
-    if (def.name === "type" && def.tags.length === 0) continue;
     if (seen.has(def.name)) continue;
     seen.add(def.name);
     result.push(def);

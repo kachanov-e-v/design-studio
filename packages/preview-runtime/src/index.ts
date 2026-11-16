@@ -357,6 +357,15 @@ export function initDesignStudioRuntime(): void {
       if (!editMode) return;
       ensureOutlines();
       positionOutlinesNow();
+      // P2-6: keep the webview popup anchored — repaint the fresh rect on scroll/resize.
+      if (selectedElement) {
+        const rect = selectedElement.getBoundingClientRect();
+        postToParent({
+          type: "ds:rect",
+          version: PROTOCOL_VERSION,
+          rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+        });
+      }
     });
   }
 

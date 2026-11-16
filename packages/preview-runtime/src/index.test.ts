@@ -272,3 +272,31 @@ describe("duplicate op (P2-17)", () => {
     expect(document.querySelectorAll("[data-ds-clone] [id]").length).toBe(0);
   });
 });
+/** P2-6: popup must follow scroll/resize — runtime reposts a fresh rect. */
+describe("selection rect updates (P2-6)", () => {
+  it("posts ds:rect with a fresh rect on scroll while an element is selected", async () => {
+    await spawnRuntime();
+    document.body.innerHTML = '<div id="tip">x</div>';
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    const target = document.getElementById("tip") as Element;
+    target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    // The repost happens on the rAF callback; jsdom schedules it on a ~16 ms
+    // timer, so wait for a real tick and observe postMessage in that window.
+    const posted: Array<{ msg: Record<string, unknown>; target: string }> = [];
+    const spy = vi
+      .spyOn(window, "postMessage")
+      .mockImplementation(((msg: unknown, target: string) => {
+        posted.push({ msg: msg as Record<string, unknown>, target });
+      }) as typeof window.postMessage);
+    try {
+      window.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const rectMsg = posted.find((m) => m.msg.type === "ds:rect");
+      expect(rectMsg).toBeDefined();
+      expect(rectMsg!.target).toBe(trustedOrigin);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
