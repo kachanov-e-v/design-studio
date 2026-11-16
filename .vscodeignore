@@ -10,6 +10,7 @@ docs/**
 .vscode/**
 node_modules/**
 *.ts
+*.map
 tsconfig*.json
 vite.config.ts
 vitest.config.ts
