@@ -189,3 +189,36 @@ Win/macOS/Linux) — помечена как ручная; публикация.
 - Ручная матрица (Next.js dev с авторизацией, Vite, статический проект, демо; RU/EN;
   Windows/macOS/Linux) и `vsce publish` — требуют живой среды и аккаунта publisher'а,
   агентом не выполняются. См. §8 инструкции.
+
+## Сессия NAV/RT/WV/EXT/UX (docs/AI_AGENT_FIX_PLAN.md, Фазы A+B)
+
+Выполнено по `docs/AI_AGENT_FIX_PLAN.md` (Фазы A и B; ledger с деталями —
+`docs/IMPLEMENTATION_PLAN.md`, раздел «Ledger: план NAV/RT/WV/EXT/UX»):
+
+- NAV-01: политика ссылок browse-режима допускает origin preview-хоста И
+  upstream (было: только upstream, из-за `<base>` Polитика была инвертирована
+  и блокировала все внутренние ссылки dev-режима). 4 новых jsdom-теста
+  (preview-origin/upstream/external/target=_blank), jsdom URL через
+  `@vitest-environment-options`.
+- RT-01: `ds:runtime-ready/error` адресуется в непосредственного родителя
+  (`pickAnnouncementOrigin(origins)=origins[0]`), а не в topmost.
+- WV-01: журнал правок webview очищается при реальной смене маршрута из
+  `ds:navigate` (`resetSessionEdits` + `lastRouteRef`); тест на App целиком.
+- WV-02: убран дубль sessionId-проверки; `devServer` в `ds:navigate` берётся
+  из ref (нет устаревшего замыкания); тест адресной строки.
+- EXT-01: `SourceHintFinder` — общий бюджет чтения 32 МБ
+  (`MAX_TOTAL_BYTES`, опция `maxTotalBytes`), детерминированный порядок; тесты.
+- UX-01: no-op персистентности («Property already has this value») = успех,
+  очередь `pendingStyles` дренируется; тесты адаптера и persistContract.
+- DOC: TROUBLESHOOTING (симптом NAV-01), CHANGELOG (P0-3 уточнён), план
+  переименован в `docs/AI_AGENT_FIX_PLAN.md`.
+
+Гейты: typecheck, lint (0 ошибок), test 317 (25 файлов), build+verify —
+зелёные. Коммиты: NAV-01, docs, RT-01, WV-01, WV-02, EXT-01, UX-01, type-fixes.
+
+Не выполнено (следующие фазы вручную проверяемого характера):
+- Фаза C — NAV-02 (нативная SPA-навигация на голых маршрутах).
+- Фаза D — CSS-01 (нужен protocol bump), ENG-бэклог.
+- Ручная матрица §14 (Extension Development Host, F5, Next.js с
+  авторизацией) — выполняет пользователь после `npm run build` +
+  Developer: Reload Window.

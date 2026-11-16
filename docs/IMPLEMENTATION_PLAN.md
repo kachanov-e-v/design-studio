@@ -426,3 +426,84 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > fixtures/scripts/.github/coverage). Ручная матрица проверки (Next.js+логин, Vite,
 > статический проект, демо, RU/EN, Win/macOS/Linux) и публикация в Marketplace —
 > вне зоны автоматизации агента, выполняются человеком.
+
+# Ledger: план NAV/RT/WV/EXT/UX (docs/AI_AGENT_FIX_PLAN.md)
+
+Источник задач: `docs/AI_AGENT_FIX_PLAN.md` (аудит 16.11.2026). Baseline перед
+правками: typecheck/lint/test(305)/build — зелёные. Гейты после Фаз A/B — зелёные
+(test 317). Ручная матрица §14 плана остаётся на пользователя (Extension
+Development Host, F5).
+
+## NAV-01 (P0) — Фаза A
+- Корневая причина: `packages/preview-runtime/src/index.ts:867` сравнивал origin
+  ссылки (резолвится через внедрённый `<base>` = origin прокси) только с
+  `data-upstream-origin` (origin dev-сервера) — всегда не равны → все внутренние
+  ссылки блокировались (политика инвертирована). Тесты не ловили: jsdom без
+  атрибута, комбинация «base=прокси + attr=upstream + клик» не покрывалась.
+- Исправлено: allowlist из двух origin (upstream + origin документа,
+  `previewOrigin`); опасные схемы, внешние origin и target≠_self — блокируются.
+  Комментарии `proxy-html.ts` (InjectOptions.upstreamOrigin) и
+  `PreviewHostServer.test.ts` обновлены (двойная семантика).
+- Тест: `packages/preview-runtime/src/index.test.ts` — jsdom URL
+  `http://127.0.0.1:9533/boards/current` через `@vitest-environment-options`;
+  кейсы NAV-01 (preview-origin navigated; absolute upstream not blocked;
+  external blocked; target=_blank blocked). Красный ДО (9533≠4600 → blocked),
+  зелёный ПОСЛЕ. Тестов 305→309.
+- Коммит: fix(runtime): NAV-01 allow preview-host origin in browse-mode link
+  policy; docs: TROUBLESHOOTING раздел с симптомом, CHANGELOG P0-3 corrected,
+  план переименован `AI_AGENT_FIX_PLAN.md.md`→`.md`.
+
+## RT-01 (P1) — Фаза B
+- Корневая причина: `postRuntimeAnnouncement` брал
+  `ancestorOrigins[length-1]` (topmost), а шлёт в `window.parent` — во
+  вложенном webview VS Code анонс молча дропался.
+- Исправлено: экспортируемая чистая `pickAnnouncementOrigin()` → `origins[0]`.
+- Тест: `packages/preview-runtime/src/announcementOrigin.test.ts` (4 кейса);
+  существующие анонс-тесты зелёные.
+- Коммит: fix(runtime): RT-01 announce to the immediate parent origin.
+
+## WV-01 (P1) — Фаза B
+- Корневая причина: `webview/App.tsx` чистил журнал (selected/pendingStyles/
+  edits/styleError) только в эффекте `[state.url]`; `ds:navigate` менял
+  маршрут, журнал оставался → селекторы прошлой страницы утекали в инструкцию
+  и в «Сохранить стили».
+- Исправлено: `resetSessionEdits()` + `lastRouteRef` в
+  `handlePreviewLocationChange` — очистка только при ИЗМЕНЕНИИ пути
+  (ds:navigate шлётся и с тем же путём).
+- Тест: `webview/App.test.tsx` (jsdom+testing-library, фиксированный
+  randomUUID, acquireVsCodeApi-stub, полный поток сообщений). Красный ДО,
+  зелёный ПОСЛЕ.
+- Коммит: fix(webview): WV-01 reset edit journal on real iframe route change.
+
+## WV-02 (P2) — Фаза B
+- Корневая причина: дубль `if (sid && sid !== sessionIdRef.current) return;` в
+  `PreviewContainer.tsx` (248–249); обработчик `[url]` замыкал устаревший
+  `devServer` → адресная строка показывала старый origin после смены сервера.
+- Исправлено: дубль удалён; `devServerRef` читается в `ds:navigate`.
+- Тест: `PreviewContainer.test.tsx` describe "address freshness (WV-02)" —
+  rerender с новым devServer при том же url → адрес из нового origin (красный
+  на старом замыкании).
+- Коммит: fix(webview): WV-02 dedupe sessionId check, fresh devServer....
+
+## EXT-01 (P1) — Фаза B
+- Корневая причина: `SourceHintFinder.ts` читал до 3000×300 КБ в Map на каждый
+  «Скопировать инструкцию» (worst case ~900 МБ) без общего бюджета.
+- Исправлено: `MAX_TOTAL_BYTES = 32 МБ` (+ опция `maxTotalBytes` для тестов);
+  последовательное детерминированное чтение; при превышении новые файлы не
+  читаются, поиск по прочитанным продолжается.
+- Тест: budget-кейсы в `SourceHintFinder.test.ts` (3 файла, бюджет 10 Б →
+  читается ровно 1; полный бюджет → все 3). Красный ДО.
+- Коммит: fix(extension): EXT-01 cap SourceHintFinder workspace reads....
+
+## UX-01 (P2) — Фаза B
+- Корневая причина: no-op правка возвращала `success:false`
+  («Property already has this value»), а `ackPendingStyles` дренирует очередь
+  только по success → правка зависала в `pendingStyles` навсегда.
+- Исправлено: no-op = `success:true` (message + file); реальные отказы не
+  тронуты. `ackPendingStyles` принимает `message` (часть shape результата).
+- Тесты: `StylePersistenceAdapter.test.ts` (no-op → success:true + file),
+  `persistContract.test.ts` (такой ack осушает очередь).
+- Коммит: fix(persistence): UX-01 treat no-op edits as success....
+
+Гейты после Фаз A+B: typecheck OK, lint 0 ошибок (3 известных warning),
+test 317 (25 файлов), build verify-build зелёный.
