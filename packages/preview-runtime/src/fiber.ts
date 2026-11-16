@@ -100,7 +100,7 @@ function pushOwner(out: ComponentInfo[], seen: Set<string>, owner: FiberLike, so
 export function findFiber(el: Element): FiberLike | undefined {
   try {
     const holder = el as unknown as Record<string, unknown>;
-    const fiberKey = Object.keys(holder).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternal$"));
+    const fiberKey = Object.keys(holder).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
     if (!fiberKey) return undefined;
     const fiber = holder[fiberKey];
     return fiber && typeof fiber === "object" ? (fiber as FiberLike) : undefined;

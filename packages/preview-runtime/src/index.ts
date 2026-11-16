@@ -42,8 +42,7 @@ export function getSelector(el: Element): string {
   }
   const parts: string[] = [];
   let current: Element | null = el;
-  let depth = 0;
-  while (current && current.nodeType === 1 && depth < 6) {
+  while (current && current.nodeType === 1) {
     let part = current.tagName.toLowerCase();
     if (current.classList.length) {
       part += "." + Array.from(current.classList).slice(0, 2).map(CSS.escape).join(".");
@@ -57,7 +56,6 @@ export function getSelector(el: Element): string {
     }
     parts.unshift(part);
     current = parentEl;
-    depth++;
     if (current === document.body || current === null) break;
   }
   while (parts.length > 1 && parts.join(" > ").length > 500) parts.shift();
@@ -137,6 +135,90 @@ export function postRuntimeAnnouncement(
   } catch {
     // Handshake falls back to ping/pong.
   }
+}
+
+/**
+ * Matched source rules from the given stylesheets, walking grouping rules
+ * (@media/@supports/@layer/@container) recursively. Shared export so the
+ * walker is unit-testable without a live document.
+ */
+const MAX_RULES = 8;
+const MAX_SCANNED = 1500;
+const MAX_CSS_TEXT = 2000;
+type WalkableSheet = { href?: string | null; cssRules?: { length?: number } };
+
+function isStyleRuleLike(rule: unknown): rule is { selectorText: string; cssText: string } {
+  if (typeof rule !== "object" || rule === null) return false;
+  const r = rule as { selectorText?: unknown; cssText?: unknown };
+  return typeof r.selectorText === "string" && typeof r.cssText === "string";
+}
+
+function hasChildRules(rule: unknown): rule is { cssRules: CSSRuleList } {
+  if (typeof rule !== "object" || rule === null) return false;
+  const r = rule as { cssRules?: unknown };
+  return typeof r.cssRules === "object" && r.cssRules !== null && typeof (r.cssRules as { length?: unknown }).length === "number";
+}
+
+export function collectSourceRulesFromStylesheets(
+  sheets: Iterable<WalkableSheet>,
+  el: Element,
+  opts: { maxRules?: number; maxScanned?: number } = {}
+): SourceRule[] | undefined {
+  const maxRules = opts.maxRules ?? MAX_RULES;
+  const maxScanned = opts.maxScanned ?? MAX_SCANNED;
+  const result: SourceRule[] = [];
+  const seen = new Set<string>();
+  let scanned = 0;
+
+  for (const sheet of sheets) {
+    const sheetHref = sheet.href;
+    if (!sheetHref) continue;
+    const rules: CSSRuleList | undefined = sheet.cssRules as CSSRuleList | undefined;
+    if (!rules) continue;
+    const walk = (list: CSSRuleList): void => {
+      for (const rule of Array.from(list)) {
+        if (scanned >= maxScanned) return;
+        scanned++;
+        if (hasChildRules(rule)) {
+          walk(rule.cssRules);
+          if (scanned >= maxScanned) return;
+          continue;
+        }
+        if (!isStyleRuleLike(rule)) continue;
+        const selectorText = rule.selectorText;
+        let matches = false;
+        try {
+          matches = el.matches(selectorText);
+        } catch {
+          continue;
+        }
+        if (!matches) continue;
+        const key = sheet.href + "\u0000" + selectorText + "\u0000" + rule.cssText;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({ href: sheetHref, selectorText, cssText: rule.cssText.slice(0, MAX_CSS_TEXT) });
+        if (result.length >= maxRules) return;
+      }
+    };
+    walk(rules);
+    if (result.length >= maxRules) break;
+  }
+  return result.length > 0 ? result : undefined;
+}
+
+/** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
+function collectSourceRules(el: Element): SourceRule[] | undefined {
+  const sheets: WalkableSheet[] = [];
+  for (const sheet of document.styleSheets) {
+    if (!sheet.href) continue;
+    try {
+      void sheet.cssRules;
+    } catch {
+      continue;
+    }
+    sheets.push(sheet);
+  }
+  return collectSourceRulesFromStylesheets(sheets, el);
 }
 
 export function initDesignStudioRuntime(): void {
@@ -296,41 +378,6 @@ export function initDesignStudioRuntime(): void {
     outlineFrame = 0;
     if (hoverOutline) hoverOutline.style.display = "none";
     if (selectionOutline) selectionOutline.style.display = "none";
-  }
-
-  /** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
-  function collectSourceRules(el: Element): SourceRule[] | undefined {
-    const result: SourceRule[] = [];
-    const seen = new Set<string>();
-    let scanned = 0;
-    for (const sheet of document.styleSheets) {
-      if (!sheet.href) continue;
-      let rules: CSSRuleList;
-      try {
-        rules = sheet.cssRules;
-      } catch {
-        continue;
-      }
-      for (const rule of rules) {
-        if (scanned++ >= 1500) return result.length > 0 ? result : undefined;
-        if (!(rule instanceof CSSStyleRule)) continue;
-        const selectorText = rule.selectorText;
-        if (!selectorText) continue;
-        let matches = false;
-        try {
-          matches = el.matches(selectorText);
-        } catch {
-          continue;
-        }
-        if (!matches) continue;
-        const key = `${sheet.href}\u0000${selectorText}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push({ href: sheet.href, selectorText, cssText: rule.cssText.slice(0, 2000) });
-        if (result.length >= 8) return result;
-      }
-    }
-    return result.length > 0 ? result : undefined;
   }
 
   /** Tailwind usage flag for the current document, cached per load. */
@@ -530,6 +577,8 @@ export function initDesignStudioRuntime(): void {
         case "duplicate": {
           const clone = selectedElement.cloneNode(true) as HTMLElement;
           if (clone.id) clone.removeAttribute("id");
+          // Descendant ids must not be duplicated in the DOM.
+          for (const child of clone.querySelectorAll("[id]")) child.removeAttribute("id");
           clone.setAttribute("data-ds-clone", Date.now().toString(36));
           selectedElement.after(clone);
           selectedElement = clone;

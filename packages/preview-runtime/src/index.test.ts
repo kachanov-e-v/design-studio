@@ -187,3 +187,88 @@ describe("runtime announcements", () => {
     expect(posted).toHaveLength(0);
   });
 });
+
+/**
+ * P2-3: CSS rules nested in @media/@supports/@layer/@container (Tailwind v4
+ * emits only those) must be visible to selection payloads and "Сохранить стили".
+ */
+describe("collectSourceRulesFromStylesheets (P2-3)", () => {
+  it("finds matching style rules nested in grouping rules", async () => {
+    const { collectSourceRulesFromStylesheets } = await import("./index.js");
+    const el = document.createElement("div");
+    el.className = "btn";
+    document.body.appendChild(el);
+    const rules = [
+      {
+        cssRules: [
+          { selectorText: ".btn", cssText: ".btn { color: red; }" },
+          { selectorText: ".other", cssText: ".other { color: blue; }" },
+        ],
+      },
+      { selectorText: ".btn", cssText: ".btn { margin: 0; }" },
+    ];
+    const found = collectSourceRulesFromStylesheets(
+      [{ href: "http://app/app.css", cssRules: rules as unknown as CSSRuleList }],
+      el as Element
+    );
+    expect(found?.map((r) => r.selectorText)).toEqual([".btn", ".btn"]);
+    expect(found?.[0].href).toBe("http://app/app.css");
+  });
+
+  it("respects the shared scan budget", async () => {
+    const { collectSourceRulesFromStylesheets } = await import("./index.js");
+    const el = document.createElement("div");
+    el.className = "btn";
+    document.body.appendChild(el);
+    const filler = Array.from({ length: 2000 }, () => ({ selectorText: ".noise", cssText: ".noise {}" }));
+    const found = collectSourceRulesFromStylesheets(
+      [{ href: "http://app/big.css", cssRules: filler as unknown as CSSRuleList }],
+      el
+    );
+    // No matching rule within the budget — no rules at all.
+    expect(found).toBeUndefined();
+  });
+});
+
+/** P2-12: React 16 mounts fragments at __reactInternalInstance$ keys. */
+describe("findFiber React 16 keys (P2-12)", () => {
+  it("matches __reactInternalInstance$ prefix", async () => {
+    const { findFiber } = await import("./index.js");
+    const el = document.createElement("div");
+    const fiber = { tag: 5 };
+    const holder = el as unknown as Record<string, unknown>;
+    holder["__reactInternalInstance$abc123"] = fiber;
+    expect(findFiber(el)).toBe(fiber);
+  });
+});
+
+/**
+ * P2-17: getSelector walks to the body, so deep nodes that share their six
+ * nearest ancestors still get distinct selectors.
+ */
+describe("getSelector uniqueness (P2-17)", () => {
+  it("is unique for a deep chain whose distinguishing ancestor is beyond 6 levels", async () => {
+    const { getSelector } = await import("./index.js");
+    const chain = (): string => Array.from({ length: 9 }, () => "<div>").join("") + "<span class=leaf>x</span>" + Array.from({ length: 9 }, () => "</div>").join("");
+    document.body.innerHTML = '<div><div class=chainA>' + chain() + '</div><div class=chainB>' + chain() + '</div></div>';
+    const leafB = document.querySelector(".chainB .leaf") as Element;
+    const selector = getSelector(leafB);
+    expect(document.querySelectorAll(selector).length).toBe(1);
+  });
+});
+
+/** P2-17: duplicating an element must not duplicate the ids of its descendants. */
+describe("duplicate op (P2-17)", () => {
+  it("strips ids from the clone and its descendants", async () => {
+    document.body.innerHTML = '<div id="target"><section><p id="para">x</p></section></div>';
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    const target = document.getElementById("target") as Element;
+    target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "duplicate", requestId: "r-1", sessionId: "n-1" }, trustedOrigin);
+    expect(document.querySelectorAll("#target").length).toBe(1);
+    expect(document.querySelectorAll("#para").length).toBe(1);
+    expect(document.querySelectorAll("[data-ds-clone] [id]").length).toBe(0);
+  });
+});
