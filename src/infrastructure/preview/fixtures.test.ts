@@ -76,4 +76,29 @@ describe("static-site integration fixture", () => {
     expect(svg.status).toBe(200);
     expect(svg.headers["content-type"]).toContain("svg");
   });
+
+  // P0-1: the injected <base> must point into /project/ (and the page's
+  // directory) so relative href/src resolve like a real browser would.
+  it("injects a /project/ base href so relative URLs resolve", async () => {
+    const home = await get(`${server.origin}/project/`);
+    const base = /<base\s[^>]*href="([^"]*)"/.exec(home.body)?.[1] ?? "";
+    expect(base).toBe(`${server.origin}/project/`);
+    // Resolve relative references exactly as the browser would.
+    expect((await get(`${base}styles.css`)).status).toBe(200);
+    expect((await get(`${base}images/logo.svg`)).status).toBe(200);
+    expect((await get(`${base}about.html`)).status).toBe(200);
+
+    const about = await get(`${server.origin}/project/about.html`);
+    const aboutBase = /<base\s[^>]*href="([^"]*)"/.exec(about.body)?.[1] ?? "";
+    expect(aboutBase).toBe(`${server.origin}/project/`);
+  });
+
+  it("respects an authored <base> and never overrides it", async () => {
+    const res = await get(`${server.origin}/project/authored-base.html`);
+    expect(res.status).toBe(200);
+    const bases = res.body.match(/<base\s[^>]*href=/g) ?? [];
+    expect(bases).toHaveLength(1);
+    expect(res.body).toContain('href="https://example.com/assets/"');
+    expect(res.body).toContain("/__ds-runtime.js");
+  });
 });

@@ -478,6 +478,16 @@ export class PreviewHostServer {
     }
     this.serveProjectPath(res, resolved);
   }
+  /** The document URL prefix for /project/ pages: origin + /project/ + page directory. */
+  private projectBaseHrefFor(filePath: string): string {
+    const rel = this.projectRoot ? path.relative(this.projectRoot, filePath) : path.basename(filePath);
+    const posixRel = rel.split(path.sep).join("/");
+    let dir = path.posix.dirname(posixRel);
+    if (dir === "." || dir === "/") dir = "";
+    const encoded = dir.split("/").filter((s) => s.length > 0).map(encodeURIComponent).join("/");
+    return `${this.origin}/project/${encoded ? `${encoded}/` : ""}`;
+  }
+
   private serveProjectPath(res: http.ServerResponse, filePath: string): void {
     let content: Buffer;
     try {
@@ -492,7 +502,12 @@ export class PreviewHostServer {
     if (ext === ".html" && contentType.startsWith("text/html")) {
       let htmlContent = content.toString("utf8");
       htmlContent = injectRuntimeIntoHtml(htmlContent, "/__ds-runtime.js");
-      htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.origin);
+      // The base must mirror the URL the document is actually served under,
+      // otherwise relative href/src (styles, images, cross-page links) leave
+      // /project/ and 404. Authored <base> tags win.
+      htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.projectBaseHrefFor(filePath), {
+        respectAuthoredBase: true,
+      });
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(htmlContent);
       return;

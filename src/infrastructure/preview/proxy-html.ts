@@ -74,12 +74,26 @@ export function candidateLoopbackTargets(target: string): string[] {
   return candidates;
 }
 
+const AUTHORED_BASE_RE = /<base\s[^>]*href=/i;
+
+export interface InjectOptions {
+  /**
+   * When the document already defines its own <base href>, keep it and only
+   * inject the runtime script: an injected base placed before the authored
+   * one silently overrides it.
+   */
+  respectAuthoredBase?: boolean;
+}
+
 export function buildInjectedHead(runtimeUrl: string, baseHref: string): string {
   return `<base href="${baseHref}">` + `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}></script>`;
 }
 
-export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string): string {
-  const injection = buildInjectedHead(runtimeUrl, baseHref);
+export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
+  const injection =
+    options?.respectAuthoredBase && AUTHORED_BASE_RE.test(html)
+      ? `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}></script>`
+      : buildInjectedHead(runtimeUrl, baseHref);
   // `(?=[\s>])` keeps the match on the real <head>/<body> element — a bare
   // <header>/<bodyart> tag in headless HTML must not swallow the injection.
   const headMatch = /<head(?=[\s>])[^>]*>/i.exec(html);
