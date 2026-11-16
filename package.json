@@ -2,7 +2,7 @@
   "name": "design-studio",
   "displayName": "Дизайн-студия",
   "description": "Минималистичный визуальный редактор компонентов Next.js с экспортом инструкций для ИИ",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "kachanov-e-v",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,8 @@
     "design studio"
   ],
   "engines": {
-    "vscode": "^1.105.1"
+    "vscode": "^1.105.1",
+    "node": ">=20.19"
   },
   "categories": [
     "Visualization",
@@ -30,8 +31,8 @@
     "commands": [
       {
         "command": "design-studio.open",
-        "title": "Открыть дизайн-студию",
-        "category": "Дизайн-студия"
+        "title": "%designStudio.open.title%",
+        "category": "%designStudio.category%"
       }
     ]
   },
@@ -46,7 +47,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.extension.json && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src webview packages/preview-runtime/src scripts",
     "test": "vitest run",
-    "dev:webview": "vite"
+    "dev:webview": "vite",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",
@@ -65,9 +68,35 @@
     "vitest": "^5.1.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^16.5.0",
-    "typescript-eslint": "^8.73.0"
+    "typescript-eslint": "^8.73.0",
+    "@vitest/coverage-v8": "^5.1.0",
+    "@vscode/vsce": "^3.9.2"
   },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "icon": "icons/design-studio.png",
+  "galleryBanner": {
+    "color": "#252f54",
+    "theme": "dark"
+  },
+  "bugs": {
+    "url": "https://github.com/kachanov-e-v/design-studio/issues"
+  },
+  "homepage": "https://github.com/kachanov-e-v/design-studio#readme",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Design Studio reads and writes project files and runs a local loopback preview server; it requires a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "packageManager": "npm@10",
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  }
 }
