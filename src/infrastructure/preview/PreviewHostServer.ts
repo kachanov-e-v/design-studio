@@ -2,7 +2,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor } from "./proxy-html";
+import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor, injectIntoHtml, prependProxyOriginToPathUrls } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 import { validateUpstreamTarget } from "./upstream-validation";
 
@@ -393,7 +393,6 @@ export class PreviewHostServer {
     }
     this.serveProjectPath(res, resolved);
   }
-
   private serveProjectPath(res: http.ServerResponse, filePath: string): void {
     let content: Buffer;
     try {
@@ -406,9 +405,18 @@ export class PreviewHostServer {
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     if (ext === ".html" && contentType.startsWith("text/html")) {
-      const injected = injectRuntimeIntoHtml(content.toString("utf8"), "/__ds-runtime.js");
+      let htmlContent = content.toString("utf8");
+      htmlContent = injectRuntimeIntoHtml(htmlContent, "/__ds-runtime.js");
+      htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.origin);
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
-      res.end(injected);
+      res.end(htmlContent);
+      return;
+    }
+    if (ext === ".css" && contentType.startsWith("text/css")) {
+      const cssContent = content.toString("utf8");
+      const rewritten = prependProxyOriginToPathUrls(cssContent, "/project");
+      res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+      res.end(rewritten);
       return;
     }
     res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
