@@ -5,3 +5,5 @@ dist/
 # Build outputs copied from packages/preview-runtime/dist by scripts/copy-runtime.js
 webview/public/runtime.js
 webview/public/protocol.js
+coverage/
+tmp/

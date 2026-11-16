@@ -30,12 +30,51 @@ function withPostSpy<T>(fn: () => T): Array<{ msg: Record<string, unknown>; targ
  * this shared jsdom window alive. The DOM (script tag attributes) must be
  * prepared BEFORE the import — module import auto-runs the init.
  */
+/**
+ * Listener registrations made by each spawned runtime instance. Removing them
+ * before the next spawn keeps stale instances (which would otherwise re-
+ * handshake on every ping and double-handle every message) out of later tests.
+ */
+interface RuntimeListener {
+  target: EventTarget;
+  type: string;
+  listener: EventListenerOrEventListenerObject;
+  capture: boolean;
+}
+const runtimeListeners: RuntimeListener[] = [];
+
+function captureFlag(opts: boolean | AddEventListenerOptions | undefined): boolean {
+  if (typeof opts === "boolean") return opts;
+  return Boolean(opts?.capture);
+}
+
+function removeRuntimeListeners(): void {
+  while (runtimeListeners.length > 0) {
+    const { target, type, listener, capture } = runtimeListeners.pop()!;
+    target.removeEventListener(type, listener, { capture });
+  }
+}
+
 async function spawnRuntime(scriptAttrs = ""): Promise<void> {
+  removeRuntimeListeners();
   vi.resetModules();
   (window as unknown as { __dsRuntimeInitialized?: boolean }).__dsRuntimeInitialized = false;
   document.head.innerHTML = `<script data-design-studio="1" src="/__ds-runtime.js"${scriptAttrs}></script>`;
-  const mod = await import("./index.js");
-  mod.initDesignStudioRuntime();
+  const winSpy = vi.spyOn(window, "addEventListener");
+  const docSpy = vi.spyOn(document, "addEventListener");
+  try {
+    const mod = await import("./index.js");
+    mod.initDesignStudioRuntime();
+  } finally {
+    for (const [type, listener, opts] of winSpy.mock.calls) {
+      runtimeListeners.push({ target: window, type, listener, capture: captureFlag(opts) });
+    }
+    for (const [type, listener, opts] of docSpy.mock.calls) {
+      runtimeListeners.push({ target: document, type, listener, capture: captureFlag(opts) });
+    }
+    winSpy.mockRestore();
+    docSpy.mockRestore();
+  }
 }
 
 /**
@@ -297,6 +336,199 @@ describe("selection rect updates (P2-6)", () => {
       expect(rectMsg!.target).toBe(trustedOrigin);
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+/**
+ * P3-6 coverage: the session control-message paths — set-mode, apply-style,
+ * apply-op (all element ops) and history/reload navigation — exercised against
+ * the same jsdom runtime spawn used by the policy tests above. Every test
+ * handshakes with its OWN sessionId: earlier runtime instances from previous
+ * spawns are still subscribed to the shared jsdom window, but they drop
+ * messages that carry a foreign session id (only the freshest runtime
+ * answers), which keeps assertions deterministic.
+ */
+describe("session control messages", () => {
+  let sessionCounter = 0;
+
+  async function spawnAndHandshake(): Promise<string> {
+    await spawnRuntime();
+    const session = `sess-${++sessionCounter}`;
+    receivesWithPost({ type: "ds:ping", version: PROTOCOL_VERSION, nonce: session, sessionId: session });
+    return session;
+  }
+
+  function receivesWithPost(data: unknown): Array<{ msg: Record<string, unknown>; target: string }> {
+    return withPostSpy(() => receive(data, trustedOrigin));
+  }
+
+  function message(session: string, extra: Record<string, unknown>): Record<string, unknown> {
+    return { version: PROTOCOL_VERSION, sessionId: session, ...extra };
+  }
+
+  function dispatchPointerDown(el: Element): void {
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperty(down, "target", { value: el });
+    withPostSpy(() => document.dispatchEvent(down));
+  }
+
+  function opApplied(posted: Array<{ msg: Record<string, unknown>; target: string }>): Record<string, unknown> {
+    const applied = posted.find((p) => p.msg.type === "ds:op-applied");
+    expect(applied).toBeDefined();
+    return applied!.msg;
+  }
+
+  async function sessionWithSelected(id: string): Promise<string> {
+    const session = await spawnAndHandshake();
+    await receivesWithPost({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: session });
+    document.body.innerHTML = `<div id="${id}">orig</div>`;
+    dispatchPointerDown(document.getElementById(id)!);
+    return session;
+  }
+
+  it("set-mode toggles edit mode and replies with ds:mode-changed", async () => {
+    const session = await spawnAndHandshake();
+    const posted = receivesWithPost(message(session, { type: "ds:set-mode", enabled: true }));
+    const changed = posted.find((p) => p.msg.type === "ds:mode-changed");
+    expect(changed).toBeDefined();
+    expect(changed!.msg.enabled).toBe(true);
+    const off = receivesWithPost(message(session, { type: "ds:set-mode", enabled: false }));
+    expect(off.find((p) => p.msg.type === "ds:mode-changed")!.msg.enabled).toBe(false);
+  });
+
+  it("ignores control messages with a foreign session id, wrong version or an unvalidated type", async () => {
+    const session = await spawnAndHandshake();
+    const foreign = receivesWithPost({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "intruder" });
+    expect(foreign.some((p) => p.msg.type === "ds:mode-changed")).toBe(false);
+    const wrongVersion = receivesWithPost({ type: "ds:set-mode", version: "1", enabled: true, sessionId: session });
+    expect(wrongVersion.some((p) => p.msg.type === "ds:mode-changed")).toBe(false);
+    const unvalidated = receivesWithPost({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: true, sessionId: session });
+    expect(unvalidated.some((p) => p.msg.type === "ds:mode-changed")).toBe(false);
+  });
+
+  it("apply-style: missing selection failure and applied success path", async () => {
+    const session = await spawnAndHandshake();
+    const none = receivesWithPost(message(session, { type: "ds:apply-style", property: "color", value: "red", requestId: "r2" }));
+    expect(none[0].msg).toMatchObject({ type: "ds:style-applied", success: false, reason: "No selected element", requestId: "r2" });
+
+    await receivesWithPost(message(session, { type: "ds:set-mode", enabled: true }));
+    document.body.innerHTML = '<div id="styled">x</div>';
+    dispatchPointerDown(document.getElementById("styled")!);
+    const ok = receivesWithPost(message(session, { type: "ds:apply-style", property: "color", value: "blue", requestId: "r3" }));
+    const applied = ok.filter((p) => p.msg.type === "ds:style-applied").at(-1);
+    expect(applied).toBeDefined();
+    expect(applied!.msg.success).toBe(true);
+    expect(applied!.msg.requestId).toBe("r3");
+    expect(document.getElementById("styled")!.getAttribute("style")).toContain("color");
+  });
+
+  it("apply-op: set-text on a div, on a text input, and a password refusal", async () => {
+    let posted: Array<{ msg: Record<string, unknown>; target: string }>;
+
+    const sessionA = await sessionWithSelected("target");
+    posted = receivesWithPost(message(sessionA, { type: "ds:apply-op", op: "set-text", value: "Hello", requestId: "r1" }));
+    expect(opApplied(posted)).toMatchObject({ op: "set-text", success: true, requestId: "r1", value: "Hello" });
+    expect(document.getElementById("target")!.textContent).toBe("Hello");
+
+    const sessionB = await spawnAndHandshake();
+    await receivesWithPost(message(sessionB, { type: "ds:set-mode", enabled: true }));
+    document.body.innerHTML = '<input id="field" type="text">';
+    const input = document.getElementById("field") as HTMLInputElement;
+    dispatchPointerDown(input);
+    posted = receivesWithPost(message(sessionB, { type: "ds:apply-op", op: "set-text", value: "Typed", requestId: "r2" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(input.value).toBe("Typed");
+    expect(input.getAttribute("value")).toBe("Typed");
+
+    const sessionC = await spawnAndHandshake();
+    await receivesWithPost(message(sessionC, { type: "ds:set-mode", enabled: true }));
+    document.body.innerHTML = '<input id="secret" type="password">';
+    const password = document.getElementById("secret") as HTMLInputElement;
+    dispatchPointerDown(password);
+    posted = receivesWithPost(message(sessionC, { type: "ds:apply-op", op: "set-text", value: "evil", requestId: "r3" }));
+    expect(opApplied(posted)).toMatchObject({ op: "set-text", success: false, reason: "Password values cannot be edited", requestId: "r3" });
+    expect(password.value).toBe("");
+  });
+
+  it("apply-op: delete selects the parent, move fails without siblings, duplicate and set-classes work", async () => {
+    let posted: Array<{ msg: Record<string, unknown>; target: string }>;
+    const session = await spawnAndHandshake();
+    await receivesWithPost(message(session, { type: "ds:set-mode", enabled: true }));
+
+    document.body.innerHTML = '<div id="wrap"><span id="inner">x</span></div>';
+    dispatchPointerDown(document.getElementById("inner")!);
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "delete", requestId: "r1" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(document.getElementById("wrap")).not.toBeNull();
+    expect(document.getElementById("inner")).toBeNull();
+
+    dispatchPointerDown(document.getElementById("wrap")!);
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "move-up", requestId: "r2" }));
+    expect(opApplied(posted)).toMatchObject({ op: "move-up", success: false, reason: "No previous sibling", requestId: "r2" });
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "move-down", requestId: "r3" }));
+    expect(opApplied(posted)).toMatchObject({ op: "move-down", success: false, reason: "No next sibling" });
+
+    document.body.innerHTML = '<ul id="list"><li id="item">a</li></ul>';
+    dispatchPointerDown(document.getElementById("item")!);
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "duplicate", requestId: "r4" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(document.querySelectorAll("#list li")).toHaveLength(2);
+
+    dispatchPointerDown(document.getElementById("item")!);
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-classes", value: "a b", requestId: "r5" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(document.getElementById("item")!.getAttribute("class")).toBe("a b");
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-classes", value: 'bad "quote"', requestId: "r6" }));
+    expect(opApplied(posted)).toMatchObject({ op: "set-classes", success: false, reason: "Invalid class list", requestId: "r6" });
+  });
+
+  it("apply-op: set-attribute mirrors the live value property, blocks javascript: URLs and removes on empty", async () => {
+    let posted: Array<{ msg: Record<string, unknown>; target: string }>;
+    const session = await spawnAndHandshake();
+    await receivesWithPost(message(session, { type: "ds:set-mode", enabled: true }));
+
+    document.body.innerHTML = '<a id="link" href="/safe">x</a>';
+    dispatchPointerDown(document.getElementById("link")!);
+    posted = receivesWithPost(
+      message(session, { type: "ds:apply-op", op: "set-attribute", attribute: "href", value: "javascript:alert(1)", requestId: "r1" })
+    );
+    expect(opApplied(posted)).toMatchObject({ op: "set-attribute", success: false, reason: "Blocked URL scheme", requestId: "r1", attribute: "href" });
+    expect(document.getElementById("link")!.getAttribute("href")).toBe("/safe");
+
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-attribute", attribute: "href", value: "/target", requestId: "r2" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(document.getElementById("link")!.getAttribute("href")).toBe("/target");
+
+    document.body.innerHTML = '<input id="box" value="keep">';
+    dispatchPointerDown(document.getElementById("box")!);
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-attribute", attribute: "value", value: "live", requestId: "r3" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect((document.getElementById("box") as HTMLInputElement).value).toBe("live");
+
+    posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-attribute", attribute: "value", value: "", requestId: "r4" }));
+    expect(opApplied(posted).success).toBe(true);
+    expect(document.getElementById("box")!.hasAttribute("value")).toBe(false);
+  });
+
+  it("apply-op without a selection fails with 'No selected element'", async () => {
+    const session = await spawnAndHandshake();
+    const posted = receivesWithPost(message(session, { type: "ds:apply-op", op: "set-text", value: "x", requestId: "r1" }));
+    expect(opApplied(posted)).toMatchObject({ op: "set-text", success: false, reason: "No selected element", requestId: "r1" });
+  });
+
+  it("navigate-history dispatches per direction", async () => {
+    const session = await spawnAndHandshake();
+    const backSpy = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const forwardSpy = vi.spyOn(window.history, "forward").mockImplementation(() => {});
+    try {
+      receivesWithPost(message(session, { type: "ds:navigate-history", direction: "back" }));
+      receivesWithPost(message(session, { type: "ds:navigate-history", direction: "forward" }));
+      expect(backSpy).toHaveBeenCalledTimes(1);
+      expect(forwardSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      backSpy.mockRestore();
+      forwardSpy.mockRestore();
     }
   });
 });

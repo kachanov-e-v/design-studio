@@ -49,7 +49,8 @@
     "test": "vitest run",
     "dev:webview": "vite",
     "package": "vsce package --no-dependencies",
-    "publish": "vsce publish --no-dependencies"
+    "publish": "vsce publish --no-dependencies",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",
