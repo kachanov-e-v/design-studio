@@ -80,3 +80,12 @@
 Сделано (Фаза 0): baseline-прогон зелёный (typecheck, lint, 178 тестов, build+verify); добавлен docs/AI_AGENT_INSTRUCTIONS.md, ссылка в docs/README.md; код не менялся.
 
 Дальше — Фаза 1 (P0-1..P0-4), формат каждой записи: ID, корневая причина, файл/функция, тест-доказательство.
+
+### Фаза 1 (P0-1…P0-4) — сделано, ветка fix/ai-agent-instructions
+
+- **P0-1** base href проектных страниц: `<base>` теперь `{origin}/project/{dir}/`, авторский `<base>` не переопределяется (injectIntoHtml + respectAuthoredBase). Тесты: fixtures.test.ts (резолв styles.css/logo.svg/about.html через base, авторский base не тронут).
+- **P0-2** двойная инъекция: одна точка (injectRuntimeIntoHtml удалён), runtime-экземпляр защищён re-init guard'ом (`window.__dsRuntimeInitialized`). Тесты: fixtures.test.ts (ровно один тег), packages/preview-runtime/src/index.test.ts (jsdom: повторный init не добавляет слушателей). Добавлен devDep jsdom.
+- **P0-3** data-upstream-origin: injector во всех путях (proxy + project) ставит атрибут origin; runtime при отсутствии атрибута выводит origin из `<base>`/location, поэтому политика ссылок browse-режима реально работает (external/javascript: → ds:navigate-blocked, same-origin — внутри превью). Тесты: инъекция (HTTP), jsdom click-policy.
+- **P0-4** гонка «Сохранить стили»: persists сериализованы (queue в openDesignStudio), requestId коррелирует persist:result с запросом, webview удаляет из очереди только подтверждённые правки (ackPendingStyles). Тесты: serializes concurrent persists (maxInflight=1, порядок), correlation, per-edit ack.
+
+Проверка: npm run typecheck / lint / test (193 теста в 17 файлах) / build+verify — зелёные после каждого шага. Осталось: браузерная часть приёмки (Playwright, P3-6), ручная матрица.
