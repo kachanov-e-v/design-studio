@@ -5,7 +5,7 @@ import type { ComponentInfo, ElementPayload } from "../../../packages/preview-ru
 import type { DesignEdit } from "../../domain/entities/DesignEdit";
 import { contextToPrompt, toSelectionContext } from "../../domain/entities/DesignElementContext";
 import { translate, type Language } from "../../shared/i18n";
-import { pickRevealTarget, resolveComponentPaths } from "../source-analysis/ComponentResolver";
+import { pickRevealTarget, resolveComponentPaths, findComponentDefinition } from "../source-analysis/ComponentResolver";
 import { findSourceHints, type SourceHint } from "../source-analysis/SourceHintFinder";
 
 const MAX_COMPONENT_BYTES = 300_000;
@@ -73,6 +73,12 @@ export class PromptExportService {
     } catch {
       target = undefined;
     }
+    // RT-02: React 19 dev fibers often carry component names without files
+    // (no `_debugSource`; Turbopack stacks surface only chunk frames). Fall
+    // back to a workspace definition scan, nearest chain entry first.
+    if (!target || !target.file) {
+      target = await this.resolveByName(components);
+    }
     if (!target || !target.file) {
       return { success: false, message: translate(language, "status.sourceMissing") };
     }
@@ -108,11 +114,23 @@ export class PromptExportService {
       return { success: false, message: translate(language, "status.sourceMissing") };
     }
 
-    let sourceFile = component.file;
+    let sourceFile: string | undefined = component.file;
     try {
       sourceFile = resolveComponentPaths(this.workspaceRoot, [component])[0]?.file ?? sourceFile;
     } catch {
       // The direct bundler-path resolver below remains the fallback.
+    }
+    // RT-02: name-only components (React 19 / Turbopack) get the same
+    // definition-scan fallback as "reveal".
+    if (!sourceFile && component.name) {
+      try {
+        sourceFile = (await findComponentDefinition(this.workspaceRoot, component.name))?.file;
+      } catch {
+        // Fall through to the missing-source result below.
+      }
+    }
+    if (!sourceFile) {
+      return { success: false, message: translate(language, "status.sourceMissing") };
     }
     const filePath = this.resolveSourcePath(sourceFile);
     if (!filePath) {
@@ -147,6 +165,28 @@ export class PromptExportService {
         message: translate(language, "status.copyFailed", { error: error instanceof Error ? error.message : String(error) }),
       };
     }
+  }
+
+  /** RT-02: find a workspace definition for the first named component. */
+  private async resolveByName(
+    components: { name?: string; file?: string; line?: number }[]
+  ): Promise<ComponentInfo | undefined> {
+    if (!this.workspaceRoot) return undefined;
+    for (const comp of components) {
+      if (!comp.name) continue;
+      try {
+        const found = await findComponentDefinition(this.workspaceRoot, comp.name);
+        if (!found) continue;
+        return {
+          name: comp.name,
+          file: path.join(this.workspaceRoot, found.file),
+          line: found.line ?? comp.line,
+        };
+      } catch {
+        // Try the next named component.
+      }
+    }
+    return undefined;
   }
 
   private resolveSourcePath(source: string): string | null {
