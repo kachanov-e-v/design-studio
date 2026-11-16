@@ -127,21 +127,6 @@ const MIME_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-/** Replace or inject the Design Studio runtime script into project HTML. */
-export function injectRuntimeIntoHtml(html: string, runtimeSrc: string): string {
-  if (html.includes("/__ds-runtime.js")) return html;
-  const tag = `<script src="${runtimeSrc}"></script>`;
-  // `(?=[\s>])` keeps the match on the real <head>/<html> element —
-  // a <header> tag in headless HTML must not swallow the runtime script.
-  if (/<head(?=[\s>])[^>]*>/i.test(html)) {
-    return html.replace(/<head(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
-  }
-  if (/<html(?=[\s>])[^>]*>/i.test(html)) {
-    return html.replace(/<html(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
-  }
-  return `${tag}\n${html}`;
-}
-
 export type ProjectPathResolution =
   | { ok: true; filePath: string }
   | { ok: false; reason: "forbidden" | "encoding" };
@@ -501,10 +486,8 @@ export class PreviewHostServer {
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     if (ext === ".html" && contentType.startsWith("text/html")) {
       let htmlContent = content.toString("utf8");
-      htmlContent = injectRuntimeIntoHtml(htmlContent, "/__ds-runtime.js");
-      // The base must mirror the URL the document is actually served under,
-      // otherwise relative href/src (styles, images, cross-page links) leave
-      // /project/ and 404. Authored <base> tags win.
+      // Single injection point for project pages: base + runtime + authored
+      // <base> respect live in injectIntoHtml (P0-2 guard lives in the runtime).
       htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.projectBaseHrefFor(filePath), {
         respectAuthoredBase: true,
       });

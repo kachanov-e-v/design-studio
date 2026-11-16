@@ -5,7 +5,7 @@ import type { Duplex } from "node:stream";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { injectRuntimeIntoHtml, PreviewHostServer, resolveProjectPath } from "./PreviewHostServer";
+import { PreviewHostServer, resolveProjectPath } from "./PreviewHostServer";
 import {
   injectIntoHtml,
   rewriteProxiedCss,
@@ -200,13 +200,6 @@ describe("proxy-html helpers", () => {
     const headerEnd = out.indexOf("</header>");
     const injectedAt = out.indexOf(`<base href=`);
     expect(injectedAt).toBeGreaterThan(headerEnd);
-  });
-
-  it("A7: injectRuntimeIntoHtml skips <header> tags", () => {
-    const html = "<html><header><h1>App</h1></header></html>";
-    const out = injectRuntimeIntoHtml(html, "/__ds-runtime.js");
-    expect(out).toContain(`<script src="/__ds-runtime.js">`);
-    expect(out.indexOf("/__ds-runtime.js")).toBeLessThanOrEqual(out.indexOf("<header"));
   });
 
   it("A7: still injects into <head> with attributes", () => {
@@ -508,7 +501,8 @@ describe("PreviewHostServer", () => {
       const page = await get(`${projectServer.origin}/project/index.html`);
       expect(page.status).toBe(200);
       expect(page.body).toContain("Project page");
-      expect(page.body).toContain('<script src="/__ds-runtime.js"></script>');
+      expect(page.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
+      expect(page.body.match(/<script[^>]*src="\/__ds-runtime\.js"/g)).toHaveLength(1);
       expect(page.headers["content-type"]).toContain("text/html");
 
       const nested = await get(`${projectServer.origin}/project/assets/app.js`);

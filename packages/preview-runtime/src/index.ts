@@ -18,6 +18,13 @@ import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
 export { collectReactComponents, findFiber, parseOwnerStack } from "./fiber.js";
+
+declare global {
+  interface Window {
+    /** Re-injection guard (see initDesignStudioRuntime). */
+    __dsRuntimeInitialized?: boolean;
+  }
+}
 /** DOM properties mirrored when the matching attribute is edited (`set-attribute`). */
 const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   checked: "checked",
@@ -94,6 +101,11 @@ export function getSelectorCandidates(el: Element): string[] {
 
 export function initDesignStudioRuntime(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
+  // Re-injection guard: a duplicated runtime script (double legacy injection,
+  // HMR, future injection paths) must never create a second runtime instance
+  // with duplicated listeners, outlines and history patches.
+  if (window.__dsRuntimeInitialized) return;
+  window.__dsRuntimeInitialized = true;
 
   let editMode = false;
   let selectedElement: Element | null = null;

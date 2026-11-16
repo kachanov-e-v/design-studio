@@ -50,7 +50,7 @@ describe("static-site integration fixture", () => {
     const res = await get(`${server.origin}/project/`);
     expect(res.status).toBe(200);
     expect(res.body).toContain("Static fixture home");
-    expect(res.body).toContain('<script src="/__ds-runtime.js"></script>');
+    expect(res.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
     expect(res.body).toContain("<base");
   });
 
@@ -60,7 +60,7 @@ describe("static-site integration fixture", () => {
     const about = await get(`${server.origin}/project/about.html`);
     expect(about.status).toBe(200);
     expect(about.body).toContain("About this fixture");
-    expect(about.body).toContain('<script src="/__ds-runtime.js"></script>');
+    expect(about.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
   });
 
   it("rewrites root-absolute css urls to the /project/ prefix", async () => {
@@ -100,5 +100,15 @@ describe("static-site integration fixture", () => {
     expect(bases).toHaveLength(1);
     expect(res.body).toContain('href="https://example.com/assets/"');
     expect(res.body).toContain("/__ds-runtime.js");
+  });
+
+  // P0-2: exactly one runtime script per served project page — two tags mean
+  // two runtime instances (duplicated listeners/overlays/history patches).
+  it("injects exactly one runtime script tag into project pages", async () => {
+    for (const page of ["/", "/about.html", "/authored-base.html"]) {
+      const res = await get(`${server.origin}/project${page}`);
+      const tags = res.body.match(/<script[^>]*src="\/__ds-runtime\.js"[^>]*><\/script>/g) ?? [];
+      expect(tags, `page ${page}`).toHaveLength(1);
+    }
   });
 });
