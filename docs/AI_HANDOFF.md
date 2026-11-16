@@ -89,3 +89,27 @@
 - **P0-4** гонка «Сохранить стили»: persists сериализованы (queue в openDesignStudio), requestId коррелирует persist:result с запросом, webview удаляет из очереди только подтверждённые правки (ackPendingStyles). Тесты: serializes concurrent persists (maxInflight=1, порядок), correlation, per-edit ack.
 
 Проверка: npm run typecheck / lint / test (193 теста в 17 файлах) / build+verify — зелёные после каждого шага. Осталось: браузерная часть приёмки (Playwright, P3-6), ручная матрица.
+
+## Фаза 1 (P1 — безопасность и надёжность) — сделано
+
+- P1-1: postMessage webview<->runtime строго по origin (targetOrigin вместо "*", фильтр
+  event.origin в webview; allowlist родителя в runtime: vscode-webview://*, data-parent-origins,
+  same-origin; без trusted ping секрета — ответы строго на event.origin). Коммит a58477d.
+- P1-2: preview-хост + cookie jar живут только пока открыта панель; dispose последней панели
+  останавливает сервер (jar стирается), повторное открытие — новый порт/сессия; dispose-
+  подписки не накапливаются. SECURITY.md дополнен. Коммит a891ec8.
+- P1-3: denylist /project/ применяется к каноническому (realpath) пути; симлинк на .git/.env
+  внутри корня больше не читает секреты; denylist расширен (.npmrc, .ssh, *.pem/key/p12/pfx,
+  id_rsa*, credentials*, .envrc, .htpasswd и др.). Коммит 9555069.
+- P1-4: входящие запросы с чужим Origin -> 403 (WS — разрыв соединения); при переписывании
+  origin форвардится sec-fetch-site: same-origin (HTTP и WS). Коммит 6efade6.
+- P1-5: все page-derived поля промпта (selector/classes/tag/id, имена/файлы компонентов,
+  поля edits) проходят dataValue(); ai:copyInstruction валидирует edits (kind/лимиты длин).
+  Коммит 39f2e17.
+
+Проверка: typecheck/lint/build+verify зелёные; 209 тестов в 19 файлах (было 178/16 на старт
+Фазы 1). Каждый фикс закрыт красным регрессионным тестом, записи в IMPLEMENTATION_PLAN.md.
+
+Осталось вручную (автоматизация невозможна): сверить полный handshake после P1-1/P1-2 на
+Next.js-фикстуре с логином (сессия живёт после навигации, server action redirect, HMR WS),
+а также демо и статическую фикстуру в реальном VS Code — ручная матрица §8.
