@@ -1,12 +1,19 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
-import type { ElementOp, ElementPayload } from "../types";
+import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 import { translate, type Language } from "@design-studio/shared/i18n";
+import { SelectionPopup, type SelectionPopupTarget } from "./SelectionPopup";
+
+export interface RevealComponentInfo {
+  name?: string;
+  file?: string;
+  line?: number;
+}
 
 export interface PreviewContainerHandle {
   applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
-  applyOp: (op: ElementOp, value?: string) => { requestId: string; sessionId: string } | null;
+  applyOp: (op: ElementOp, value?: string, attribute?: EditableAttribute) => { requestId: string; sessionId: string } | null;
 }
 
 type RuntimeStatus =
@@ -22,6 +29,7 @@ type RuntimeStatus =
 export interface OpAppliedInfo {
   op: ElementOp;
   value?: string;
+  attribute?: EditableAttribute;
   success: boolean;
   reason?: string;
   payload?: ElementPayload | null;
@@ -53,9 +61,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   onNavigate: (url: string) => void;
   onLocationChange: (path: string) => void;
   onSelect: (payload: ElementPayload | null) => void;
+  onNavigateBlocked?: (url: string) => void;
+  onRevealSource?: (components: RevealComponentInfo[]) => void;
+  onCopyInstruction?: (instruction: string) => void;
   onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => void;
   onOpApplied?: (info: OpAppliedInfo) => void;
-  onTextChanged?: (info: { text: string; payload?: ElementPayload }) => void;
 }>(function PreviewContainer(
   {
     url,
@@ -68,25 +78,27 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onNavigate,
     onLocationChange,
     onSelect,
+    onNavigateBlocked,
+    onRevealSource,
+    onCopyInstruction,
     onStyleApplied,
     onOpApplied,
-    onTextChanged,
   },
   ref
 ): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const onSelectRef = useRef(onSelect);
+  const onNavigateBlockedRef = useRef(onNavigateBlocked);
   const onStyleAppliedRef = useRef(onStyleApplied);
   const onOpAppliedRef = useRef(onOpApplied);
-  const onTextChangedRef = useRef(onTextChanged);
   const onEditModeChangeRef = useRef(onEditModeChange);
   const onLocationChangeRef = useRef(onLocationChange);
   const editModeRef = useRef(editMode);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
-  const [hoverRect, setHoverRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [diagnostic, setDiagnostic] = useState("");
   const [address, setAddress] = useState(devServer ?? "");
+  const [popupTarget, setPopupTarget] = useState<SelectionPopupTarget | null>(null);
   const languageRef = useRef(language);
   languageRef.current = language;
 
@@ -100,7 +112,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onSelectRef.current = onSelect;
     onStyleAppliedRef.current = onStyleApplied;
     onOpAppliedRef.current = onOpApplied;
-    onTextChangedRef.current = onTextChanged;
+    onNavigateBlockedRef.current = onNavigateBlocked;
     onEditModeChangeRef.current = onEditModeChange;
     onLocationChangeRef.current = onLocationChange;
     editModeRef.current = editMode;
@@ -109,6 +121,14 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   useEffect(() => {
     setAddress(devServer ?? "");
   }, [devServer, url]);
+
+  useEffect(() => {
+    setPopupTarget(null);
+  }, [url, refreshKey]);
+
+  useEffect(() => {
+    if (!editMode) setPopupTarget(null);
+  }, [editMode]);
 
   const clearTimers = () => {
     if (retryTimerRef.current) {
@@ -166,12 +186,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
-    applyOp: (op, value) => {
+    applyOp: (op, value, attribute) => {
       const iframe = iframeRef.current;
       if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return null;
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
-        { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, requestId, sessionId: sessionIdRef.current },
+        { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, attribute, requestId, sessionId: sessionIdRef.current },
         "*"
       );
       return { requestId, sessionId: sessionIdRef.current };
@@ -180,7 +200,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
 
   useEffect(() => {
     clearTimers();
-    setHoverRect(null);
     onSelectRef.current(null);
     setDiagnostic("");
     if (!url) {
@@ -240,14 +259,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         }
         return;
       }
-      if (data.type === "ds:hover") {
-        const p = data.payload;
-        setHoverRect({ top: p.rect.top, left: p.rect.left, width: p.rect.width, height: p.rect.height });
-        return;
-      }
       if (data.type === "ds:select") {
-        setHoverRect(null);
         onSelectRef.current(data.payload);
+        setPopupTarget(
+          data.payload
+            ? { rect: data.payload.rect, components: data.payload.component }
+            : null
+        );
         return;
       }
       if (data.type === "ds:style-applied") {
@@ -266,14 +284,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         onOpAppliedRef.current?.({
           op: data.op as ElementOp,
           value: data.value,
+          attribute: data.attribute as EditableAttribute | undefined,
           success: data.success,
           reason: data.reason,
           payload: data.payload ?? null,
         });
-        return;
-      }
-      if (data.type === "ds:text-changed") {
-        onTextChangedRef.current?.({ text: data.text, payload: data.payload });
         return;
       }
       if (data.type === "ds:navigate") {
@@ -283,6 +298,10 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
           // Ignore navigation addresses when the project has no server URL.
         }
         onLocationChangeRef.current(data.path);
+        return;
+      }
+      if (data.type === "ds:navigate-blocked") {
+        onNavigateBlockedRef.current?.(data.url);
         return;
       }
       if (data.type === "ds:runtime-error") {
@@ -423,12 +442,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 setDiagnostic("iframe failed to load.");
               }}
             />
-            {hoverRect && (
-              <div
-                className={styles.highlight}
-                style={{ top: hoverRect.top, left: hoverRect.left, width: hoverRect.width, height: hoverRect.height }}
-              />
-            )}
             {runtimeStatus === "missing" && (
               <div className={styles.overlay} role="status">
                 {translate(language, "preview.runtimeMissing")}
@@ -454,6 +467,14 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
               <div className={styles.overlay} role="status">
                 {translate(language, "preview.connecting")}
               </div>
+            )}
+            {popupTarget && editMode && runtimeStatus === "ready" && onRevealSource && onCopyInstruction && (
+              <SelectionPopup
+                target={popupTarget}
+                language={language}
+                onReveal={(components) => onRevealSource?.(components)}
+                onCopyInstruction={(instruction) => onCopyInstruction?.(instruction)}
+              />
             )}
           </>
         ) : (

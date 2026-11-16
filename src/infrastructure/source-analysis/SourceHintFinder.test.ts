@@ -71,19 +71,31 @@ describe("findSourceHints", () => {
   });
 });
 
-describe("contextToPrompt v4", () => {
+describe("contextToPrompt", () => {
   it("includes classes, framework hint, rules and source hints", () => {
     const ctx = toSelectionContext(payload as never, [
       { file: "app/login/page.tsx", line: 5, snippet: '<div className="email-field px-4 bg-slate-900">Email</div>', token: 'text word "Email"' },
     ]);
     const prompt = contextToPrompt(ctx, "Сделай border 1px этому элементу.");
-    expect(prompt).toContain("(v4)");
     expect(prompt).toContain("div.email-field.px-4.bg-slate-900");
-    expect(prompt).toContain("Tailwind CSS detected");
+    expect(prompt).toContain("Tailwind CSS обнаружен");
     expect(prompt).toContain(".email-field");
     expect(prompt).toContain("_next/static/css/app.css");
     expect(prompt).toContain("app/login/page.tsx:5");
-    expect(prompt).toContain("get_selected_element");
+    expect(prompt).toContain("Пожелание пользователя: Сделай border 1px этому элементу.");
+  });
+
+  it("adds attributes, edit lines for attribute changes", () => {
+    const ctx = toSelectionContext({ ...payload, attributes: { placeholder: "Email", title: "Поле почты" } } as never, []);
+    const prompt = contextToPrompt(ctx, "");
+    expect(prompt).toContain('Атрибуты: placeholder="Email", title="Поле почты"');
+    const editsPrompt = contextToPrompt(
+      ctx,
+      "",
+      [{ kind: "attribute", selector: payload.selector, property: "placeholder", before: "Email", after: "Ваш e-mail" }]
+    );
+    expect(editsPrompt).toContain("Атрибут placeholder");
+    expect(editsPrompt).toContain('"Email" → "Ваш e-mail"');
   });
 
   it("adds Component and Owner chain lines from components", () => {
@@ -96,15 +108,15 @@ describe("contextToPrompt v4", () => {
       ],
     } as never, []);
     const prompt = contextToPrompt(ctx, "Сделай border 1px этому элементу.");
-    expect(prompt).toContain("Component (React, dev owner): EmailField — src/components/EmailField.tsx:42");
-    expect(prompt).toContain("Owner chain: EmailField > LoginForm > LoginPage");
+    expect(prompt).toContain("Компонент React: EmailField — src/components/EmailField.tsx:42");
+    expect(prompt).toContain("Цепочка компонентов: EmailField > LoginForm > LoginPage");
   });
 
   it("omits optional sections when data is missing", () => {
     const ctx = toSelectionContext({ selector: "p", tag: "p", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} } as never, []);
     const prompt = contextToPrompt(ctx, "make it red");
-    expect(prompt).toContain("Element: p (p)");
-    expect(prompt).not.toContain("Tailwind CSS detected");
-    expect(prompt).not.toContain("Possible source locations");
+    expect(prompt).toContain("Выбранный элемент: p (p)");
+    expect(prompt).not.toContain("Tailwind CSS обнаружен");
+    expect(prompt).not.toContain("Возможные исходные файлы");
   });
 });

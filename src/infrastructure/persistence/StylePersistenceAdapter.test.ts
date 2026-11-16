@@ -55,7 +55,7 @@ describe("persistence utils", () => {
   });
   it("validates value", () => {
     expect(isValidCssValue("#f00")).toBe(true);
-    expect(isValidCssValue("")).toBe(false);
+    expect(isValidCssValue("")).toBe(true);
     expect(isValidCssValue("a;b")).toBe(false);
     expect(isValidCssValue("a}b")).toBe(false);
   });

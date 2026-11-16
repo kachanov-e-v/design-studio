@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = "1";
+export const PROTOCOL_VERSION = "4";
 
 /** A CSS rule from a real stylesheet the element matches. */
 export interface SourceRule {
@@ -22,6 +22,8 @@ export interface ElementPayload {
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
   classes?: string[];
+  /** Safe, editable HTML attributes present on the element. */
+  attributes?: Record<string, string>;
   /** true when the page was detected to use Tailwind CSS. */
   tailwind?: boolean;
   text?: string;
@@ -30,15 +32,30 @@ export interface ElementPayload {
   component?: ComponentInfo[];
 }
 
-export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
+/**
+ * Whitelisted, safe-to-edit HTML attributes. `set-attribute` with an empty value
+ * removes the attribute; boolean attributes are mirrored to their live DOM property.
+ */
+export const EDITABLE_ATTRIBUTES = [
+  "placeholder", "title", "aria-label", "alt", "href", "src", "name", "type",
+  "value", "required", "disabled", "readonly", "checked", "multiple", "for",
+  "target", "rel", "width", "height", "loading", "action", "method",
+  "autocomplete", "min", "max", "step", "minlength", "maxlength", "rows", "cols",
+  "id", "role", "tabindex", "muted", "controls", "autoplay", "loop", "poster",
+  "novalidate", "selected",
+] as const;
+export type EditableAttribute = (typeof EDITABLE_ATTRIBUTES)[number];
 
-export const ELEMENT_OPS: readonly ElementOp[] = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes"];
+export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes" | "set-attribute";
+
+export const ELEMENT_OPS: readonly ElementOp[] = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes", "set-attribute"];
 
 export interface ApplyOpMessage {
   type: "ds:apply-op";
   version: string;
   op: ElementOp;
   value?: string;
+  attribute?: EditableAttribute;
   requestId?: string;
   sessionId?: string;
   selectors?: string[];
@@ -49,6 +66,7 @@ export interface OpAppliedMessage {
   version: string;
   op: ElementOp;
   value?: string;
+  attribute?: EditableAttribute;
   success: boolean;
   reason?: string;
   payload?: ElementPayload | null;
@@ -56,18 +74,18 @@ export interface OpAppliedMessage {
   sessionId?: string;
 }
 
-export interface TextChangedMessage {
-  type: "ds:text-changed";
-  version: string;
-  text: string;
-  payload?: ElementPayload;
-  sessionId?: string;
-}
-
 export interface NavigateMessage {
   type: "ds:navigate";
   version: string;
   path: string;
+  sessionId?: string;
+}
+
+/** A left-click on a link whose target cannot be navigated inside the preview safely. */
+export interface NavigateBlockedMessage {
+  type: "ds:navigate-blocked";
+  version: string;
+  url: string;
   sessionId?: string;
 }
 
@@ -119,13 +137,6 @@ export interface ModeChangedMessage {
   sessionId?: string;
 }
 
-export interface HoverMessage {
-  type: "ds:hover";
-  version: string;
-  payload: ElementPayload;
-  sessionId?: string;
-}
-
 export interface SelectMessage {
   type: "ds:select";
   version: string;
@@ -168,15 +179,14 @@ export type RuntimeMessage =
   | PongMessage
   | SetModeMessage
   | ModeChangedMessage
-  | HoverMessage
   | SelectMessage
   | ApplyStyleMessage
   | StyleAppliedMessage
   | ApplyOpMessage
   | OpAppliedMessage
-  | TextChangedMessage
   | NavigateMessage
   | NavigateHistoryMessage
+  | NavigateBlockedMessage
   | ReloadMessage
   | RuntimeErrorMessage;
 
@@ -186,21 +196,24 @@ const RUNTIME_TYPES = new Set([
   "ds:pong",
   "ds:set-mode",
   "ds:mode-changed",
-  "ds:hover",
   "ds:select",
   "ds:apply-style",
   "ds:style-applied",
   "ds:apply-op",
   "ds:op-applied",
-  "ds:text-changed",
   "ds:navigate",
   "ds:navigate-history",
+  "ds:navigate-blocked",
   "ds:reload",
   "ds:runtime-error",
-]);;
+]);
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+export function isEditableAttribute(value: unknown): value is EditableAttribute {
+  return typeof value === "string" && (EDITABLE_ATTRIBUTES as readonly string[]).includes(value);
 }
 
 export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
@@ -227,7 +240,6 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
     case "ds:mode-changed":
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return typeof v.enabled === "boolean";
-    case "ds:hover":
     case "ds:select":
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return isElementPayload(v.payload);
@@ -256,6 +268,9 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
     case "ds:apply-op":
       if (!v.op || typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op as ElementOp)) return false;
       if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000)) return false;
+      if (v.op === "set-attribute") {
+        if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2000) return false;
+      } else if (v.attribute !== undefined) return false;
       if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       if (v.selectors !== undefined) {
@@ -266,19 +281,21 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
     case "ds:op-applied":
       if (typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op as ElementOp)) return false;
       if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000)) return false;
+      if (v.op === "set-attribute") {
+        if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2000) return false;
+      } else if (v.attribute !== undefined) return false;
       if (typeof v.success !== "boolean") return false;
       if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
       if (v.payload !== undefined && v.payload !== null && !isElementPayload(v.payload)) return false;
       if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
-    case "ds:text-changed":
-      if (typeof v.text !== "string" || v.text.length > 5000) return false;
-      if (v.payload !== undefined && !isElementPayload(v.payload)) return false;
-      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
-      return true;
     case "ds:navigate":
       if (typeof v.path !== "string" || v.path.length > 4000 || !v.path.startsWith("/")) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:navigate-blocked":
+      if (typeof v.url !== "string" || v.url.length === 0 || v.url.length > 2048) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     case "ds:navigate-history":
@@ -315,6 +332,13 @@ export function isElementPayload(value: unknown): value is ElementPayload {
   if (v.classes !== undefined) {
     if (!Array.isArray(v.classes) || v.classes.length > 30) return false;
     if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
+  }
+  if (v.attributes !== undefined) {
+    if (!v.attributes || typeof v.attributes !== "object" || Array.isArray(v.attributes)) return false;
+    const attributes = v.attributes as Record<string, unknown>;
+    const entries = Object.entries(attributes);
+    if (entries.length > EDITABLE_ATTRIBUTES.length) return false;
+    if (!entries.every(([name, value]) => isEditableAttribute(name) && typeof value === "string" && value.length <= 2000)) return false;
   }
   if (v.tailwind !== undefined && typeof v.tailwind !== "boolean") return false;
   if (v.component !== undefined) {

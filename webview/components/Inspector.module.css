@@ -32,13 +32,34 @@
 .inlineAction { margin-top: 5px; }
 .actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .editor { display: grid; gap: 7px; }
+.section h4 { margin: 10px 0 7px; color: var(--vscode-descriptionForeground, #999); font-size: 10px; font-weight: 500; }
+.section h4:first-child { margin-top: 0; }
 .editor label { display: grid; grid-template-columns: minmax(86px, 1fr) minmax(0, 1.2fr); align-items: center; gap: 8px; font-size: 10px; }
 .editor label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground, #999); }
-.editor input { width: 100%; height: 25px; padding: 0 6px; }
-.customStyle { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--vscode-panel-border, #353535); }
-.customStyle h4 { margin: 0 0 7px; color: var(--vscode-descriptionForeground, #999); font-size: 10px; font-weight: 500; }
-.customFields { display: grid; gap: 5px; }
-.customFields input { width: 100%; height: 26px; padding: 0 6px; border: 1px solid var(--vscode-input-border, #414141); border-radius: 3px; background: var(--vscode-input-background, #252526); color: var(--vscode-input-foreground, #ddd); font: inherit; font-size: 10px; }
+.editor input, .editor select, .editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--vscode-input-border, #414141);
+  border-radius: 3px;
+  background: var(--vscode-input-background, #252526);
+  color: var(--vscode-input-foreground, #ddd);
+  font: inherit;
+  font-size: 11px;
+}
+.editor input { height: 25px; padding: 0 6px; }
+.editor select { height: 25px; padding: 0 4px; }
+.editor textarea { padding: 4px 6px; resize: vertical; }
+.editor input[type="color"] { padding: 2px; height: 25px; width: 34px; flex: 0 0 34px; }
+.editor input[type="range"] { padding: 0; accent-color: var(--vscode-focusBorder, #4a9aef); }
+.editor input[type="checkbox"] { width: auto; accent-color: var(--vscode-focusBorder, #4a9aef); }
+.colorField, .sliderField, .unitField { display: flex; gap: 5px; align-items: center; min-width: 0; }
+.toggleRow { grid-template-columns: minmax(86px, 1fr) auto !important; }
+.wideField { grid-template-columns: 1fr !important; }
+.wideField span { height: 16px; }
+.classChips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 7px; }
+.classChip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 2px 1px 6px; border: 1px solid var(--vscode-panel-border, #414141); border-radius: 3px; font-size: 10px; }
+.classChip code { font-family: inherit; color: var(--vscode-foreground, #ccc); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.classChip button { min-height: 18px; padding: 0 4px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #999); font-size: 10px; }
 .componentList { display: grid; gap: 9px; }
 .component { display: flex; align-items: center; gap: 6px; }
 .componentInfo { display: grid; min-width: 0; flex: 1; gap: 3px; }

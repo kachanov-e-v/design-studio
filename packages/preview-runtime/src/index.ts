@@ -1,9 +1,12 @@
 import {
   PROTOCOL_VERSION,
   type ElementOp,
+  type EditableAttribute,
   type ElementPayload,
   type RuntimeMessage,
   type SourceRule,
+  EDITABLE_ATTRIBUTES,
+  isEditableAttribute,
   isRuntimeMessage,
   isValidClassListValue,
   STYLE_PROPS,
@@ -14,8 +17,17 @@ import { collectReactComponents } from "./fiber.js";
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
 export { collectReactComponents, findFiber, parseOwnerStack } from "./fiber.js";
-export function getSelector(el: Element): string {
-  if (el.id) {
+/** DOM properties mirrored when the matching attribute is edited (`set-attribute`). */
+const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
+  checked: "checked",
+  disabled: "disabled",
+  required: "required",
+  multiple: "multiple",
+  readonly: "readOnly",
+  value: "value",
+};
+
+export function getSelector(el: Element): string {  if (el.id) {
     const idSelector = `#${CSS.escape(el.id)}`;
     if (idSelector.length <= 500) return idSelector;
   }
@@ -84,10 +96,22 @@ export function initDesignStudioRuntime(): void {
 
   let editMode = false;
   let selectedElement: Element | null = null;
-  let editingElement: HTMLElement | null = null;
+  let hoveredElement: Element | null = null;
   let parentOrigin = "*";
   let activeSessionId = "";
-  const INTERACTIVE_SELECTOR = "a, button, input, select, textarea, summary, label, [role='button'], [role='link'], [role='menuitem'], [role='checkbox'], [role='radio'], [role='switch'], [role='tab'], [role='option'], [role='textbox'], [contenteditable='true']";
+  let hoverOutline: HTMLDivElement | null = null;
+  let selectionOutline: HTMLDivElement | null = null;
+  let outlineFrame = 0;
+  const runtimeScript = document.querySelector<HTMLScriptElement>('script[data-design-studio="1"]');
+  const upstreamOrigin = (() => {
+    const raw = runtimeScript?.dataset.upstreamOrigin;
+    if (!raw) return null;
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return null;
+    }
+  })();
 
   const isDesignStudioElement = (el: Element | null): boolean => {
     if (!el) return false;
@@ -105,10 +129,85 @@ export function initDesignStudioRuntime(): void {
     return node.parentElement ?? null;
   };
 
+  const canSelect = (el: Element | null): el is Element =>
+    Boolean(el) && !isDesignStudioElement(el) && el !== document.body && el !== document.documentElement;
+
+  function ensureOutlines(): void {
+    if (!document.body || (hoverOutline && selectionOutline)) return;
+    const makeOutline = (color: string, fill: string): HTMLDivElement => {
+      const outline = document.createElement("div");
+      outline.setAttribute("data-design-studio", "1");
+      outline.setAttribute("aria-hidden", "true");
+      outline.style.cssText = [
+        "position:fixed",
+        "z-index:2147483647",
+        "display:none",
+        "pointer-events:none",
+        "box-sizing:border-box",
+        `border:2px solid ${color}`,
+        `background:${fill}`,
+        "border-radius:2px",
+        "transition:transform 45ms linear,width 45ms linear,height 45ms linear",
+      ].join(";");
+      document.body.appendChild(outline);
+      return outline;
+    };
+    hoverOutline = makeOutline("rgba(90, 157, 255, .95)", "rgba(90, 157, 255, .18)");
+    selectionOutline = makeOutline("rgba(255, 170, 70, 1)", "rgba(255, 170, 70, .12)");
+  }
+
+  function positionOutline(outline: HTMLDivElement | null, el: Element | null): void {
+    if (!outline) return;
+    if (!editMode || !el || !el.isConnected) {
+      outline.style.display = "none";
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      outline.style.display = "none";
+      return;
+    }
+    outline.style.display = "block";
+    outline.style.transform = `translate(${Math.round(rect.left)}px, ${Math.round(rect.top)}px)`;
+    outline.style.width = `${Math.round(rect.width)}px`;
+    outline.style.height = `${Math.round(rect.height)}px`;
+  }
+
+  function scheduleOutlineUpdate(): void {
+    if (outlineFrame) return;
+    outlineFrame = window.requestAnimationFrame(() => {
+      outlineFrame = 0;
+      if (!editMode) return;
+      ensureOutlines();
+      positionOutlinesNow();
+    });
+  }
+
+  /**
+   * Position outlines synchronously from the event handler, not via rAF:
+   * rAF can be throttled to zero for cross-origin iframes in hosted webviews
+   * (VS Code/Electron occlusion), which would leave hover/selection invisible.
+   * The work is a single getBoundingClientRect plus two style writes, so it
+   * is cheap enough to run on the pointer path. rAF remains only for
+   * scroll/resize following.
+   */
+  function positionOutlinesNow(): void {
+    positionOutline(hoverOutline, hoveredElement);
+    positionOutline(selectionOutline, selectedElement);
+  }
+
+  function hideOutlines(): void {
+    if (outlineFrame) window.cancelAnimationFrame(outlineFrame);
+    outlineFrame = 0;
+    if (hoverOutline) hoverOutline.style.display = "none";
+    if (selectionOutline) selectionOutline.style.display = "none";
+  }
+
   /** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
   function collectSourceRules(el: Element): SourceRule[] | undefined {
     const result: SourceRule[] = [];
     const seen = new Set<string>();
+    let scanned = 0;
     for (const sheet of document.styleSheets) {
       if (!sheet.href) continue;
       let rules: CSSRuleList;
@@ -118,6 +217,7 @@ export function initDesignStudioRuntime(): void {
         continue;
       }
       for (const rule of rules) {
+        if (scanned++ >= 1500) return result.length > 0 ? result : undefined;
         if (!(rule instanceof CSSStyleRule)) continue;
         const selectorText = rule.selectorText;
         if (!selectorText) continue;
@@ -185,14 +285,25 @@ export function initDesignStudioRuntime(): void {
     };
     const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
     if (classes.length > 0) payload.classes = classes;
+    const attributes: Record<string, string> = {};
+    for (const name of EDITABLE_ATTRIBUTES) {
+      if (el.hasAttribute(name)) attributes[name] = (el.getAttribute(name) ?? "").slice(0, 2000);
+    }
+    if (Object.keys(attributes).length > 0) payload.attributes = attributes;
     if (detectTailwindPage()) payload.tailwind = true;
-    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    const text = readElementText(el);
     if (text.length > 0) payload.text = text.slice(0, 2000);
     const rules = collectSourceRules(el);
     if (rules) payload.rules = rules;
     const components = collectReactComponents(el);
     if (components.length > 0) payload.component = components;
     return payload;
+  }
+
+  function readElementText(el: Element): string {
+    if (el instanceof HTMLTextAreaElement) return el.value.trim();
+    if (el instanceof HTMLInputElement) return el.type === "password" ? "" : el.value.trim();
+    return (el.textContent ?? "").replace(/\s+/g, " ").trim();
   }
 
   function postToParent(msg: RuntimeMessage): void {
@@ -206,12 +317,13 @@ export function initDesignStudioRuntime(): void {
     }
   }
 
-  function sendHoverOrSelect(type: "ds:hover" | "ds:select", el: Element): void {
-    if (!editMode) return;
-    if (isDesignStudioElement(el)) return;
-    if (el === document.body || el === document.documentElement) return;
-    const payload = collect(el);
-    postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || undefined });
+  function sendSelection(el: Element): void {
+    if (!editMode || !canSelect(el)) return;
+    selectedElement = el;
+    hoveredElement = el;
+    ensureOutlines();
+    positionOutlinesNow();
+    postToParent({ type: "ds:select", version: PROTOCOL_VERSION, payload: collect(el), sessionId: activeSessionId || undefined });
   }
 
   function currentApplicationPath(): string {
@@ -249,12 +361,21 @@ export function initDesignStudioRuntime(): void {
     });
   }
 
-  function postOpApplied(op: ElementOp, value: string | undefined, success: boolean, reason: string | undefined, payload: ElementPayload | null | undefined, requestId?: string): void {
+  function postOpApplied(
+    op: ElementOp,
+    value: string | undefined,
+    success: boolean,
+    reason: string | undefined,
+    payload: ElementPayload | null | undefined,
+    requestId?: string,
+    attribute?: EditableAttribute
+  ): void {
     postToParent({
       type: "ds:op-applied",
       version: PROTOCOL_VERSION,
       op,
       value,
+      ...(attribute ? { attribute } : {}),
       success,
       reason,
       payload,
@@ -263,7 +384,7 @@ export function initDesignStudioRuntime(): void {
     });
   }
 
-  function applyElementOp(op: ElementOp, value: string | undefined, requestId?: string): void {
+  function applyElementOp(op: ElementOp, value: string | undefined, requestId?: string, attribute?: EditableAttribute): void {
     if (!selectedElement) {
       postOpApplied(op, value, false, "No selected element", null, requestId);
       return;
@@ -273,7 +394,16 @@ export function initDesignStudioRuntime(): void {
       switch (op) {
         case "set-text": {
           const text = typeof value === "string" ? value.slice(0, 5000) : "";
-          selectedElement.textContent = text;
+          if (selectedElement instanceof HTMLTextAreaElement || selectedElement instanceof HTMLInputElement) {
+            if (selectedElement instanceof HTMLInputElement && selectedElement.type === "password") {
+              postOpApplied(op, text, false, "Password values cannot be edited", null, requestId);
+              return;
+            }
+            selectedElement.value = text;
+            selectedElement.setAttribute("value", text);
+          } else {
+            selectedElement.textContent = text;
+          }
           payload = collect(selectedElement);
           postOpApplied(op, text, true, undefined, payload, requestId);
           return;
@@ -328,42 +458,43 @@ export function initDesignStudioRuntime(): void {
           postOpApplied(op, value, true, undefined, payload, requestId);
           return;
         }
+        case "set-attribute": {
+          if (!isEditableAttribute(attribute) || typeof value !== "string" || value.length > 2000) {
+            postOpApplied(op, value, false, "Invalid attribute", null, requestId, attribute);
+            return;
+          }
+          if (
+            (attribute === "href" || attribute === "src") &&
+            value !== "" &&
+            /^(javascript|vbscript)\s*:/i.test(value.trim())
+          ) {
+            postOpApplied(op, value, false, "Blocked URL scheme", null, requestId, attribute);
+            return;
+          }
+          if (value === "") {
+            selectedElement.removeAttribute(attribute);
+          } else {
+            selectedElement.setAttribute(attribute, value);
+          }
+          // Boolean attributes and `value` are mirrored to the live DOM property
+          // so the preview reacts immediately, not only on later attribute reads.
+          const liveProperty = LIVE_PROPERTY_BY_ATTRIBUTE[attribute];
+          if (liveProperty) {
+            const live = selectedElement as unknown as Record<string, unknown>;
+            if (liveProperty in selectedElement) {
+              live[liveProperty] = liveProperty === "value" ? value : value !== "";
+            }
+          }
+          payload = collect(selectedElement);
+          postOpApplied(op, value, true, undefined, payload, requestId, attribute);
+          return;
+        }
         default:
           postOpApplied(op, value, false, "Unknown op", null, requestId);
       }
     } catch {
       postOpApplied(op, value, false, "Failed to apply op", null, requestId);
     }
-  }
-
-  function postTextChanged(el: Element): void {
-    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 5000);
-    postToParent({
-      type: "ds:text-changed",
-      version: PROTOCOL_VERSION,
-      text,
-      payload: collect(el),
-      sessionId: activeSessionId || undefined,
-    });
-  }
-
-  function startInlineEdit(el: Element): void {
-    if (!(el instanceof HTMLElement)) return;
-    if (el.isContentEditable) return;
-    editingElement = el;
-    el.contentEditable = "true";
-    el.setAttribute("data-ds-editing", "");
-    el.focus({ preventScroll: true });
-  }
-
-  function endInlineEdit(cancel: boolean): void {
-    const el = editingElement;
-    if (!el) return;
-    el.contentEditable = "false";
-    el.removeAttribute("data-ds-editing");
-    editingElement = null;
-    if (cancel) return;
-    postTextChanged(el);
   }
 
   window.addEventListener("message", (event) => {
@@ -407,6 +538,16 @@ export function initDesignStudioRuntime(): void {
     if (msg.type === "ds:set-mode") {
       if (activeSessionId && msg.sessionId !== activeSessionId) return;
       editMode = Boolean(msg.enabled);
+      if (editMode) {
+        ensureOutlines();
+        scheduleOutlineUpdate();
+      } else {
+        // Leaving edit mode clears all selection visuals so no stale outline
+        // survives a later re-entry.
+        hoveredElement = null;
+        selectedElement = null;
+        hideOutlines();
+      }
       postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
       notifyNavigation();
       return;
@@ -483,7 +624,7 @@ export function initDesignStudioRuntime(): void {
     }
     if (msg.type === "ds:apply-op") {
       if (activeSessionId && msg.sessionId !== activeSessionId) return;
-      applyElementOp(msg.op, msg.value, msg.requestId);
+      applyElementOp(msg.op, msg.value, msg.requestId, msg.attribute);
       return;
     }
   });
@@ -503,88 +644,68 @@ export function initDesignStudioRuntime(): void {
   window.addEventListener("popstate", notifyNavigation);
   window.addEventListener("hashchange", notifyNavigation);
 
-  document.addEventListener(
-    "dblclick",
-    (e) => {
-      if (!editMode) return;
-      const target = toElement(e.target);
-      if (!target) return;
-      if (isDesignStudioElement(target)) return;
-      if (target === document.body || target === document.documentElement) return;
-      const interactive = target.closest(INTERACTIVE_SELECTOR);
-      if (interactive && !e.altKey) return;
-      e.preventDefault();
-      e.stopPropagation();
-      selectedElement = target;
-      sendHoverOrSelect("ds:select", target);
-      startInlineEdit(target);
-    },
-    true
-  );
+  window.addEventListener("resize", scheduleOutlineUpdate);
+  window.addEventListener("scroll", scheduleOutlineUpdate, true);
 
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (!editingElement) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        endInlineEdit(true);
-      } else if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        endInlineEdit(false);
+  document.addEventListener("pointermove", (event) => {
+    if (!editMode) return;
+    const target = toElement(event.target);
+    if (!canSelect(target) || target === hoveredElement) return;
+    hoveredElement = target;
+    ensureOutlines();
+    positionOutlinesNow();
+  }, true);
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!editMode) return;
+    const target = toElement(event.target);
+    if (!canSelect(target)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    sendSelection(target);
+  }, true);
+
+  document.addEventListener("click", (event) => {
+    const target = toElement(event.target);
+    if (editMode) {
+      if (canSelect(target)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
       }
-    },
-    true
-  );
-
-  document.addEventListener(
-    "focusout",
-    (e) => {
-      if (!editingElement) return;
-      if (e.target !== editingElement) return;
-      endInlineEdit(false);
-    },
-    true
-  );
-
-  let lastHover = 0;
-  document.addEventListener(
-    "mouseover",
-    (e) => {
-      if (!editMode) return;
-      const now = Date.now();
-      if (now - lastHover < 100) return;
-      lastHover = now;
-      const target = toElement(e.target);
-      if (!target) return;
-      sendHoverOrSelect("ds:hover", target);
-    },
-    true
-  );
-
-  document.addEventListener(
-    "click",
-    (e) => {
-      if (!editMode) return;
-      if (editingElement) return;
-      const target = toElement(e.target);
-      if (!target) return;
-      if (isDesignStudioElement(target)) return;
-      if (target === document.body || target === document.documentElement) return;
-      const interactive = target.closest(INTERACTIVE_SELECTOR);
-      if (interactive && !e.altKey) return;
-      e.preventDefault();
-      e.stopPropagation();
-      selectedElement = target;
-      sendHoverOrSelect("ds:select", target);
-    },
-    true
-  );
+      return;
+    }
+    if (!target || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = target.closest<HTMLAnchorElement>("a[href]");
+    if (!anchor || !upstreamOrigin || anchor.hasAttribute("download")) return;
+    // Predictable link policy for the preview iframe (browse mode):
+    // - same-origin upstream routes navigate inside the preview frame (proxy stays alive);
+    // - links whose target cannot be served by the preview host (any upstream route after an
+    //   href edit, other origins, and dangerous schemes) are blocked with a UI notification.
+    let href: URL;
+    try {
+      href = new URL(anchor.href, window.location.href);
+    } catch {
+      // Keep the native behavior when the link cannot be parsed.
+      return;
+    }
+    const dangerousScheme = ["javascript:", "data:", "vbscript:", "blob:", "about:"].includes(href.protocol);
+    if (!dangerousScheme && href.protocol !== "http:" && href.protocol !== "https:") return; // mailto:, tel: — native
+    const escapesFrame = Boolean(anchor.target) && anchor.target !== "_self";
+    if (dangerousScheme || href.origin !== upstreamOrigin || escapesFrame) {
+      event.preventDefault();
+      postToParent({
+        type: "ds:navigate-blocked",
+        version: PROTOCOL_VERSION,
+        url: href.toString().slice(0, 2048),
+        sessionId: activeSessionId || undefined,
+      });
+      return;
+    }
+    event.preventDefault();
+    window.location.assign(`${href.pathname}${href.search}${href.hash}`);
+  }, true);
 }
 
 if (typeof window !== "undefined") {
-  console.log("Design Studio runtime loaded");
   initDesignStudioRuntime();
 }

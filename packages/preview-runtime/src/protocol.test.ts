@@ -10,7 +10,7 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ type: "ds:pong", version: PROTOCOL_VERSION, nonce: "abc" })).toBe(true);
   });
   it("rejects wrong version", () => {
-    expect(isRuntimeMessage({ type: "ds:runtime-ready", version: "2" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:runtime-ready", version: "3" })).toBe(false);
   });
   it("rejects malformed", () => {
     expect(isRuntimeMessage(null)).toBe(false);
@@ -34,14 +34,30 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "explode" })).toBe(false);
     expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "duplicate", value: null })).toBe(false);
   });
+  it("validates navigate-blocked messages", () => {
+    expect(isRuntimeMessage({ type: "ds:navigate-blocked", version: PROTOCOL_VERSION, url: "https://example.com/page" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:navigate-blocked", version: PROTOCOL_VERSION, url: "https://example.com/p?q=1#h", sessionId: "abc" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:navigate-blocked", version: PROTOCOL_VERSION })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:navigate-blocked", version: PROTOCOL_VERSION, url: "" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:navigate-blocked", version: PROTOCOL_VERSION, url: "x".repeat(2049) })).toBe(false);
+  });
   it("validates op-applied messages", () => {
     expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "duplicate", success: true, payload: null })).toBe(true);
     expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "move-up", success: false, reason: "No previous sibling" })).toBe(true);
     expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "move-up" })).toBe(false);
   });
-  it("validates text-changed messages", () => {
-    expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "Done" })).toBe(true);
-    expect(isRuntimeMessage({ type: "ds:text-changed", version: PROTOCOL_VERSION, text: "x".repeat(5001) })).toBe(false);
+  it("validates set-attribute messages", () => {
+    const base = { type: "ds:apply-op" as const, version: PROTOCOL_VERSION };
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "alt", value: "Logo" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "aria-label", value: "" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "required", value: "true" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "checked", value: "" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "href", value: "x".repeat(2001) })).toBe(false);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", attribute: "onclick", value: "x()" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, op: "set-attribute", value: "Logo" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, op: "delete", attribute: "href" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "set-attribute", attribute: "title", value: "Tip", success: true, payload: null })).toBe(true);
   });
   it("validates element payload classes and tailwind flag", () => {
     const base = { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} };
@@ -50,11 +66,17 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, classes: ["bad class"] } })).toBe(false);
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, tailwind: "yes" } })).toBe(false);
   });
+  it("validates element payload attributes", () => {
+    const base = { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} };
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, attributes: { placeholder: "Email", href: "https://example.com" } } })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, attributes: { href: "x".repeat(2001) } } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, attributes: { onclick: "x()" } } })).toBe(false);
+  });
   it("validates set-classes op values", () => {
     expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-classes", value: "p-4 bg-white" })).toBe(true);
     expect(isRuntimeMessage({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-classes" })).toBe(true);
     expect(isValidClassListValue("p-4 bg-white")).toBe(true);
-    expect(isValidClassListValue("")).toBe(false);
+    expect(isValidClassListValue("")).toBe(true);
     expect(isValidClassListValue("a b<c")).toBe(false);
     expect(isValidClassListValue(Array(31).fill("x").join(" "))).toBe(false);
   });

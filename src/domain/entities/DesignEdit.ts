@@ -1,4 +1,4 @@
-export type DesignEditKind = "style" | "text" | "classes" | "structure";
+export type DesignEditKind = "style" | "text" | "classes" | "attribute" | "structure";
 
 export interface DesignEdit {
   kind: DesignEditKind;

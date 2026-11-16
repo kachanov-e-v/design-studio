@@ -20,7 +20,7 @@ for (const file of required) {
 }
 
 const runtime = fs.readFileSync(path.join(webviewDist, "runtime.js"), "utf8");
-if (!runtime.includes("Design Studio runtime loaded")) {
+if (!runtime.includes("initDesignStudioRuntime")) {
   console.error("runtime.js does not contain expected runtime code");
   process.exit(1);
 }
@@ -30,7 +30,7 @@ if (!/DesignStudioRuntime\s*=/.test(runtime) || /^\s*export\s/m.test(runtime)) {
 }
 
 const demo = fs.readFileSync(path.join(webviewDist, "demo.html"), "utf8");
-if (!demo.includes("Design Studio runtime loaded")) {
+if (!demo.includes("initDesignStudioRuntime")) {
   console.error("demo.html does not contain inline runtime code");
   process.exit(1);
 }

@@ -1,0 +1,86 @@
+.popup {
+  position: absolute;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  max-width: calc(100% - 16px);
+  padding: 8px;
+  border: 1px solid var(--vscode-panel-border, #353535);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, #252526);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  color: var(--vscode-editorWidget-foreground, #ccc);
+  font-size: 11px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.component {
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goButton {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-panel-border, #414141);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.goButton:hover {
+  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+}
+
+.input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 24px;
+  max-height: 120px;
+  padding: 3px 7px;
+  border: 1px solid var(--vscode-panel-border, #414141);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--vscode-input-background, #252526);
+  color: var(--vscode-input-foreground, #ddd);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
+}
+
+.input:focus {
+  border-color: var(--vscode-focusBorder, #777);
+}
+
+.copyButton {
+  align-self: flex-end;
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-panel-border, #414141);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+}

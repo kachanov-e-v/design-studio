@@ -9,6 +9,8 @@ export interface ElementSelectionContext {
   tag: string;
   styles: Record<string, string>;
   classes?: string[];
+  /** Safe, editable HTML attributes present on the element. */
+  attributes?: Record<string, string>;
   id?: string;
   tailwind?: boolean;
   text?: string;
@@ -27,6 +29,7 @@ export function toSelectionContext(payload: ElementPayload, sourceHints?: Source
   };
   if (payload.text) ctx.text = payload.text;
   if (payload.classes && payload.classes.length > 0) ctx.classes = payload.classes;
+  if (payload.attributes && Object.keys(payload.attributes).length > 0) ctx.attributes = payload.attributes;
   const idFromSelector = /^#([^.#\s>]+)$/.exec(payload.selector);
   if (idFromSelector) ctx.id = idFromSelector[1];
   if (payload.tailwind === true) ctx.tailwind = true;
@@ -84,6 +87,12 @@ export function contextToPrompt(
           if (edit.kind === "text") {
             return `${index + 1}. ${language === "ru" ? "Текст" : "Text"}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after ?? "")} (${where}; ${edit.selector})`;
           }
+          if (edit.kind === "attribute") {
+            if (!edit.after) {
+              return `${index + 1}. ${language === "ru" ? "Атрибут удалён" : "Attribute removed"}: ${edit.property ?? ""} ${language === "ru" ? "было" : "was"} ${JSON.stringify(edit.before ?? "")} (${where}; ${edit.selector})`;
+            }
+            return `${index + 1}. ${language === "ru" ? "Атрибут" : "Attribute"} ${edit.property ?? ""}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after)} (${where}; ${edit.selector})`;
+          }
           return `${index + 1}. ${language === "ru" ? "Структура" : "Structure"}: ${edit.operation ?? "change"} (${where}; ${edit.selector})`;
         }),
       ].join("\n")
@@ -100,6 +109,9 @@ export function contextToPrompt(
     ownerChain && (ctx?.components?.length ?? 0) > 1 ? `${language === "ru" ? "Цепочка компонентов" : "Component chain"}: ${ownerChain}` : null,
     ctx?.tailwind ? (language === "ru" ? "Tailwind CSS обнаружен: отражай правки стилей в классах элемента." : "Tailwind CSS detected: express style edits through the element classes.") : null,
     ctx?.text ? `${language === "ru" ? "Текст" : "Text"}: ${ctx.text}` : null,
+    ctx?.attributes
+      ? `${language === "ru" ? "Атрибуты" : "Attributes"}: ${Object.entries(ctx.attributes).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(", ")}`
+      : null,
     `${language === "ru" ? "Вычисленные стили" : "Computed styles"}: ${styles}`,
     ctx?.rules?.length
       ? `${language === "ru" ? "Подходящие правила CSS" : "Matched CSS rules"}:\n${ctx.rules.map((r) => `- ${shortHref(r.href)} :: ${r.selectorText}`).join("\n")}`

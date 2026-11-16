@@ -1,26 +1,39 @@
-export const PROTOCOL_VERSION = "1";
-export const ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes"];
+export const PROTOCOL_VERSION = "4";
+/**
+ * Whitelisted, safe-to-edit HTML attributes. `set-attribute` with an empty value
+ * removes the attribute; boolean attributes are mirrored to their live DOM property.
+ */
+export const EDITABLE_ATTRIBUTES = [
+    "placeholder", "title", "aria-label", "alt", "href", "src", "name", "type",
+    "value", "required", "disabled", "readonly", "checked", "multiple", "for",
+    "target", "rel", "width", "height", "loading", "action", "method",
+    "autocomplete", "min", "max", "step", "minlength", "maxlength", "rows", "cols",
+    "id", "role", "tabindex", "muted", "controls", "autoplay", "loop", "poster",
+    "novalidate", "selected",
+];
+export const ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes", "set-attribute"];
 const RUNTIME_TYPES = new Set([
     "ds:runtime-ready",
     "ds:ping",
     "ds:pong",
     "ds:set-mode",
     "ds:mode-changed",
-    "ds:hover",
     "ds:select",
     "ds:apply-style",
     "ds:style-applied",
     "ds:apply-op",
     "ds:op-applied",
-    "ds:text-changed",
     "ds:navigate",
     "ds:navigate-history",
+    "ds:navigate-blocked",
     "ds:reload",
     "ds:runtime-error",
 ]);
-;
 function isFiniteNumber(value) {
     return typeof value === "number" && Number.isFinite(value);
+}
+export function isEditableAttribute(value) {
+    return typeof value === "string" && EDITABLE_ATTRIBUTES.includes(value);
 }
 export function isRuntimeMessage(value) {
     if (!value || typeof value !== "object")
@@ -57,7 +70,6 @@ export function isRuntimeMessage(value) {
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return typeof v.enabled === "boolean";
-        case "ds:hover":
         case "ds:select":
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
@@ -103,6 +115,12 @@ export function isRuntimeMessage(value) {
                 return false;
             if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000))
                 return false;
+            if (v.op === "set-attribute") {
+                if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2000)
+                    return false;
+            }
+            else if (v.attribute !== undefined)
+                return false;
             if (v.requestId !== undefined && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128))
                 return false;
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
@@ -119,6 +137,12 @@ export function isRuntimeMessage(value) {
                 return false;
             if (v.value !== undefined && (typeof v.value !== "string" || v.value.length > 5000))
                 return false;
+            if (v.op === "set-attribute") {
+                if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2000)
+                    return false;
+            }
+            else if (v.attribute !== undefined)
+                return false;
             if (typeof v.success !== "boolean")
                 return false;
             if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500))
@@ -130,16 +154,14 @@ export function isRuntimeMessage(value) {
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return true;
-        case "ds:text-changed":
-            if (typeof v.text !== "string" || v.text.length > 5000)
-                return false;
-            if (v.payload !== undefined && !isElementPayload(v.payload))
+        case "ds:navigate":
+            if (typeof v.path !== "string" || v.path.length > 4000 || !v.path.startsWith("/"))
                 return false;
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
             return true;
-        case "ds:navigate":
-            if (typeof v.path !== "string" || v.path.length > 4000 || !v.path.startsWith("/"))
+        case "ds:navigate-blocked":
+            if (typeof v.url !== "string" || v.url.length === 0 || v.url.length > 2048)
                 return false;
             if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128))
                 return false;
@@ -193,6 +215,16 @@ export function isElementPayload(value) {
         if (!Array.isArray(v.classes) || v.classes.length > 30)
             return false;
         if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false))
+            return false;
+    }
+    if (v.attributes !== undefined) {
+        if (!v.attributes || typeof v.attributes !== "object" || Array.isArray(v.attributes))
+            return false;
+        const attributes = v.attributes;
+        const entries = Object.entries(attributes);
+        if (entries.length > EDITABLE_ATTRIBUTES.length)
+            return false;
+        if (!entries.every(([name, value]) => isEditableAttribute(name) && typeof value === "string" && value.length <= 2000))
             return false;
     }
     if (v.tailwind !== undefined && typeof v.tailwind !== "boolean")

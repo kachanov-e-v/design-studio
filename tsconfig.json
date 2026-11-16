@@ -12,10 +12,9 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "types": ["node", "vitest/globals"],
-    "baseUrl": ".",
     "paths": {
-      "@design-studio/preview-runtime/*": ["packages/preview-runtime/src/*"],
-      "@design-studio/shared/*": ["src/shared/*"]
+      "@design-studio/preview-runtime/*": ["./packages/preview-runtime/src/*"],
+      "@design-studio/shared/*": ["./src/shared/*"]
     }
   },
   "include": ["src", "webview", "packages", "vite.config.ts", "vitest.config.ts"]

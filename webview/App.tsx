@@ -6,7 +6,7 @@ import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
 import { translate, type Language } from "@design-studio/shared/i18n";
-import type { ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
+import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
 import type { DesignEdit } from "../src/domain/entities/DesignEdit";
 import styles from "./App.module.css";
 
@@ -58,7 +58,7 @@ export function App(): React.ReactElement {
 
   const recordEdit = (edit: DesignEdit) => {
     setEdits((previous) => {
-      const replaceable = edit.kind === "style" || edit.kind === "classes" || edit.kind === "text";
+      const replaceable = edit.kind === "style" || edit.kind === "classes" || edit.kind === "text" || edit.kind === "attribute";
       if (!replaceable) return [...previous, edit];
       const key = (candidate: DesignEdit) => `${candidate.kind}:${candidate.selector}:${candidate.property ?? ""}`;
       const existingIndex = previous.findIndex((candidate) => key(candidate) === key(edit));
@@ -187,11 +187,11 @@ export function App(): React.ReactElement {
     }
   };
 
-  const applyOp = (op: ElementOp, value?: string) => {
+  const applyOp = (op: ElementOp, value?: string, attribute?: EditableAttribute) => {
     if (op === "set-classes" && selectedRef.current && previousClassesRef.current === undefined) {
       previousClassesRef.current = [...(selectedRef.current.classes ?? [])];
     }
-    const result = previewRef.current?.applyOp(op, value) ?? null;
+    const result = previewRef.current?.applyOp(op, value, attribute) ?? null;
     if (!result) setStyleError(translate(language, "status.runtimeMissing"));
   };
 
@@ -218,24 +218,22 @@ export function App(): React.ReactElement {
       setOperationStatus(translate(language, "status.textApplied"));
       return;
     }
+    if (info.op === "set-attribute") {
+      const name = info.attribute;
+      if (!name) return;
+      recordEdit({
+        kind: "attribute",
+        selector: payload.selector,
+        property: name,
+        before: selectedRef.current?.attributes?.[name] ?? "",
+        after: info.value ?? payload.attributes?.[name] ?? "",
+        component: componentRef,
+      });
+      setOperationStatus(translate(language, "status.attributeApplied"));
+      return;
+    }
     recordEdit({ kind: "structure", selector: payload.selector, operation: info.op, component: componentRef });
     setOperationStatus(translate(language, "status.operationApplied"));
-  };
-
-  const handleTextChanged = (info: { text: string; payload?: ElementPayload }) => {
-    const previous = selectedRef.current;
-    const payload = info.payload ?? previous;
-    if (!payload?.selector) return;
-    setSelected(payload);
-    const component = payload.component?.[0];
-    recordEdit({
-      kind: "text",
-      selector: payload.selector,
-      before: previous?.text ?? "",
-      after: info.text,
-      component: component ? { name: component.name, file: component.file, line: component.line } : undefined,
-    });
-    setOperationStatus(translate(language, "status.textApplied"));
   };
 
   const handleSave = () => {
@@ -264,8 +262,16 @@ export function App(): React.ReactElement {
     postToExtension({ type: "project:rememberNavigation", path });
   };
 
+  const handleNavigateBlocked = (url: string) => {
+    setOperationStatus(translate(language, "status.externalLinkBlocked", { url }));
+  };
+
   const handleCopyComponent = (component: { name?: string; file?: string; line?: number }) => {
     postToExtension({ type: "ai:copyComponent", component });
+  };
+
+  const handleRevealSource = (components: { name?: string; file?: string; line?: number }[]) => {
+    postToExtension({ type: "source:reveal", components });
   };
 
   const handleLanguageChange = (nextLanguage: Language) => {
@@ -299,11 +305,13 @@ export function App(): React.ReactElement {
           devServer={state.devServer}
           onNavigate={handlePreviewNavigate}
           onLocationChange={handlePreviewLocationChange}
+          onNavigateBlocked={handleNavigateBlocked}
+          onRevealSource={handleRevealSource}
+          onCopyInstruction={handleCopyInstruction}
           onRefresh={clearPending}
           onSelect={setSelected}
           onStyleApplied={handleStyleApplied}
           onOpApplied={handleOpApplied}
-          onTextChanged={handleTextChanged}
         />
         <Inspector
           selected={selected}

@@ -11,6 +11,7 @@ export interface ElementPayload {
   rect: { top: number; left: number; width: number; height: number };
   styles: Record<string, string>;
   classes?: string[];
+  attributes?: Record<string, string>;
   /** true when the page was detected to use Tailwind CSS. */
   tailwind?: boolean;
   text?: string;
@@ -19,7 +20,9 @@ export interface ElementPayload {
   component?: { name?: string; file?: string; line?: number }[];
 }
 
-export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes";
+export type EditableAttribute = "placeholder" | "title" | "aria-label" | "alt" | "href" | "src" | "name" | "type";
+
+export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes" | "set-attribute";
 
 export type DevServerKind = "vite" | "next" | "astro" | "webpack" | "static-http" | "unknown";
 

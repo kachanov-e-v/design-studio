@@ -31,28 +31,72 @@ var DesignStudioRuntime = (() => {
   });
 
   // src/protocol.ts
-  var PROTOCOL_VERSION = "1";
-  var ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes"];
+  var PROTOCOL_VERSION = "4";
+  var EDITABLE_ATTRIBUTES = [
+    "placeholder",
+    "title",
+    "aria-label",
+    "alt",
+    "href",
+    "src",
+    "name",
+    "type",
+    "value",
+    "required",
+    "disabled",
+    "readonly",
+    "checked",
+    "multiple",
+    "for",
+    "target",
+    "rel",
+    "width",
+    "height",
+    "loading",
+    "action",
+    "method",
+    "autocomplete",
+    "min",
+    "max",
+    "step",
+    "minlength",
+    "maxlength",
+    "rows",
+    "cols",
+    "id",
+    "role",
+    "tabindex",
+    "muted",
+    "controls",
+    "autoplay",
+    "loop",
+    "poster",
+    "novalidate",
+    "selected"
+  ];
+  var ELEMENT_OPS = ["set-text", "delete", "duplicate", "move-up", "move-down", "set-classes", "set-attribute"];
   var RUNTIME_TYPES = /* @__PURE__ */ new Set([
     "ds:runtime-ready",
     "ds:ping",
     "ds:pong",
     "ds:set-mode",
     "ds:mode-changed",
-    "ds:hover",
     "ds:select",
     "ds:apply-style",
     "ds:style-applied",
     "ds:apply-op",
     "ds:op-applied",
-    "ds:text-changed",
     "ds:navigate",
     "ds:navigate-history",
+    "ds:navigate-blocked",
     "ds:reload",
     "ds:runtime-error"
   ]);
   function isFiniteNumber(value) {
     return typeof value === "number" && Number.isFinite(value);
+  }
+  function isEditableAttribute(value) {
+    return typeof value === "string" && EDITABLE_ATTRIBUTES.includes(value);
   }
   function isRuntimeMessage(value) {
     if (!value || typeof value !== "object") return false;
@@ -78,7 +122,6 @@ var DesignStudioRuntime = (() => {
       case "ds:mode-changed":
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return typeof v.enabled === "boolean";
-      case "ds:hover":
       case "ds:select":
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return isElementPayload(v.payload);
@@ -107,6 +150,9 @@ var DesignStudioRuntime = (() => {
       case "ds:apply-op":
         if (!v.op || typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op)) return false;
         if (v.value !== void 0 && (typeof v.value !== "string" || v.value.length > 5e3)) return false;
+        if (v.op === "set-attribute") {
+          if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2e3) return false;
+        } else if (v.attribute !== void 0) return false;
         if (v.requestId !== void 0 && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         if (v.selectors !== void 0) {
@@ -117,19 +163,21 @@ var DesignStudioRuntime = (() => {
       case "ds:op-applied":
         if (typeof v.op !== "string" || !ELEMENT_OPS.includes(v.op)) return false;
         if (v.value !== void 0 && (typeof v.value !== "string" || v.value.length > 5e3)) return false;
+        if (v.op === "set-attribute") {
+          if (!isEditableAttribute(v.attribute) || typeof v.value !== "string" || v.value.length > 2e3) return false;
+        } else if (v.attribute !== void 0) return false;
         if (typeof v.success !== "boolean") return false;
         if (v.reason !== void 0 && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
         if (v.payload !== void 0 && v.payload !== null && !isElementPayload(v.payload)) return false;
         if (v.requestId !== void 0 && (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128)) return false;
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return true;
-      case "ds:text-changed":
-        if (typeof v.text !== "string" || v.text.length > 5e3) return false;
-        if (v.payload !== void 0 && !isElementPayload(v.payload)) return false;
-        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
-        return true;
       case "ds:navigate":
         if (typeof v.path !== "string" || v.path.length > 4e3 || !v.path.startsWith("/")) return false;
+        if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+        return true;
+      case "ds:navigate-blocked":
+        if (typeof v.url !== "string" || v.url.length === 0 || v.url.length > 2048) return false;
         if (v.sessionId !== void 0 && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
         return true;
       case "ds:navigate-history":
@@ -165,6 +213,13 @@ var DesignStudioRuntime = (() => {
     if (v.classes !== void 0) {
       if (!Array.isArray(v.classes) || v.classes.length > 30) return false;
       if (!v.classes.every((c) => typeof c === "string" && c.length > 0 && c.length <= 100 && /[\s"<>\\]/.test(c) === false)) return false;
+    }
+    if (v.attributes !== void 0) {
+      if (!v.attributes || typeof v.attributes !== "object" || Array.isArray(v.attributes)) return false;
+      const attributes = v.attributes;
+      const entries = Object.entries(attributes);
+      if (entries.length > EDITABLE_ATTRIBUTES.length) return false;
+      if (!entries.every(([name, value2]) => isEditableAttribute(name) && typeof value2 === "string" && value2.length <= 2e3)) return false;
     }
     if (v.tailwind !== void 0 && typeof v.tailwind !== "boolean") return false;
     if (v.component !== void 0) {
@@ -370,6 +425,14 @@ var DesignStudioRuntime = (() => {
   }
 
   // src/index.ts
+  var LIVE_PROPERTY_BY_ATTRIBUTE = {
+    checked: "checked",
+    disabled: "disabled",
+    required: "required",
+    multiple: "multiple",
+    readonly: "readOnly",
+    value: "value"
+  };
   function getSelector(el) {
     if (el.id) {
       const idSelector = `#${CSS.escape(el.id)}`;
@@ -434,10 +497,22 @@ var DesignStudioRuntime = (() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     let editMode = false;
     let selectedElement = null;
-    let editingElement = null;
+    let hoveredElement = null;
     let parentOrigin = "*";
     let activeSessionId = "";
-    const INTERACTIVE_SELECTOR = "a, button, input, select, textarea, summary, label, [role='button'], [role='link'], [role='menuitem'], [role='checkbox'], [role='radio'], [role='switch'], [role='tab'], [role='option'], [role='textbox'], [contenteditable='true']";
+    let hoverOutline = null;
+    let selectionOutline = null;
+    let outlineFrame = 0;
+    const runtimeScript = document.querySelector('script[data-design-studio="1"]');
+    const upstreamOrigin = (() => {
+      const raw = runtimeScript?.dataset.upstreamOrigin;
+      if (!raw) return null;
+      try {
+        return new URL(raw).origin;
+      } catch {
+        return null;
+      }
+    })();
     const isDesignStudioElement = (el) => {
       if (!el) return false;
       try {
@@ -452,9 +527,69 @@ var DesignStudioRuntime = (() => {
       const node = target;
       return node.parentElement ?? null;
     };
+    const canSelect = (el) => Boolean(el) && !isDesignStudioElement(el) && el !== document.body && el !== document.documentElement;
+    function ensureOutlines() {
+      if (!document.body || hoverOutline && selectionOutline) return;
+      const makeOutline = (color, fill) => {
+        const outline = document.createElement("div");
+        outline.setAttribute("data-design-studio", "1");
+        outline.setAttribute("aria-hidden", "true");
+        outline.style.cssText = [
+          "position:fixed",
+          "z-index:2147483647",
+          "display:none",
+          "pointer-events:none",
+          "box-sizing:border-box",
+          `border:2px solid ${color}`,
+          `background:${fill}`,
+          "border-radius:2px",
+          "transition:transform 45ms linear,width 45ms linear,height 45ms linear"
+        ].join(";");
+        document.body.appendChild(outline);
+        return outline;
+      };
+      hoverOutline = makeOutline("rgba(90, 157, 255, .95)", "rgba(90, 157, 255, .18)");
+      selectionOutline = makeOutline("rgba(255, 170, 70, 1)", "rgba(255, 170, 70, .12)");
+    }
+    function positionOutline(outline, el) {
+      if (!outline) return;
+      if (!editMode || !el || !el.isConnected) {
+        outline.style.display = "none";
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        outline.style.display = "none";
+        return;
+      }
+      outline.style.display = "block";
+      outline.style.transform = `translate(${Math.round(rect.left)}px, ${Math.round(rect.top)}px)`;
+      outline.style.width = `${Math.round(rect.width)}px`;
+      outline.style.height = `${Math.round(rect.height)}px`;
+    }
+    function scheduleOutlineUpdate() {
+      if (outlineFrame) return;
+      outlineFrame = window.requestAnimationFrame(() => {
+        outlineFrame = 0;
+        if (!editMode) return;
+        ensureOutlines();
+        positionOutlinesNow();
+      });
+    }
+    function positionOutlinesNow() {
+      positionOutline(hoverOutline, hoveredElement);
+      positionOutline(selectionOutline, selectedElement);
+    }
+    function hideOutlines() {
+      if (outlineFrame) window.cancelAnimationFrame(outlineFrame);
+      outlineFrame = 0;
+      if (hoverOutline) hoverOutline.style.display = "none";
+      if (selectionOutline) selectionOutline.style.display = "none";
+    }
     function collectSourceRules(el) {
       const result = [];
       const seen = /* @__PURE__ */ new Set();
+      let scanned = 0;
       for (const sheet of document.styleSheets) {
         if (!sheet.href) continue;
         let rules;
@@ -464,6 +599,7 @@ var DesignStudioRuntime = (() => {
           continue;
         }
         for (const rule of rules) {
+          if (scanned++ >= 1500) return result.length > 0 ? result : void 0;
           if (!(rule instanceof CSSStyleRule)) continue;
           const selectorText = rule.selectorText;
           if (!selectorText) continue;
@@ -526,14 +662,24 @@ var DesignStudioRuntime = (() => {
       };
       const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
       if (classes.length > 0) payload.classes = classes;
+      const attributes = {};
+      for (const name of EDITABLE_ATTRIBUTES) {
+        if (el.hasAttribute(name)) attributes[name] = (el.getAttribute(name) ?? "").slice(0, 2e3);
+      }
+      if (Object.keys(attributes).length > 0) payload.attributes = attributes;
       if (detectTailwindPage()) payload.tailwind = true;
-      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+      const text = readElementText(el);
       if (text.length > 0) payload.text = text.slice(0, 2e3);
       const rules = collectSourceRules(el);
       if (rules) payload.rules = rules;
       const components = collectReactComponents(el);
       if (components.length > 0) payload.component = components;
       return payload;
+    }
+    function readElementText(el) {
+      if (el instanceof HTMLTextAreaElement) return el.value.trim();
+      if (el instanceof HTMLInputElement) return el.type === "password" ? "" : el.value.trim();
+      return (el.textContent ?? "").replace(/\s+/g, " ").trim();
     }
     function postToParent(msg) {
       try {
@@ -542,12 +688,13 @@ var DesignStudioRuntime = (() => {
       } catch {
       }
     }
-    function sendHoverOrSelect(type, el) {
-      if (!editMode) return;
-      if (isDesignStudioElement(el)) return;
-      if (el === document.body || el === document.documentElement) return;
-      const payload = collect(el);
-      postToParent({ type, version: PROTOCOL_VERSION, payload, sessionId: activeSessionId || void 0 });
+    function sendSelection(el) {
+      if (!editMode || !canSelect(el)) return;
+      selectedElement = el;
+      hoveredElement = el;
+      ensureOutlines();
+      positionOutlinesNow();
+      postToParent({ type: "ds:select", version: PROTOCOL_VERSION, payload: collect(el), sessionId: activeSessionId || void 0 });
     }
     function currentApplicationPath() {
       const current = new URL(window.location.href);
@@ -580,12 +727,13 @@ var DesignStudioRuntime = (() => {
         sessionId: activeSessionId
       });
     }
-    function postOpApplied(op, value, success, reason, payload, requestId) {
+    function postOpApplied(op, value, success, reason, payload, requestId, attribute) {
       postToParent({
         type: "ds:op-applied",
         version: PROTOCOL_VERSION,
         op,
         value,
+        ...attribute ? { attribute } : {},
         success,
         reason,
         payload,
@@ -593,7 +741,7 @@ var DesignStudioRuntime = (() => {
         sessionId: activeSessionId || void 0
       });
     }
-    function applyElementOp(op, value, requestId) {
+    function applyElementOp(op, value, requestId, attribute) {
       if (!selectedElement) {
         postOpApplied(op, value, false, "No selected element", null, requestId);
         return;
@@ -603,7 +751,16 @@ var DesignStudioRuntime = (() => {
         switch (op) {
           case "set-text": {
             const text = typeof value === "string" ? value.slice(0, 5e3) : "";
-            selectedElement.textContent = text;
+            if (selectedElement instanceof HTMLTextAreaElement || selectedElement instanceof HTMLInputElement) {
+              if (selectedElement instanceof HTMLInputElement && selectedElement.type === "password") {
+                postOpApplied(op, text, false, "Password values cannot be edited", null, requestId);
+                return;
+              }
+              selectedElement.value = text;
+              selectedElement.setAttribute("value", text);
+            } else {
+              selectedElement.textContent = text;
+            }
             payload = collect(selectedElement);
             postOpApplied(op, text, true, void 0, payload, requestId);
             return;
@@ -658,39 +815,37 @@ var DesignStudioRuntime = (() => {
             postOpApplied(op, value, true, void 0, payload, requestId);
             return;
           }
+          case "set-attribute": {
+            if (!isEditableAttribute(attribute) || typeof value !== "string" || value.length > 2e3) {
+              postOpApplied(op, value, false, "Invalid attribute", null, requestId, attribute);
+              return;
+            }
+            if ((attribute === "href" || attribute === "src") && value !== "" && /^(javascript|vbscript)\s*:/i.test(value.trim())) {
+              postOpApplied(op, value, false, "Blocked URL scheme", null, requestId, attribute);
+              return;
+            }
+            if (value === "") {
+              selectedElement.removeAttribute(attribute);
+            } else {
+              selectedElement.setAttribute(attribute, value);
+            }
+            const liveProperty = LIVE_PROPERTY_BY_ATTRIBUTE[attribute];
+            if (liveProperty) {
+              const live = selectedElement;
+              if (liveProperty in selectedElement) {
+                live[liveProperty] = liveProperty === "value" ? value : value !== "";
+              }
+            }
+            payload = collect(selectedElement);
+            postOpApplied(op, value, true, void 0, payload, requestId, attribute);
+            return;
+          }
           default:
             postOpApplied(op, value, false, "Unknown op", null, requestId);
         }
       } catch {
         postOpApplied(op, value, false, "Failed to apply op", null, requestId);
       }
-    }
-    function postTextChanged(el) {
-      const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 5e3);
-      postToParent({
-        type: "ds:text-changed",
-        version: PROTOCOL_VERSION,
-        text,
-        payload: collect(el),
-        sessionId: activeSessionId || void 0
-      });
-    }
-    function startInlineEdit(el) {
-      if (!(el instanceof HTMLElement)) return;
-      if (el.isContentEditable) return;
-      editingElement = el;
-      el.contentEditable = "true";
-      el.setAttribute("data-ds-editing", "");
-      el.focus({ preventScroll: true });
-    }
-    function endInlineEdit(cancel) {
-      const el = editingElement;
-      if (!el) return;
-      el.contentEditable = "false";
-      el.removeAttribute("data-ds-editing");
-      editingElement = null;
-      if (cancel) return;
-      postTextChanged(el);
     }
     window.addEventListener("message", (event) => {
       if (event.source !== window.parent) return;
@@ -728,6 +883,14 @@ var DesignStudioRuntime = (() => {
       if (msg.type === "ds:set-mode") {
         if (activeSessionId && msg.sessionId !== activeSessionId) return;
         editMode = Boolean(msg.enabled);
+        if (editMode) {
+          ensureOutlines();
+          scheduleOutlineUpdate();
+        } else {
+          hoveredElement = null;
+          selectedElement = null;
+          hideOutlines();
+        }
         postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
         notifyNavigation();
         return;
@@ -804,7 +967,7 @@ var DesignStudioRuntime = (() => {
       }
       if (msg.type === "ds:apply-op") {
         if (activeSessionId && msg.sessionId !== activeSessionId) return;
-        applyElementOp(msg.op, msg.value, msg.requestId);
+        applyElementOp(msg.op, msg.value, msg.requestId, msg.attribute);
         return;
       }
     });
@@ -822,84 +985,60 @@ var DesignStudioRuntime = (() => {
     };
     window.addEventListener("popstate", notifyNavigation);
     window.addEventListener("hashchange", notifyNavigation);
-    document.addEventListener(
-      "dblclick",
-      (e) => {
-        if (!editMode) return;
-        const target = toElement(e.target);
-        if (!target) return;
-        if (isDesignStudioElement(target)) return;
-        if (target === document.body || target === document.documentElement) return;
-        const interactive = target.closest(INTERACTIVE_SELECTOR);
-        if (interactive && !e.altKey) return;
-        e.preventDefault();
-        e.stopPropagation();
-        selectedElement = target;
-        sendHoverOrSelect("ds:select", target);
-        startInlineEdit(target);
-      },
-      true
-    );
-    document.addEventListener(
-      "keydown",
-      (e) => {
-        if (!editingElement) return;
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          endInlineEdit(true);
-        } else if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          e.stopPropagation();
-          endInlineEdit(false);
+    window.addEventListener("resize", scheduleOutlineUpdate);
+    window.addEventListener("scroll", scheduleOutlineUpdate, true);
+    document.addEventListener("pointermove", (event) => {
+      if (!editMode) return;
+      const target = toElement(event.target);
+      if (!canSelect(target) || target === hoveredElement) return;
+      hoveredElement = target;
+      ensureOutlines();
+      positionOutlinesNow();
+    }, true);
+    document.addEventListener("pointerdown", (event) => {
+      if (!editMode) return;
+      const target = toElement(event.target);
+      if (!canSelect(target)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      sendSelection(target);
+    }, true);
+    document.addEventListener("click", (event) => {
+      const target = toElement(event.target);
+      if (editMode) {
+        if (canSelect(target)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
         }
-      },
-      true
-    );
-    document.addEventListener(
-      "focusout",
-      (e) => {
-        if (!editingElement) return;
-        if (e.target !== editingElement) return;
-        endInlineEdit(false);
-      },
-      true
-    );
-    let lastHover = 0;
-    document.addEventListener(
-      "mouseover",
-      (e) => {
-        if (!editMode) return;
-        const now = Date.now();
-        if (now - lastHover < 100) return;
-        lastHover = now;
-        const target = toElement(e.target);
-        if (!target) return;
-        sendHoverOrSelect("ds:hover", target);
-      },
-      true
-    );
-    document.addEventListener(
-      "click",
-      (e) => {
-        if (!editMode) return;
-        if (editingElement) return;
-        const target = toElement(e.target);
-        if (!target) return;
-        if (isDesignStudioElement(target)) return;
-        if (target === document.body || target === document.documentElement) return;
-        const interactive = target.closest(INTERACTIVE_SELECTOR);
-        if (interactive && !e.altKey) return;
-        e.preventDefault();
-        e.stopPropagation();
-        selectedElement = target;
-        sendHoverOrSelect("ds:select", target);
-      },
-      true
-    );
+        return;
+      }
+      if (!target || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = target.closest("a[href]");
+      if (!anchor || !upstreamOrigin || anchor.hasAttribute("download")) return;
+      let href;
+      try {
+        href = new URL(anchor.href, window.location.href);
+      } catch {
+        return;
+      }
+      const dangerousScheme = ["javascript:", "data:", "vbscript:", "blob:", "about:"].includes(href.protocol);
+      if (!dangerousScheme && href.protocol !== "http:" && href.protocol !== "https:") return;
+      const escapesFrame = Boolean(anchor.target) && anchor.target !== "_self";
+      if (dangerousScheme || href.origin !== upstreamOrigin || escapesFrame) {
+        event.preventDefault();
+        postToParent({
+          type: "ds:navigate-blocked",
+          version: PROTOCOL_VERSION,
+          url: href.toString().slice(0, 2048),
+          sessionId: activeSessionId || void 0
+        });
+        return;
+      }
+      event.preventDefault();
+      window.location.assign(`${href.pathname}${href.search}${href.hash}`);
+    }, true);
   }
   if (typeof window !== "undefined") {
-    console.log("Design Studio runtime loaded");
     initDesignStudioRuntime();
   }
   return __toCommonJS(src_exports);

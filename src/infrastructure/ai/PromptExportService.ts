@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { ElementPayload } from "../../../packages/preview-runtime/src/protocol";
+import type { ComponentInfo, ElementPayload } from "../../../packages/preview-runtime/src/protocol";
 import type { DesignEdit } from "../../domain/entities/DesignEdit";
 import { contextToPrompt, toSelectionContext } from "../../domain/entities/DesignElementContext";
 import { translate, type Language } from "../../shared/i18n";
-import { resolveComponentPaths } from "../source-analysis/ComponentResolver";
+import { pickRevealTarget, resolveComponentPaths } from "../source-analysis/ComponentResolver";
 import { findSourceHints } from "../source-analysis/SourceHintFinder";
 
 const MAX_COMPONENT_BYTES = 300_000;
@@ -51,6 +51,44 @@ export class PromptExportService {
     try {
       await vscode.env.clipboard.writeText(contextToPrompt(context, instruction, edits, language, framework));
       return { success: true, message: translate(language, "status.promptCopied") };
+    } catch (error) {
+      return {
+        success: false,
+        message: translate(language, "status.copyFailed", { error: error instanceof Error ? error.message : String(error) }),
+      };
+    }
+  }
+
+  async revealComponent(
+    components: { name?: string; file?: string; line?: number }[],
+    language: Language
+  ): Promise<PromptExportResult> {
+    if (!this.workspaceRoot) {
+      return { success: false, message: translate(language, "status.noProject") };
+    }
+
+    let target: ComponentInfo | undefined;
+    try {
+      target = pickRevealTarget(this.workspaceRoot, components);
+    } catch {
+      target = undefined;
+    }
+    if (!target || !target.file) {
+      return { success: false, message: translate(language, "status.sourceMissing") };
+    }
+
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.file));
+      const editor = await vscode.window.showTextDocument(document, { preview: true });
+      const line = Math.max(0, Math.min((target.line ?? 1) - 1, document.lineCount - 1));
+      const position = document.lineAt(line).range.start;
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+      const relative = path.relative(this.workspaceRoot, target.file).replace(/\\/g, "/");
+      return {
+        success: true,
+        message: translate(language, "status.sourceOpened", { file: relative }),
+      };
     } catch (error) {
       return {
         success: false,
