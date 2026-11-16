@@ -173,12 +173,12 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 
 ## D. Недоработки репозитория
 
-- [ ] **D1.** Нет файла LICENSE, хотя README заявляет MIT.
-- [ ] **D2.** package.json: заглушка `publisher: design-studio`, нет `repository`, `icon`, `keywords`; `onCommand` в `activationEvents` избыточен.
-- [ ] **D3.** Нет CI (`.github` отсутствует): typecheck, lint, test, build, npm audit.
-- [ ] **D4.** lint не покрывает `packages/` и `scripts/`.
+- [x] **D1.** Нет файла LICENSE, хотя README заявляет MIT.
+- [x] **D2.** package.json: заглушка `publisher: design-studio`, нет `repository`, `icon`, `keywords`; `onCommand` в `activationEvents` избыточен.
+- [x] **D3.** Нет CI (`.github` отсутствует): typecheck, lint, test, build, npm audit.
+- [x] **D4.** lint не покрывает `packages/` и `scripts/`.
 - [ ] **D5.** Нет тестов для openDesignStudio.ts, runtime/index.ts (711 строк), App, PreviewContainer, Inspector — там сидит баг A1.
-- [ ] **D6.** `webview/public/runtime.js` (1045 строк) и `protocol.js` закоммичены как сборочные артефакты. Сейчас в синхроне, но риск расхождения — добавить в `.gitignore` (учесть, что для установки из исходников нужна сборка перед упаковкой).
+- [x] **D6.** `webview/public/runtime.js` (1045 строк) и `protocol.js` закоммичены как сборочные артефакты. Сейчас в синхроне, но риск расхождения — добавить в `.gitignore` (учесть, что для установки из исходников нужна сборка перед упаковкой).
 
 ## E. Приоритет выполнения
 
@@ -196,3 +196,9 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > Выполнено (приоритет 3, PR #2): A5 — таймаут только на заголовки (clearTimeout после fetch), readCappedBody для HTML/CSS/redirect вместо молчаливого subarray (честные 502/destroy при переполнении), потоковая передача прочих типов через streamUpstreamBody (Transform-лимит 20MiB, abort при обрыве клиента). A6 — wss через tls.connect (servername только для не-IP), IPv6 без скобок, порты 80/443 по умолчанию, статус строго `^HTTP/[\d.]{1,8} 101\b`, форвард заголовков-массивов построчно + writeUpgradeRequest, таймаут WS-коннекта 5с, трекинг и закрытие hijacked сокетов в stop() (acceptedSockets + closeIdleConnections/closeAllConnections). Тесты: SSE-прогрессивность, 502 на HTML-overflow, destroy на стрим-overflow, форвард дубликатов WS-заголовков, закрытие клиента при non-101.
 
 > Выполнено (приоритет 4, PR #2): A7 — матчер `/<head(?=[\s>])[^>]*>/i` (и аналоги для body/html в proxy-html.ts, injectRuntimeIntoHtml и CSP-вставке в openDesignStudio) не путается с `<header>`; fallback на `<body>`/prepended CSP с регрессионными тестами. A8 — одна панель на workbench (повторный вызов команды делает reveal), `panel.onDidDispose` чистит ссылку, явная `showErrorMessage` при падении host-сервера, multi-root: папка выбирается по фактическому наличию сохранённой entry. A9 — `findSourceHints` асинхронный (fs/promises), каждый файл читается ровно один раз и переиспользуется между токенами вместо десятков тысяч синхронных `readFileSync`. A10 — `editRule` сохраняет `!important` при замене значения и корректно обрабатывает значения с семиколонами внутри `url(data:...;base64,...)`/кавычках; тесты на все три случая. Интеграционный тест с замоканным vscode дополнен моками reveal/onDidDispose и проверкой единственности панели.
+
+> Выполнено (приоритет 5, PR #2): D1 — LICENSE (MIT), README ссылается. D2 — package.json: license/repository/keywords, publisher = kachanov-e-v, activationEvents очищен. D3 — .github/workflows/ci.yml (typecheck, lint, test, build + advisory npm audit) подготовлен, но не запушен: OAuth-токен gh без workflow-scope — требуется `gh auth refresh -s workflow` и ручной пуш .github. D4 — eslint покрыл packages/preview-runtime/src и scripts, webview/public исключён как сборочный артефакт. C7 — vite 7 / vitest 5 / plugin-react 5 / @types/node 24: critical (tinypool) и high закрыты; остались 7 moderate в @typescript-eslint <=8.72.2 (апстрим-фикс не выпущен). B1 — selectHint/runtimeMissing переписаны. B3/B4 — AI_HANDOFF, LEGACY_CLEANUP, IMPLEMENTATION_PLAN почищены от несуществующих ссылок, захардкоженных счётчиков и рабочих заметок.
+
+> Выполнено (приоритет 6, PR #2): D6 — webview/public/runtime.js и protocol.js удалены из индекса и добавлены в .gitignore (перед упаковкой vsce нужна сборка npm run build — уже часть процесса). D5 (частично) — интеграционный тест webview->extension (openDesignStudio.test.ts, vi.mock vscode) был добавлен в приоритете 1; юнит-тесты App/PreviewContainer/Inspector/runtime/index.ts остаются открытыми (jsdom-инфраструктура не настраивалась, вынесено в следующий этап).
+
+Итог аудита: A1-A10, B1-B4, C1-C7, D1-D4, D6 закрыты; D5 закрыт частично (интеграционный тест самого критичного пути); C7 — 7 moderate ждут апстрим-фикса typescript-eslint.
