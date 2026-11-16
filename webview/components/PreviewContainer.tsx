@@ -104,6 +104,15 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const retryTimerRef = useRef<number | null>(null);
   const missingTimerRef = useRef<number | null>(null);
   const MAX_RETRIES = 5;
+  // WV-03: the first page of a fresh panel/demo can swallow the initial
+  // ds:set-mode push (sent the instant the runtime announces itself, before
+  // the runtime session is fully up). The runtime echoes ds:mode-changed for
+  // every accepted set-mode; that echo is the ack — re-send (bounded) until
+  // the echo confirms the current mode, matching value only.
+  const modeResyncTimerRef = useRef<number | null>(null);
+  const modeResyncPostsRef = useRef(0);
+  const MODE_RESYNC_TIMEOUT_MS = 400;
+  const MODE_RESYNC_MAX_POSTS = 8;
 
   // P1-1: exact origin of the preview document; all postMessage traffic both
   // ways is pinned to it ("*" would leak the session to any surrounding page).
@@ -148,6 +157,31 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       window.clearTimeout(missingTimerRef.current);
       missingTimerRef.current = null;
     }
+    if (modeResyncTimerRef.current) {
+      window.clearTimeout(modeResyncTimerRef.current);
+      modeResyncTimerRef.current = null;
+    }
+  };
+
+  const stopModeResync = () => {
+    if (modeResyncTimerRef.current) {
+      window.clearTimeout(modeResyncTimerRef.current);
+      modeResyncTimerRef.current = null;
+    }
+    modeResyncPostsRef.current = 0;
+  };
+
+  const postSetModeWithResync = () => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow || !sessionIdRef.current || !previewOriginRef.current) return;
+    iframe.contentWindow.postMessage(
+      { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
+      previewOriginRef.current
+    );
+    if (modeResyncPostsRef.current >= MODE_RESYNC_MAX_POSTS) return;
+    modeResyncPostsRef.current += 1;
+    if (modeResyncTimerRef.current) window.clearTimeout(modeResyncTimerRef.current);
+    modeResyncTimerRef.current = window.setTimeout(postSetModeWithResync, MODE_RESYNC_TIMEOUT_MS);
   };
 
   const sendPing = () => {
@@ -255,10 +289,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         resolvedRef.current = true;
         setRuntimeStatus("ready");
         setDiagnostic("");
-        iframe.contentWindow?.postMessage(
-          { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
-          previewOriginRef.current
-        );
+        postSetModeWithResync();
         return;
       }
 
@@ -269,6 +300,8 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       if (typeof messageSession !== "string" || messageSession !== sessionIdRef.current) return;
 
       if (data.type === "ds:mode-changed") {
+        // A matching echo is the ack for the WV-03 resync.
+        if (data.enabled === editModeRef.current) stopModeResync();
         if (data.enabled !== editModeRef.current) {
           onEditModeChangeRef.current(data.enabled);
         }
@@ -339,10 +372,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     const iframe = iframeRef.current;
     if (!iframe?.contentWindow) return;
     if (runtimeStatus !== "ready") return;
-    iframe.contentWindow.postMessage(
-      { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode, sessionId: sessionIdRef.current },
-      previewOriginRef.current
-    );
+    postSetModeWithResync();
   }, [editMode, runtimeStatus, url]);
 
   const runtimeLabel =
