@@ -16,6 +16,7 @@ const DEMO_KEY = "designStudio.demoPreview.v1";
 
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
+let activePanel: vscode.WebviewPanel | null = null;
 
 function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
   if (!sharedTraceChannel) {
@@ -47,9 +48,19 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
   }
 }
 
-function getWorkspaceRoot(): string | null {
+function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) return null;
+  // Multi-root: prefer the workspace folder that actually contains the
+  // remembered project entry instead of always using the first folder.
+  const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
+  if (entry) {
+    const candidate = entry.replace(/\\/g, "/").replace(/^\//, "");
+    if (candidate && !candidate.includes("..")) {
+      const owner = folders.find((f) => fs.existsSync(path.join(f.uri.fsPath, candidate)));
+      if (owner) return owner.uri.fsPath;
+    }
+  }
   return folders[0].uri.fsPath;
 }
 
@@ -58,9 +69,23 @@ import { findProjectEntries } from "../../infrastructure/preview/projectEntrySca
 export { findProjectEntries };
 
 export async function openDesignStudio(context: vscode.ExtensionContext): Promise<void> {
-  const root = getWorkspaceRoot();
+  // One panel per workbench: the shared PreviewHostServer holds one sticky dev
+  // target and one project root, so a second panel would fight the first.
+  if (activePanel) {
+    activePanel.reveal(vscode.ViewColumn.Beside);
+    return;
+  }
   let language: Language = context.globalState.get<Language>(LANGUAGE_KEY, "ru");
+  const root = getWorkspaceRoot(context);
   const host = await ensureHostServer(context, root);
+
+  if (!host) {
+    const message = language === "ru"
+      ? "Не удалось запустить локальный сервер предпросмотра. Подробности — в канале «Design Studio Preview»."
+      : "Failed to start the local preview host server. See the \"Design Studio Preview\" output channel for details.";
+    void vscode.window.showErrorMessage(message);
+    return;
+  }
 
   const panel = vscode.window.createWebviewPanel(
     "designStudio",
@@ -72,6 +97,10 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "dist", "webview")],
     }
   );
+  activePanel = panel;
+  panel.onDidDispose(() => {
+    activePanel = null;
+  }, undefined, context.subscriptions);
 
   panel.webview.html = getWebviewHtml(panel.webview, context.extensionUri);
 
@@ -335,7 +364,15 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   const previewOrigins = "http://127.0.0.1:* http://localhost:* http://[::1]:*";
   const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} ${previewOrigins} data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} ${previewOrigins} data:;" />`;
   if (!html.includes("Content-Security-Policy")) {
-    html = html.replace("<head>", `<head>${csp}`);
+    // Match the real <head> element only (with attributes, without <header>)
+    // and fall back to prepending before the document body.
+    if (/<head(?=[\s>])[^>]*>/i.test(html)) {
+      html = html.replace(/<head(?=[\s>])[^>]*>/i, (m) => `${m}${csp}`);
+    } else if (/<body(?=[\s>])[^>]*>/i.test(html)) {
+      html = html.replace(/<body(?=[\s>])[^>]*>/i, (m) => `${m}${csp}`);
+    } else {
+      html = csp + html;
+    }
   }
 
   return html;

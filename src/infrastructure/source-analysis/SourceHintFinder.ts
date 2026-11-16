@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { Dirent } from "node:fs";
 import * as path from "node:path";
 import type { ElementPayload } from "../../../packages/preview-runtime/src/protocol";
 import { isTailwindUtilityName } from "../../shared/tailwind";
@@ -29,8 +30,10 @@ const MAX_HINTS = 8;
  * workspace for its distinctive tokens: visible text (whole snippet and
  * individual words), element id, and semantic (non-utility) class names.
  * Pure fs-based, no VS Code dependency; best-effort source hints for prompts.
+ * Async and single-pass: every candidate file is read at most once, and the
+ * reads happen off the extension-host critical path via fs/promises.
  */
-export function findSourceHints(root: string, payload: ElementPayload): SourceHint[] {
+export async function findSourceHints(root: string, payload: ElementPayload): Promise<SourceHint[]> {
   const tokens = collectTokens(payload);
   if (tokens.length === 0) return [];
 
@@ -38,9 +41,9 @@ export function findSourceHints(root: string, payload: ElementPayload): SourceHi
   const walkDirs: string[] = [root];
   while (walkDirs.length > 0 && files.length < MAX_FILES) {
     const dir = walkDirs.pop()!;
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -57,20 +60,25 @@ export function findSourceHints(root: string, payload: ElementPayload): SourceHi
     }
   }
 
+  // One read per file for the entire token loop: previously every file was
+  // re-read for every token (thousands of synchronous reads on the UI thread).
+  const contents = new Map<string, string>();
+  await Promise.all(files.map(async (file) => {
+    try {
+      const stat = await fs.promises.stat(file);
+      if (stat.size > MAX_FILE_BYTES) return;
+      contents.set(file, await fs.promises.readFile(file, "utf8"));
+    } catch {
+      // Unreadable files simply yield no hints.
+    }
+  }));
+
   const found: SourceHint[] = [];
   const seen = new Set<string>();
   // Search the most distinctive tokens first (exact text > id > semantic classes).
   for (const token of tokens) {
-    for (const file of files) {
+    for (const [file, text] of contents) {
       if (found.length >= MAX_HINTS) return rank(found);
-      let text: string;
-      try {
-        const stat = fs.statSync(file);
-        if (stat.size > MAX_FILE_BYTES) continue;
-        text = fs.readFileSync(file, "utf8");
-      } catch {
-        continue;
-      }
       const idx = text.indexOf(token.search);
       if (idx === -1) continue;
       const line = countLines(text, idx);

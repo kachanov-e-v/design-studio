@@ -145,14 +145,14 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
   - [x] статус проверяется регуляркой `/101/` по всей строке;
   - [x] заголовки-массивы отбрасываются;
   - [x] таймаута на подключение нет.
-- [ ] **A7. Вставка runtime.** Регулярка `/<head[^>]*>/i` совпадёт и с `<header>`, если настоящего `<head>` нет.
-- [ ] **A8. Жизненный цикл расширения:**
-  - [ ] нет `panel.onDidDispose`;
-  - [ ] можно открыть несколько панелей, а `PreviewHostServer` общий: `setDevTarget` и `setProjectRoot` затирают друг друга и чистят cookie jar;
-  - [ ] учитывается только `workspaceFolders[0]` (нет поддержки multi-root);
-  - [ ] если сервер не стартовал, пользователь не видит ничего (только console.error), панель остаётся «пустой» — нужна явная ошибка.
-- [ ] **A9. Блокировка extension host.** `findSourceHints` синхронно обходит до 3000 файлов и перечитывает каждый файл для каждого токена (до 8) — десятки тысяч `readFileSync` в основном потоке. Нужен асинхронный попроходный обход с одним чтением файла.
-- [ ] **A10. `!important` теряется при замене значения в `editRule`** — регулярка `[^;]*` съедает его. Значения вида `url(data:...;base64,...)` она тоже ломает.
+- [x] **A7. Вставка runtime.** Регулярка `/<head[^>]*>/i` совпадёт и с `<header>`, если настоящего `<head>` нет.
+- [x] **A8. Жизненный цикл расширения:**
+  - [x] нет `panel.onDidDispose`;
+  - [x] можно открыть несколько панелей, а `PreviewHostServer` общий: `setDevTarget` и `setProjectRoot` затирают друг друга и чистят cookie jar;
+  - [x] учитывается только `workspaceFolders[0]` (нет поддержки multi-root);
+  - [x] если сервер не стартовал, пользователь не видит ничего (только console.error), панель остаётся «пустой» — нужна явная ошибка.
+- [x] **A9. Блокировка extension host.** `findSourceHints` синхронно обходит до 3000 файлов и перечитывает каждый файл для каждого токена (до 8) — десятки тысяч `readFileSync` в основном потоке. Нужен асинхронный попроходный обход с одним чтением файла.
+- [x] **A10. `!important` теряется при замене значения в `editRule`** — регулярка `[^;]*` съедает его. Значения вида `url(data:...;base64,...)` она тоже ломает.
 
 ## B. Расхождения документации и кода
 
@@ -194,3 +194,5 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > Выполнено (приоритет 2, PR #2): C1 — проверка Host (incl. WS-upgrade); токен сознательно не вводился (SameSite ломает доставку cookie кросс-сайтовому iframe, Host-pроверка закрывает rebinding; обоснование в SECURITY.md). C2 — /project/ запрещает .env*, .git, node_modules. B2 — sourceMappingURL только loopback + redirect: "error". C4 — frame-src/img-src ограничены loopback-origin'ами. C3 — cookie jar ключуется upstream-origin|name. C5 — page-контент экранируется (dataValue) и огражден маркерами PAGE DATA START/END.
 
 > Выполнено (приоритет 3, PR #2): A5 — таймаут только на заголовки (clearTimeout после fetch), readCappedBody для HTML/CSS/redirect вместо молчаливого subarray (честные 502/destroy при переполнении), потоковая передача прочих типов через streamUpstreamBody (Transform-лимит 20MiB, abort при обрыве клиента). A6 — wss через tls.connect (servername только для не-IP), IPv6 без скобок, порты 80/443 по умолчанию, статус строго `^HTTP/[\d.]{1,8} 101\b`, форвард заголовков-массивов построчно + writeUpgradeRequest, таймаут WS-коннекта 5с, трекинг и закрытие hijacked сокетов в stop() (acceptedSockets + closeIdleConnections/closeAllConnections). Тесты: SSE-прогрессивность, 502 на HTML-overflow, destroy на стрим-overflow, форвард дубликатов WS-заголовков, закрытие клиента при non-101.
+
+> Выполнено (приоритет 4, PR #2): A7 — матчер `/<head(?=[\s>])[^>]*>/i` (и аналоги для body/html в proxy-html.ts, injectRuntimeIntoHtml и CSP-вставке в openDesignStudio) не путается с `<header>`; fallback на `<body>`/prepended CSP с регрессионными тестами. A8 — одна панель на workbench (повторный вызов команды делает reveal), `panel.onDidDispose` чистит ссылку, явная `showErrorMessage` при падении host-сервера, multi-root: папка выбирается по фактическому наличию сохранённой entry. A9 — `findSourceHints` асинхронный (fs/promises), каждый файл читается ровно один раз и переиспользуется между токенами вместо десятков тысяч синхронных `readFileSync`. A10 — `editRule` сохраняет `!important` при замене значения и корректно обрабатывает значения с семиколонами внутри `url(data:...;base64,...)`/кавычках; тесты на все три случая. Интеграционный тест с замоканным vscode дополнен моками reveal/onDidDispose и проверкой единственности панели.

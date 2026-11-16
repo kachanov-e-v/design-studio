@@ -131,11 +131,13 @@ const MIME_TYPES: Record<string, string> = {
 export function injectRuntimeIntoHtml(html: string, runtimeSrc: string): string {
   if (html.includes("/__ds-runtime.js")) return html;
   const tag = `<script src="${runtimeSrc}"></script>`;
-  if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, (m) => `${m}\n${tag}`);
+  // `(?=[\s>])` keeps the match on the real <head>/<html> element —
+  // a <header> tag in headless HTML must not swallow the runtime script.
+  if (/<head(?=[\s>])[^>]*>/i.test(html)) {
+    return html.replace(/<head(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
   }
-  if (/<html[^>]*>/i.test(html)) {
-    return html.replace(/<html[^>]*>/i, (m) => `${m}\n${tag}`);
+  if (/<html(?=[\s>])[^>]*>/i.test(html)) {
+    return html.replace(/<html(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
   }
   return `${tag}\n${html}`;
 }

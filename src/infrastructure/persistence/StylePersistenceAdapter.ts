@@ -129,7 +129,11 @@ export class StylePersistenceAdapter {
   ): Promise<PersistenceResult> {
     const body = text.slice(rule.bodyStart, rule.bodyEnd);
     const propEsc = change.property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const declRegex = new RegExp(`(^|[;{])\\s*${propEsc}\\s*:[^;]*;?`, "m");
+    // A declaration value may contain semicolons inside url(data:...;base64,...)
+    // — parenthesised runs and quoted strings must survive the match instead of
+    // being split at the first ';'.
+    const valueChunk = `(?:[(][^()]*[)]|"[^"]*"|'[^']*'|[^;{])*`;
+    const declRegex = new RegExp(`(^|[;{])\\s*${propEsc}\\s*:${valueChunk};?`, "m");
 
     let newBody: string;
     if (change.value === "") {
@@ -138,10 +142,11 @@ export class StylePersistenceAdapter {
       }
       newBody = body.replace(declRegex, (match) => match.match(/^([;{])/)?.[1] ?? "");
     } else if (declRegex.test(body)) {
-      newBody = body.replace(declRegex, (match) => {
-        const delimMatch = match.match(/^([;{])/);
-        const delim = delimMatch ? delimMatch[1] : "";
-        return `${delim} ${change.property}: ${change.value};`;
+      newBody = body.replace(declRegex, (match, delim: string) => {
+        // Keep an existing !important flag unless the new value already carries one.
+        const hadImportant = /!\s*important/i.test(match);
+        const important = hadImportant && !/!\s*important/i.test(change.value) ? " !important" : "";
+        return `${delim} ${change.property}: ${change.value}${important};`;
       });
       if (newBody === body) {
         return { success: false, message: "Property already has this value" };

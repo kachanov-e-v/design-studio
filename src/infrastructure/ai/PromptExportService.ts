@@ -6,7 +6,7 @@ import type { DesignEdit } from "../../domain/entities/DesignEdit";
 import { contextToPrompt, toSelectionContext } from "../../domain/entities/DesignElementContext";
 import { translate, type Language } from "../../shared/i18n";
 import { pickRevealTarget, resolveComponentPaths } from "../source-analysis/ComponentResolver";
-import { findSourceHints } from "../source-analysis/SourceHintFinder";
+import { findSourceHints, type SourceHint } from "../source-analysis/SourceHintFinder";
 
 const MAX_COMPONENT_BYTES = 300_000;
 const SOURCE_EXTENSIONS = new Set([".tsx", ".jsx", ".ts", ".js", ".mts", ".mjs", ".mdx"]);
@@ -29,10 +29,10 @@ export class PromptExportService {
       return { success: false, message: translate(language, "status.noProject") };
     }
 
-    let sourceHints: ReturnType<typeof findSourceHints> = [];
+    let sourceHints: SourceHint[] = [];
     if (element) {
       try {
-        sourceHints = findSourceHints(this.workspaceRoot, element);
+        sourceHints = await findSourceHints(this.workspaceRoot, element);
       } catch {
         // Component metadata remains useful if workspace search is unavailable.
       }

@@ -5,7 +5,7 @@ import type { Duplex } from "node:stream";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PreviewHostServer, resolveProjectPath } from "./PreviewHostServer";
+import { injectRuntimeIntoHtml, PreviewHostServer, resolveProjectPath } from "./PreviewHostServer";
 import {
   injectIntoHtml,
   rewriteProxiedCss,
@@ -190,6 +190,28 @@ describe("proxy-html helpers", () => {
     const out = injectIntoHtml(stubHtml, "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1/proxy/http://x/");
     expect(out).toContain(`<base href="http://127.0.0.1:1/proxy/http://x/">`);
     expect(out).toContain(`<script src="http://127.0.0.1:1/__ds-runtime.js"`);
+    expect(out.indexOf("<base")).toBeLessThan(out.indexOf("<title>"));
+  });
+
+  it("A7: does not mistake <header> for <head>", () => {
+    const html = "<!DOCTYPE html><html><header><h1>App</h1></header><body></body></html>";
+    const out = injectIntoHtml(html, "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1/proxy/http://x/");
+    // Injection falls back to after <body>, never inside <header>.
+    const headerEnd = out.indexOf("</header>");
+    const injectedAt = out.indexOf(`<base href=`);
+    expect(injectedAt).toBeGreaterThan(headerEnd);
+  });
+
+  it("A7: injectRuntimeIntoHtml skips <header> tags", () => {
+    const html = "<html><header><h1>App</h1></header></html>";
+    const out = injectRuntimeIntoHtml(html, "/__ds-runtime.js");
+    expect(out).toContain(`<script src="/__ds-runtime.js">`);
+    expect(out.indexOf("/__ds-runtime.js")).toBeLessThanOrEqual(out.indexOf("<header"));
+  });
+
+  it("A7: still injects into <head> with attributes", () => {
+    const html = "<!DOCTYPE html><html lang=\"ru\"><head lang=\"ru\"><title>t</title></head><body></body></html>";
+    const out = injectIntoHtml(html, "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1/proxy/http://x/");
     expect(out.indexOf("<base")).toBeLessThan(out.indexOf("<title>"));
   });
 

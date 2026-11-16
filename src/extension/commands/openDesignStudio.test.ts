@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
   postMessage: vi.fn(async () => true),
   handler: null as ((msg: any) => Promise<void>) | null,
+  disposeCb: null as (() => void) | null,
 }));
 
 vi.mock("vscode", () => {
@@ -12,6 +13,11 @@ vi.mock("vscode", () => {
     window: {
       createWebviewPanel: () => ({
         title: "",
+        reveal: () => {},
+        onDidDispose: (cb: () => void) => {
+          mocks.disposeCb = cb;
+          return { dispose() {} };
+        },
         webview: {
           html: "",
           postMessage: mocks.postMessage,
@@ -22,6 +28,7 @@ vi.mock("vscode", () => {
         },
       }),
       createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
+      showErrorMessage: vi.fn(async () => undefined),
     },
     ViewColumn: { Beside: 2 },
     Uri: {
@@ -84,6 +91,10 @@ describe("style:persist extension handler (webview -> extension integration)", (
   beforeEach(() => {
     mocks.apply.mockReset();
     mocks.postMessage.mockClear();
+    // Simulate closing the panel so each test opens a fresh one.
+    mocks.disposeCb?.();
+    mocks.disposeCb = null;
+    mocks.handler = null;
   });
 
   it("persists sourceRules delivered by the webview payload", async () => {
@@ -123,6 +134,19 @@ describe("style:persist extension handler (webview -> extension integration)", (
     const last = lastMessage();
     expect(last.type).toBe("persist:result");
     expect(last.success).toBe(false);
+  });
+
+  it("A8: reveals the existing panel instead of creating a second one", async () => {
+    const ctx = makeContext();
+    await openDesignStudio(ctx);
+    const handler = mocks.handler!;
+    await openDesignStudio(makeContext());
+    // The handler from the first panel is still registered; no new panel was created.
+    expect(mocks.handler).toBe(handler);
+    mockApplySuccess();
+    await mocks.handler!(buildStylePersistMessage({ selector: ".x", property: "color", value: "red" }));
+    expect(mocks.apply).toHaveBeenCalledTimes(1);
+    expect(lastMessage().type).toBe("persist:result");
   });
 });
 
