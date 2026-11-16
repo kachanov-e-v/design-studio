@@ -202,3 +202,5 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > Выполнено (приоритет 6, PR #2): D6 — webview/public/runtime.js и protocol.js удалены из индекса и добавлены в .gitignore (перед упаковкой vsce нужна сборка npm run build — уже часть процесса). D5 (частично) — интеграционный тест webview->extension (openDesignStudio.test.ts, vi.mock vscode) был добавлен в приоритете 1; юнит-тесты App/PreviewContainer/Inspector/runtime/index.ts остаются открытыми (jsdom-инфраструктура не настраивалась, вынесено в следующий этап).
 
 Итог аудита: A1-A10, B1-B4, C1-C7, D1-D4, D6 закрыты; D5 закрыт частично (интеграционный тест самого критичного пути); C7 — 7 moderate ждут апстрим-фикса typescript-eslint.
+
+> Фаза 0: baseline-прогон зелёный (typecheck, lint, 178 тестов в 16 файлах, build+verify). Файл docs/AI_AGENT_INSTRUCTIONS.md добавлен, ссылка в docs/README.md. Код не менялся.
