@@ -13,6 +13,7 @@ import {
   STYLE_PROPERTY_PATTERN,
 } from "./protocol.js";
 import { collectReactComponents } from "./fiber.js";
+import { pickAnnouncementOrigin } from "./announcementOrigin.js";
 import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
@@ -117,7 +118,7 @@ export function postRuntimeAnnouncement(
   if (targetOrigin === undefined) {
     try {
       const origins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
-      targetOrigin = origins && origins.length > 0 ? String(origins[origins.length - 1]) : null;
+      targetOrigin = pickAnnouncementOrigin(origins);
     } catch {
       targetOrigin = null;
     }
