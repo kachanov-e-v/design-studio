@@ -493,6 +493,7 @@ export class PreviewHostServer {
       htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.projectBaseHrefFor(filePath), {
         respectAuthoredBase: true,
         upstreamOrigin: this.origin,
+        parentOrigins: [this.origin],
       });
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(htmlContent);

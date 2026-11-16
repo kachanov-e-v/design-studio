@@ -108,6 +108,18 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const missingTimerRef = useRef<number | null>(null);
   const MAX_RETRIES = 5;
 
+  // P1-1: exact origin of the preview document; all postMessage traffic both
+  // ways is pinned to it ("*" would leak the session to any surrounding page).
+  const previewOrigin = (() => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return "";
+    }
+  })();
+  const previewOriginRef = useRef(previewOrigin);
+  previewOriginRef.current = previewOrigin;
+
   useEffect(() => {
     onSelectRef.current = onSelect;
     onStyleAppliedRef.current = onStyleApplied;
@@ -148,7 +160,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (!nonce) return;
     iframe.contentWindow.postMessage(
       { type: "ds:ping", version: PROTOCOL_VERSION, nonce, sessionId: nonce },
-      "*"
+      previewOriginRef.current
     );
   };
 
@@ -182,7 +194,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, sessionId: sessionIdRef.current },
-        "*"
+        previewOriginRef.current
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -192,7 +204,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, attribute, requestId, sessionId: sessionIdRef.current },
-        "*"
+        previewOriginRef.current
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -220,6 +232,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const iframe = iframeRef.current;
       if (!iframe || !iframe.contentWindow) return;
       if (event.source !== iframe.contentWindow) return;
+      // P1-1: accept runtime messages only from the preview origin — a foreign
+      // origin (iframe left the preview during navigation) is never trusted.
+      if (!previewOriginRef.current || event.origin !== previewOriginRef.current) return;
       const raw = event.data as { type?: unknown; version?: unknown; nonce?: unknown; sessionId?: unknown };
 
       if (raw?.type === "ds:pong" || raw?.type === "ds:runtime-ready") {
@@ -242,7 +257,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         setDiagnostic("");
         iframe.contentWindow?.postMessage(
           { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
-          "*"
+          previewOriginRef.current
         );
         return;
       }
@@ -320,7 +335,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (runtimeStatus !== "ready") return;
     iframe.contentWindow.postMessage(
       { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode, sessionId: sessionIdRef.current },
-      "*"
+      previewOriginRef.current
     );
   }, [editMode, runtimeStatus, url]);
 
@@ -378,7 +393,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       version: PROTOCOL_VERSION,
       direction,
       sessionId: sessionIdRef.current,
-    }, "*");
+    }, previewOriginRef.current);
   };
 
   const reloadPreview = () => {
@@ -388,7 +403,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         type: "ds:reload",
         version: PROTOCOL_VERSION,
         sessionId: sessionIdRef.current,
-      }, "*");
+      }, previewOriginRef.current);
     } else {
       setRefreshKey((key) => key + 1);
     }

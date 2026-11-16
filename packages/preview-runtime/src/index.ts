@@ -110,7 +110,9 @@ export function initDesignStudioRuntime(): void {
   let editMode = false;
   let selectedElement: Element | null = null;
   let hoveredElement: Element | null = null;
-  let parentOrigin = "*";
+  // Trusted parent origin, captured from the first accepted ds:ping. Null
+  // until then: no session means nothing to report, and nothing may be sent.
+  let parentOrigin: string | null = null;
   let activeSessionId = "";
   let hoverOutline: HTMLDivElement | null = null;
   let selectionOutline: HTMLDivElement | null = null;
@@ -146,6 +148,25 @@ export function initDesignStudioRuntime(): void {
       return null;
     }
   })();
+
+  const parentOriginsAllowlist: string[] = (() => {
+    const raw = runtimeScript?.dataset.parentOrigins;
+    if (!raw) return [];
+    return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  })();
+
+  const isTrustedParentOrigin = (origin: string): boolean => {
+    // VS Code webview parents carry a vscode-webview://<id> origin.
+    if (/^vscode-webview(?::|$)/.test(origin)) return true;
+    // Explicit allowlist passed at injection time.
+    if (parentOriginsAllowlist.includes(origin)) return true;
+    // Same-origin embedding (runtime embedded by the page itself).
+    try {
+      return origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  };
 
   const isDesignStudioElement = (el: Element | null): boolean => {
     if (!el) return false;
@@ -354,11 +375,14 @@ export function initDesignStudioRuntime(): void {
   }
 
   function postToParent(msg: RuntimeMessage): void {
+    // Without a trusted parent origin (no accepted ping yet) nothing is sent:
+    // replying to "*" would leak element/page data to any surrounding page.
+    if (!parentOrigin) return;
     try {
       const out = activeSessionId && !(msg as { sessionId?: unknown }).sessionId
         ? { ...msg, sessionId: activeSessionId }
         : msg;
-      window.parent.postMessage(out, parentOrigin || "*");
+      window.parent.postMessage(out, parentOrigin);
     } catch {
       // ignore
     }
@@ -546,13 +570,17 @@ export function initDesignStudioRuntime(): void {
 
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
-    if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin && !parentOrigin.includes("vscode-webview")) return;
+    // P1-1: strict origin gate. Pings and control messages are accepted only
+    // from trusted parents (VS Code webview, injected allowlist, same-origin);
+    // "null"/sandboxed and foreign origins can never start a session.
+    if (!event.origin || event.origin === "null" || !isTrustedParentOrigin(event.origin)) return;
     const data = event.data;
 
     if (data && typeof data === "object" && (data as { type?: unknown }).type === "ds:ping") {
       const ping = data as { nonce?: unknown; sessionId?: unknown; version?: unknown };
       if (typeof ping.nonce !== "string" || ping.nonce.length === 0 || ping.nonce.length > 128) return;
-      if (event.origin && event.origin !== "null") parentOrigin = event.origin;
+      // Reply goes to the ping's exact origin — never "*".
+      parentOrigin = event.origin;
       activeSessionId = typeof ping.sessionId === "string" && ping.sessionId.length > 0 ? ping.sessionId : ping.nonce;
       postToParent({
         type: "ds:pong",
