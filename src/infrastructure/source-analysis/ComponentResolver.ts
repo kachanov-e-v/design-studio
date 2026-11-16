@@ -85,3 +85,109 @@ function resolveUncached(root: string, raw: string): string | undefined {
   }
   return undefined;
 }
+
+// RT-02: React 19 dev drops `_debugSource` and Turbopack dev stacks surface
+// only `chunks/` frames, so selections often carry component names WITHOUT a
+// file. This definition scan backs up "reveal/copy component" for the
+// name-only case. Mirrors SourceHintFinder's traversal discipline (skip
+// build output and dot dirs, deterministic order, shared byte budget).
+const DEFINITION_EXTENSIONS = new Set([".tsx", ".jsx", ".ts", ".js", ".mts", ".mjs"]);
+const DEFINITION_SKIP_DIRS = new Set([
+  "node_modules", ".next", "dist", "build", "out", "coverage",
+  ".git", ".vscode", ".design-studio",
+]);
+const MAX_DEFINITION_FILES = 3000;
+const MAX_DEFINITION_FILE_BYTES = 300_000;
+const MAX_DEFINITION_TOTAL_BYTES = 32 * 1024 * 1024;
+
+export interface FindComponentDefinitionOptions {
+  /** Overrides the shared read budget (bytes) — used by tests. */
+  maxTotalBytes?: number;
+}
+
+const IDENTIFIER_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const escapeRegExp = (name: string): string => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function definitionPatterns(name: string): RegExp[] {
+  const n = escapeRegExp(name);
+  return [
+    new RegExp(`\\bexport\\s+default\\s+(?:async\\s+)?function\\s+${n}\\b`),
+    new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${n}\\b`),
+    new RegExp(`\\bexport\\s+const\\s+${n}\\b`),
+    new RegExp(`\\bexport\\s+class\\s+${n}\\b`),
+    new RegExp(`\\b(?:async\\s+)?function\\s+${n}\\b`),
+    new RegExp(`\\b(?:const|let|var)\\s+${n}\\s*[:=][^=]`),
+    new RegExp(`\\bclass\\s+${n}\\b`),
+  ];
+}
+
+function lineAt(content: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index && i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
+/**
+ * Search the workspace for the definition of a component by its exact name.
+ * Deterministic traversal order; reading stops once the shared byte budget
+ * is spent (already-read files are still searched). Returns the first
+ * definition site as a workspace-relative file.
+ */
+export async function findComponentDefinition(
+  root: string,
+  name: string,
+  options: FindComponentDefinitionOptions = {}
+): Promise<{ file: string; line?: number } | undefined> {
+  if (!IDENTIFIER_NAME.test(name)) return undefined;
+  const patterns = definitionPatterns(name);
+  const maxTotalBytes = options.maxTotalBytes ?? MAX_DEFINITION_TOTAL_BYTES;
+  let spentBytes = 0;
+  let visited = 0;
+
+  const walkDirs: string[] = [root];
+  while (walkDirs.length > 0 && visited < MAX_DEFINITION_FILES) {
+    const dir = walkDirs.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (visited >= MAX_DEFINITION_FILES) break;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!DEFINITION_SKIP_DIRS.has(entry.name) && !entry.name.startsWith(".")) walkDirs.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!DEFINITION_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      visited++;
+      if (spentBytes >= maxTotalBytes) continue;
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.size > MAX_DEFINITION_FILE_BYTES) continue;
+        if (spentBytes + stat.size > maxTotalBytes) {
+          // Never read past the shared budget; sizes still count so repeated
+          // calls stay deterministic.
+          spentBytes += stat.size;
+          continue;
+        }
+        spentBytes += stat.size;
+        const content = await fs.promises.readFile(full, "utf8");
+        for (const pattern of patterns) {
+          const match = pattern.exec(content);
+          if (!match) continue;
+          const rel = path.relative(root, full).replace(/\\/g, "/");
+          if (!rel || rel.startsWith("..")) return undefined;
+          return { file: rel, line: lineAt(content, match.index) };
+        }
+      } catch {
+        // Skip unreadable files and keep scanning.
+      }
+    }
+  }
+  return undefined;
+}

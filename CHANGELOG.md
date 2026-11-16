@@ -23,6 +23,15 @@ source audit (see `docs/IMPLEMENTATION_PLAN.md`, phases 0–4).
   side routing (Next.js `<Link>`) works without full page reloads; the explicit
   `location.assign` hijack remains only for structured `/proxy/…` documents
   and upstream-origin links (NAV-02).
+- "Reveal" (Перейти) and component copy work without React fiber debug
+  metadata (`_debugSource` is gone in React 19 dev builds): the source of a
+  selected component is resolved by searching the workspace for the component
+  declaration by export name before reporting "component file not found"
+  (RT-02).
+- Edit-mode highlights and selection work on the first page right after the
+  panel opens (demo, new project): the webview re-posts `ds:set-mode` until
+  the runtime confirms with `ds:mode-changed`, so a set-mode lost during
+  instant connect no longer leaves the preview in browse mode (WV-03).
 - "Save styles": persistence requests are serialized with request-id
   correlation; a failed edit no longer discards the pending queue (P0-4).
 - Security: origin-checked `postMessage` between webview and runtime (P1-1);

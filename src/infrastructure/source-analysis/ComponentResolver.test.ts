@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pickRevealTarget, resolveComponentPaths, stripBundlerPrefix } from "./ComponentResolver";
+import { findComponentDefinition, pickRevealTarget, resolveComponentPaths, stripBundlerPrefix } from "./ComponentResolver";
 
 const tempDirs: string[] = [];
 
@@ -87,5 +87,51 @@ describe("pickRevealTarget", () => {
     expect(pickRevealTarget(root, [{ name: "Missing", file: "./src/NotFound.tsx" }])).toBeUndefined();
     expect(pickRevealTarget(root, undefined)).toBeUndefined();
     expect(pickRevealTarget(root, [{ name: "NoFile" }])).toBeUndefined();
+  });
+});
+
+/**
+ * RT-02: React 19 dev builds dropped `_debugSource` and Turbopack dev stacks
+ * only surface `chunks/` frames, so selections often arrive with component
+ * NAMES but no file. "Перейти"/"Копировать компонент" used to die with
+ * status.sourceMissing. findComponentDefinition falls back to a workspace
+ * scan for the Definition of the component by its name.
+ */
+describe("findComponentDefinition (RT-02: name-only component fibers)", () => {
+  it("locates the component definition by name when the fiber carries no file", async () => {
+    const root = makeProject({
+      "src/components/Board.tsx": "export function Board() {\n  return null;\n}\n",
+      "src/app/page.tsx": "import { Board } from \"../components/Board\";\nexport default function Page() {\n  return <Board />;\n}\n",
+      "node_modules/left-pad/left-pad.jsx": "function Board() {}\n",
+    });
+    const found = await findComponentDefinition(root, "Board");
+    expect(found?.file.replace(/\\/g, "/")).toBe("src/components/Board.tsx");
+    expect(found?.line).toBe(1);
+    expect(await findComponentDefinition(root, "Nonexistent")).toBeUndefined();
+  });
+
+  it("supports const/let arrow and class definitions", async () => {
+    const root = makeProject({
+      "src/Arrow.tsx": "const Arrow = (props) => <i {...props} />;\n",
+      "src/Class.tsx": "class Class extends React.Component {}\n",
+      "src/Var.tsx": "let Var = function Var() { return null; };\n",
+    });
+    const expectPosix = async (name: string): Promise<string | undefined> =>
+      (await findComponentDefinition(root, name))?.file.replace(/\\/g, "/");
+    expect(await expectPosix("Arrow")).toBe("src/Arrow.tsx");
+    expect(await expectPosix("Class")).toBe("src/Class.tsx");
+    expect(await expectPosix("Var")).toBe("src/Var.tsx");
+  });
+
+  it("returns nothing for empty or non-identifier names", async () => {
+    const root = makeProject({ "src/A.tsx": "const A = 1;\n" });
+    expect(await findComponentDefinition(root, "")).toBeUndefined();
+    expect(await findComponentDefinition(root, "not an identifier")).toBeUndefined();
+  });
+
+  it("honours the shared read budget", async () => {
+    const root = makeProject({ "src/Late.tsx": "export function Late() {}\n" });
+    expect(await findComponentDefinition(root, "Late", { maxTotalBytes: 0 })).toBeUndefined();
+    expect(await findComponentDefinition(root, "Late")).toBeDefined();
   });
 });

@@ -249,3 +249,26 @@ Win/macOS/Linux) — помечена как ручная; публикация.
 навигация по `/boards/<id>` внутри превью без потери сессии (NAV-01),
 SPA-переходы без полной перезагрузки (NAV-02), блокировка внешних/javascript
 ссылок, дренирование очереди стилей, демо и /project/ без регрессий.
+
+## Сессия UI-fixes: RT-02 («Перейти» не находит файл) + WV-03 (нет подсветки
+на первой странице)
+
+- RT-02: React 19 dev не даёт `_debugSource` (Turbopack-фреймы отфильтрованы) →
+  у выбранного компонента есть имя, но нет файла → «Не удалось определить файл
+  компонента». Фикс: `findComponentDefinition`
+  (`src/infrastructure/source-analysis/ComponentResolver.ts`) ищет объявление
+  по имени экспорта (7 паттернов, бюджет 32 МБ, SKIP_DIRS) и подключён как
+  fallback в `revealComponent`/`copyComponent`
+  (`src/infrastructure/ai/PromptExportService.ts`). Тесты: 4 RED→зелёных в
+  `ComponentResolver.test.ts`.
+- WV-03: `ds:set-mode` терялся в момент instant-connect (`ds:runtime-ready`) →
+  edit-режим в превью оставался выключенным до первой навигации. Фикс без
+  изменения протокола: webview повторяет set-mode (8 попыток × 400 мс) до эха
+  `ds:mode-changed` (`postSetModeWithResync`/`stopModeResync` в
+  `webview/components/PreviewContainer.tsx`). Тесты: 2 в `PreviewContainer.test.tsx`
+  (первый RED до фикса).
+- Гейты: typecheck, lint (0 ошибок), test 328 (26 файлов), build — зелёные.
+- Ручная проверка (Extension Development Host, F5): режим «Редактировать»
+  сразу на первой странице Демо/нового проекта — hover-подсветка и выбор;
+  «Перейти» у компонента первой страницы открывает файл (если компонент
+  объявлен в рабочей области).
