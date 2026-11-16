@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   postMessage: vi.fn(async () => true),
   handler: null as ((msg: any) => Promise<void>) | null,
   disposeCb: null as (() => void) | null,
+  copyInstruction: vi.fn(async () => ({ success: true, message: "copied" })),
 }));
 
 vi.mock("vscode", () => {
@@ -71,6 +72,15 @@ vi.mock("../../infrastructure/persistence/StylePersistenceAdapter", () => ({
     apply = mocks.apply;
     async canEdit() {
       return true;
+    }
+  },
+}));
+
+vi.mock("../../infrastructure/ai/PromptExportService", () => ({
+  PromptExportService: class {
+    copyInstruction = mocks.copyInstruction;
+    async revealComponent() {
+      return { success: true, message: "" };
     }
   },
 }));
@@ -240,6 +250,33 @@ describe("style:persist extension handler (webview -> extension integration)", (
     expect(instances[1].stop).toHaveBeenCalledTimes(1);
     expect(instances[2].stop).not.toHaveBeenCalled();
     expect(instances[2].running).toBe(true);
+  });
+
+  // P1-5: webview edits are untrusted; the handler must re-validate and
+  // truncate them before they reach the exported instruction.
+  it("P1-5: sanitizes ai:copyInstruction edits (kind/limits)", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({
+      type: "ai:copyInstruction",
+      instruction: "x",
+      payload: null,
+      edits: [
+        { kind: "style", selector: "s".repeat(600), property: "color" },
+        { kind: "nuclear", selector: ".dangerous" },
+        "junk",
+        null,
+        { kind: "text", selector: ".ok", before: "a", after: "b", component: { name: "App", file: "f.tsx", line: 3 } },
+      ],
+    });
+    expect(mocks.copyInstruction).toHaveBeenCalledTimes(1);
+    const edits = (mocks.copyInstruction.mock.calls as unknown as any[][])[0][2] as any[];
+    expect(edits).toHaveLength(2);
+    expect(edits[0].selector).toHaveLength(500);
+    expect(edits[0].kind).toBe("style");
+    expect(edits[1].kind).toBe("text");
+    expect(edits[1].component).toEqual({ name: "App", file: "f.tsx", line: 3 });
+    expect(lastMessage().type).toBe("ai:result");
+    expect(lastMessage().success).toBe(true);
   });
 });
 

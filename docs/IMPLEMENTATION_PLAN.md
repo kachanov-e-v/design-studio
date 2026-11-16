@@ -249,3 +249,13 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > heuristics (Next.js server actions) don't reject valid proxied calls. Tests: foreign/`null`
 > Origin -> 403, local/webview/absent -> 200, upstream sees `sec-fetch-site: same-origin`;
 > legacy WS test updated to send the preview origin. SECURITY.md: Origin-policy bullet added.
+
+> P1-5 (prompt-injection flattening) — FIXED: every page-derived string in `contextToPrompt`
+> now goes through `dataValue()` — selected-element tag/id/classes/selector, React component
+> names/files (componentLine + owner chain), and all edit fields (selector, property,
+> operation, component file/name); before/after values were already JSON-stringified.
+> The `ai:copyInstruction` handler re-validates the webview edit list (`sanitizeDesignEdits`):
+> kind allowlist, string bounds (selector 500, property 200, before/after 4000, operation 100,
+> component 500), max 200 rows. Tests: forced newlines in selector/classes/component/edit
+> fields no longer forge prompt lines at line start (red->green, en markers); legitimate
+> multiline text stays readable as `\n`; handler drops malformed edits.

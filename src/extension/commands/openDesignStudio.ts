@@ -58,6 +58,51 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
   }
 }
 
+// P1-5: edits enter the exported instruction verbatim; webview payloads are
+// not fully trusted, so each field is re-validated and truncated here before
+// reaching the prompt.
+const EDIT_KINDS = new Set(["style", "text", "classes", "attribute", "structure"]);
+
+function boundedString(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return value.slice(0, max);
+}
+
+function sanitizeDesignEdits(raw: unknown): DesignEdit[] {
+  if (!Array.isArray(raw)) return [];
+  const edits: DesignEdit[] = [];
+  for (const entry of raw.slice(0, 200)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    if (typeof item.kind !== "string" || !EDIT_KINDS.has(item.kind)) continue;
+    const selector = boundedString(item.selector, 500);
+    if (!selector) continue;
+    const componentRaw = item.component;
+    const component =
+      componentRaw && typeof componentRaw === "object" && !Array.isArray(componentRaw)
+        ? {
+            name: boundedString((componentRaw as Record<string, unknown>).name, 500),
+            file: boundedString((componentRaw as Record<string, unknown>).file, 500),
+            line:
+              typeof (componentRaw as Record<string, unknown>).line === "number" &&
+              Number.isFinite((componentRaw as Record<string, unknown>).line)
+                ? Math.floor((componentRaw as Record<string, unknown>).line as number)
+                : undefined,
+          }
+        : undefined;
+    edits.push({
+      kind: item.kind as DesignEdit["kind"],
+      selector,
+      property: boundedString(item.property, 200),
+      before: boundedString(item.before, 4000),
+      after: boundedString(item.after, 4000),
+      operation: boundedString(item.operation, 100),
+      component: component?.name || component?.file || component?.line ? component : undefined,
+    });
+  }
+  return edits;
+}
+
 function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) return null;
@@ -321,7 +366,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         }
         const payload = msg.payload;
         const instruction = typeof msg.instruction === "string" ? msg.instruction : "";
-        const edits = Array.isArray(msg.edits) ? msg.edits.slice(0, 200) as DesignEdit[] : [];
+        const edits = sanitizeDesignEdits(msg.edits);
         if (payload !== undefined && payload !== null && (typeof payload !== "object" || typeof payload.selector !== "string")) {
           panel.webview.postMessage({ type: "ai:result", success: false, message: translate(language, "status.noSelection") });
           return;
