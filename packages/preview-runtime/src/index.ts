@@ -14,6 +14,7 @@ import {
 } from "./protocol.js";
 import { collectReactComponents } from "./fiber.js";
 import { pickAnnouncementOrigin } from "./announcementOrigin.js";
+import { shouldHijackToAssign } from "./navigation.js";
 import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
@@ -892,6 +893,12 @@ export function initDesignStudioRuntime(): void {
       });
       return;
     }
+    // NAV-02: on bare-path documents (sticky dev routes) same-origin links are
+    // left entirely to the page — native navigation (and SPA client-side
+    // routing with it) keeps working; the proxy + service worker hold the
+    // frame on the preview host. Structured /proxy/ documents and
+    // upstream-origin links keep the explicit hijack below.
+    if (!shouldHijackToAssign(window.location.pathname, href.origin, previewOrigin)) return;
     event.preventDefault();
     window.location.assign(`${href.pathname}${href.search}${href.hash}`);
   }, true);

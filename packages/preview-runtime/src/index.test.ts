@@ -157,12 +157,13 @@ describe("browse-mode link policy", () => {
     expect(posted.messages.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(true);
   });
 
-  it("leaves same-origin links to ordinary navigation", async () => {
+  it("NAV-02: leaves same-origin links on bare-path documents to native navigation (SPA-safe)", async () => {
     await prepared("");
     document.body.innerHTML = '<a id="same" href="/next/page">same</a>';
     const posted = withClick("same");
-    // Same-origin links are hijacked into a known-route navigation, not blocked.
-    expect(posted.event.defaultPrevented).toBe(true);
+    // Bare-path documents (sticky dev routes) must NOT preventDefault: that
+    // would break SPA client-side routing. NAV-02: no hijack, no block.
+    expect(posted.event.defaultPrevented).toBe(false);
     expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
   });
 
@@ -170,7 +171,10 @@ describe("browse-mode link policy", () => {
     await prepared(' data-upstream-origin="http://127.0.0.1:4600"'); // upstream differs from the proxy origin
     document.body.innerHTML = '<a id="board" href="/boards/cmwgbjgec0002veccx0ufeoyh">board</a>';
     const posted = withClick("board");
-    expect(posted.event.defaultPrevented).toBe(true); // hijacked into location.assign
+    // NAV-02: on a bare-path document a preview-origin (same-origin) link is
+    // passed to native/SPA navigation — never preventDefault, never blocked.
+    // Before NAV-01 this click posted ds:navigate-blocked (inverted policy).
+    expect(posted.event.defaultPrevented).toBe(false);
     expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
   });
 
@@ -196,6 +200,16 @@ describe("browse-mode link policy", () => {
     const posted = withClick("newtab");
     expect(posted.event.defaultPrevented).toBe(true);
     expect(posted.messages.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(true);
+  });
+
+  it("NAV-02: hijacks upstream-origin links on bare-path documents into location.assign", async () => {
+    // jsdom document lives on the proxy origin (bare path); the upstream link
+    // is absolute — it must be hijacked so the frame stays on the preview host.
+    await prepared(' data-upstream-origin="http://127.0.0.1:4600"');
+    document.body.innerHTML = '<a id="up" href="http://127.0.0.1:4600/x">up</a>';
+    const posted = withClick("up");
+    expect(posted.event.defaultPrevented).toBe(true);
+    expect(posted.messages.find((p) => p.msg.type === "ds:navigate-blocked")).toBeUndefined();
   });
 });
 
