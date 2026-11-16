@@ -59,7 +59,7 @@
     "@types/react-dom": "^18.2.0",
     "@types/vscode": "^1.105.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "esbuild": "^0.25.12",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "jsdom": "^31.0.1",
     "react": "^18.2.0",
