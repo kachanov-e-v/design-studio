@@ -424,6 +424,39 @@ var DesignStudioRuntime = (() => {
     }
   }
 
+  // src/perf.ts
+  function debugPerfEnabled(search) {
+    if (!search) return false;
+    try {
+      const raw = search.startsWith("?") ? search : `?${search}`;
+      return new URLSearchParams(raw).get("dsPerf") === "1";
+    } catch {
+      return false;
+    }
+  }
+  var PerfCollector = class {
+    constructor(label) {
+      this.label = label;
+      this.stages = [];
+      this.startedAt = performance.now();
+    }
+    stage(name, fn) {
+      const start = performance.now();
+      try {
+        return fn();
+      } finally {
+        this.stages.push({ name, durationMs: performance.now() - start });
+      }
+    }
+    finish() {
+      return { label: this.label, totalMs: performance.now() - this.startedAt, stages: [...this.stages] };
+    }
+  };
+  function formatPerfSummary(summary) {
+    const stages = summary.stages.map((stage) => `${stage.name}=${stage.durationMs.toFixed(2)}ms`).join(" ");
+    return `Design Studio perf [${summary.label}] total=${summary.totalMs.toFixed(2)}ms${stages ? ` ${stages}` : ""}`;
+  }
+
   // src/index.ts
   var LIVE_PROPERTY_BY_ATTRIBUTE = {
     checked: "checked",
@@ -503,7 +536,9 @@ var DesignStudioRuntime = (() => {
     let hoverOutline = null;
     let selectionOutline = null;
     let outlineFrame = 0;
+    let perfEnabled = false;
     const runtimeScript = document.querySelector('script[data-design-studio="1"]');
+    perfEnabled = debugPerfEnabled(window.location.search);
     const upstreamOrigin = (() => {
       const raw = runtimeScript?.dataset.upstreamOrigin;
       if (!raw) return null;
@@ -648,32 +683,44 @@ var DesignStudioRuntime = (() => {
       }
       return false;
     }
-    function collect(el) {
+    function buildPayload(el, perf) {
+      const stage = (name, fn) => perf ? perf.stage(name, fn) : fn();
       const rect = el.getBoundingClientRect();
       const cs = getComputedStyle(el);
       const styles = {};
       for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
+      const identity = stage("selectors", () => ({ selector: getSelector(el), selectors: getSelectorCandidates(el) }));
       const payload = {
-        selector: getSelector(el),
-        selectors: getSelectorCandidates(el),
+        selector: identity.selector,
+        selectors: identity.selectors,
         tag: el.tagName.toLowerCase(),
         rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
         styles
       };
-      const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
+      const classes = stage("classes", () => Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100)));
       if (classes.length > 0) payload.classes = classes;
-      const attributes = {};
-      for (const name of EDITABLE_ATTRIBUTES) {
-        if (el.hasAttribute(name)) attributes[name] = (el.getAttribute(name) ?? "").slice(0, 2e3);
-      }
+      const attributes = stage("attributes", () => {
+        const attrs = {};
+        for (const name of EDITABLE_ATTRIBUTES) {
+          if (el.hasAttribute(name)) attrs[name] = (el.getAttribute(name) ?? "").slice(0, 2e3);
+        }
+        return attrs;
+      });
       if (Object.keys(attributes).length > 0) payload.attributes = attributes;
       if (detectTailwindPage()) payload.tailwind = true;
-      const text = readElementText(el);
+      const text = stage("text", () => readElementText(el));
       if (text.length > 0) payload.text = text.slice(0, 2e3);
-      const rules = collectSourceRules(el);
+      const rules = stage("rules", () => collectSourceRules(el));
       if (rules) payload.rules = rules;
-      const components = collectReactComponents(el);
+      const components = stage("components", () => collectReactComponents(el));
       if (components.length > 0) payload.component = components;
+      return payload;
+    }
+    function collect(el) {
+      if (!perfEnabled) return buildPayload(el, null);
+      const perf = new PerfCollector("select");
+      const payload = buildPayload(el, perf);
+      console.debug(formatPerfSummary(perf.finish()));
       return payload;
     }
     function readElementText(el) {
