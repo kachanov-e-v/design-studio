@@ -80,12 +80,14 @@ export function buildInjectedHead(runtimeUrl: string, baseHref: string): string 
 
 export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string): string {
   const injection = buildInjectedHead(runtimeUrl, baseHref);
-  const headMatch = /<head[^>]*>/i.exec(html);
+  // `(?=[\s>])` keeps the match on the real <head>/<body> element — a bare
+  // <header>/<bodyart> tag in headless HTML must not swallow the injection.
+  const headMatch = /<head(?=[\s>])[^>]*>/i.exec(html);
   if (headMatch) {
     const at = headMatch.index + headMatch[0].length;
     return html.slice(0, at) + injection + html.slice(at);
   }
-  const bodyMatch = /<body[^>]*>/i.exec(html);
+  const bodyMatch = /<body(?=[\s>])[^>]*>/i.exec(html);
   if (bodyMatch) {
     const at = bodyMatch.index + bodyMatch[0].length;
     return html.slice(0, at) + injection + html.slice(at);

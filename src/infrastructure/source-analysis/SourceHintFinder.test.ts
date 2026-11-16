@@ -36,7 +36,7 @@ const payload = {
 };
 
 describe("findSourceHints", () => {
-  it("finds component files by text and semantic class", () => {
+  it("finds component files by text and semantic class", async () => {
     const root = makeProject({
       "app/login/page.tsx": `export default function Login() {
   return (
@@ -50,7 +50,7 @@ describe("findSourceHints", () => {
       ".next/cache.js": "Email",
       "styles/globals.css": ".email-field { color: red; }\n",
     });
-    const hints = findSourceHints(root, payload as never);
+    const hints = await findSourceHints(root, payload as never);
     const files = hints.map((h) => h.file);
     expect(files).toContain("app/login/page.tsx");
     expect(files).not.toContain("node_modules/pkg/index.js");
@@ -58,21 +58,21 @@ describe("findSourceHints", () => {
     expect(files.some((f) => f.startsWith("styles/"))).toBe(true);
   });
 
-  it("ranks component code above css and skips when nothing matches", () => {
+  it("ranks component code above css and skips when nothing matches", async () => {
     const root = makeProject({
       "a/LoginForm.tsx": 'const Email = () => <input placeholder="Email" />;',
       "b/README.md": "Email docs",
     });
-    const hints = findSourceHints(root, payload as never);
+    const hints = await findSourceHints(root, payload as never);
     expect(hints[0].file).toBe("a/LoginForm.tsx");
 
     const empty = makeProject({ "app/x.tsx": "export default 1;\n" });
-    expect(findSourceHints(empty, payload as never)).toEqual([]);
+    expect(await findSourceHints(empty, payload as never)).toEqual([]);
   });
 });
 
 describe("contextToPrompt", () => {
-  it("includes classes, framework hint, rules and source hints", () => {
+  it("includes classes, framework hint, rules and source hints", async () => {
     const ctx = toSelectionContext(payload as never, [
       { file: "app/login/page.tsx", line: 5, snippet: '<div className="email-field px-4 bg-slate-900">Email</div>', token: 'text word "Email"' },
     ]);
@@ -85,7 +85,7 @@ describe("contextToPrompt", () => {
     expect(prompt).toContain("Пожелание пользователя: Сделай border 1px этому элементу.");
   });
 
-  it("adds attributes, edit lines for attribute changes", () => {
+  it("adds attributes, edit lines for attribute changes", async () => {
     const ctx = toSelectionContext({ ...payload, attributes: { placeholder: "Email", title: "Поле почты" } } as never, []);
     const prompt = contextToPrompt(ctx, "");
     expect(prompt).toContain('Атрибуты: placeholder="Email", title="Поле почты"');
@@ -98,7 +98,7 @@ describe("contextToPrompt", () => {
     expect(editsPrompt).toContain('"Email" → "Ваш e-mail"');
   });
 
-  it("adds Component and Owner chain lines from components", () => {
+  it("adds Component and Owner chain lines from components", async () => {
     const ctx = toSelectionContext({
       ...payload,
       component: [
@@ -112,7 +112,7 @@ describe("contextToPrompt", () => {
     expect(prompt).toContain("Цепочка компонентов: EmailField > LoginForm > LoginPage");
   });
 
-  it("omits optional sections when data is missing", () => {
+  it("omits optional sections when data is missing", async () => {
     const ctx = toSelectionContext({ selector: "p", tag: "p", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} } as never, []);
     const prompt = contextToPrompt(ctx, "make it red");
     expect(prompt).toContain("Выбранный элемент: p (p)");

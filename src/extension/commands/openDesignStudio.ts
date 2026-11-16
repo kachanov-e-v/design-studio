@@ -16,6 +16,7 @@ const DEMO_KEY = "designStudio.demoPreview.v1";
 
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
+let activePanel: vscode.WebviewPanel | null = null;
 
 function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
   if (!sharedTraceChannel) {
@@ -47,54 +48,44 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
   }
 }
 
-function getWorkspaceRoot(): string | null {
+function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) return null;
+  // Multi-root: prefer the workspace folder that actually contains the
+  // remembered project entry instead of always using the first folder.
+  const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
+  if (entry) {
+    const candidate = entry.replace(/\\/g, "/").replace(/^\//, "");
+    if (candidate && !candidate.includes("..")) {
+      const owner = folders.find((f) => fs.existsSync(path.join(f.uri.fsPath, candidate)));
+      if (owner) return owner.uri.fsPath;
+    }
+  }
   return folders[0].uri.fsPath;
 }
 
-/** Scan the bound project for previewable HTML entry points. */
-export async function findProjectEntries(root: string): Promise<string[]> {
-  const results: string[] = [];
-  const excludedDirs = new Set(["node_modules", "dist", "build", ".git", ".vscode", ".next", "coverage", "out", "public", "static"]);
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 6 || results.length >= 200) return;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (excludedDirs.has(entry.name) || entry.name.startsWith(".")) continue;
-        walk(full, depth + 1);
-        continue;
-      }
-      if (entry.isFile() && !entry.name.startsWith(".")) {
-        const lowerName = entry.name.toLowerCase();
-        if (lowerName.endsWith(".html") || lowerName.endsWith(".htm")) {
-          const rel = path.relative(root, full).replace(/\\/g, "/");
-          results.push(rel);
-        }
-      }
-    }
-  };
-  walk(root, 0);
-  results.sort((a, b) => {
-    const at = path.basename(a).toLowerCase() === "index.html" || path.basename(a).toLowerCase() === "index.htm" ? 0 : 1;
-    const bt = path.basename(b).toLowerCase() === "index.html" || path.basename(b).toLowerCase() === "index.htm" ? 0 : 1;
-    if (at !== bt) return at - bt;
-    return a.localeCompare(b);
-  });
-  return results;
-}
+/** Entry-point discovery lives in preview/projectEntryScanner; re-exported for existing callers. */
+import { findProjectEntries } from "../../infrastructure/preview/projectEntryScanner";
+export { findProjectEntries };
 
 export async function openDesignStudio(context: vscode.ExtensionContext): Promise<void> {
-  const root = getWorkspaceRoot();
+  // One panel per workbench: the shared PreviewHostServer holds one sticky dev
+  // target and one project root, so a second panel would fight the first.
+  if (activePanel) {
+    activePanel.reveal(vscode.ViewColumn.Beside);
+    return;
+  }
   let language: Language = context.globalState.get<Language>(LANGUAGE_KEY, "ru");
+  const root = getWorkspaceRoot(context);
   const host = await ensureHostServer(context, root);
+
+  if (!host) {
+    const message = language === "ru"
+      ? "Не удалось запустить локальный сервер предпросмотра. Подробности — в канале «Design Studio Preview»."
+      : "Failed to start the local preview host server. See the \"Design Studio Preview\" output channel for details.";
+    void vscode.window.showErrorMessage(message);
+    return;
+  }
 
   const panel = vscode.window.createWebviewPanel(
     "designStudio",
@@ -106,6 +97,10 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "dist", "webview")],
     }
   );
+  activePanel = panel;
+  panel.onDidDispose(() => {
+    activePanel = null;
+  }, undefined, context.subscriptions);
 
   panel.webview.html = getWebviewHtml(panel.webview, context.extensionUri);
 
@@ -364,9 +359,20 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   html = html.replace(/(src|href)="\/([^"]+)"/g, (_m, attr, p) => `${attr}="${baseUri}/${p}"`);
   html = html.replace(/(src|href)="\.\/([^"]+)"/g, (_m, attr, p) => `${attr}="${baseUri}/${p}"`);
 
-  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} http: https: data:;" />`;
+  // Only the preview host origins are frameable; wide http:/https: frame-src
+  // would turn the webview into an embed surface for arbitrary sites.
+  const previewOrigins = "http://127.0.0.1:* http://localhost:* http://[::1]:*";
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} ${previewOrigins} data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} ${previewOrigins} data:;" />`;
   if (!html.includes("Content-Security-Policy")) {
-    html = html.replace("<head>", `<head>${csp}`);
+    // Match the real <head> element only (with attributes, without <header>)
+    // and fall back to prepending before the document body.
+    if (/<head(?=[\s>])[^>]*>/i.test(html)) {
+      html = html.replace(/<head(?=[\s>])[^>]*>/i, (m) => `${m}${csp}`);
+    } else if (/<body(?=[\s>])[^>]*>/i.test(html)) {
+      html = html.replace(/<body(?=[\s>])[^>]*>/i, (m) => `${m}${csp}`);
+    } else {
+      html = csp + html;
+    }
   }
 
   return html;

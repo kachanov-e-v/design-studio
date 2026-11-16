@@ -13,6 +13,7 @@ import {
   STYLE_PROPERTY_PATTERN,
 } from "./protocol.js";
 import { collectReactComponents } from "./fiber.js";
+import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
@@ -102,7 +103,10 @@ export function initDesignStudioRuntime(): void {
   let hoverOutline: HTMLDivElement | null = null;
   let selectionOutline: HTMLDivElement | null = null;
   let outlineFrame = 0;
+  let perfEnabled = false;
   const runtimeScript = document.querySelector<HTMLScriptElement>('script[data-design-studio="1"]');
+  // Opt-in diagnostics for the select pipeline; see docs/IMPLEMENTATION_PLAN.md (EPIC E/H4).
+  perfEnabled = debugPerfEnabled(window.location.search);
   const upstreamOrigin = (() => {
     const raw = runtimeScript?.dataset.upstreamOrigin;
     if (!raw) return null;
@@ -271,32 +275,45 @@ export function initDesignStudioRuntime(): void {
     return false;
   }
 
-  function collect(el: Element): ElementPayload {
+  function buildPayload(el: Element, perf: PerfCollector | null): ElementPayload {
+    const stage = <T,>(name: string, fn: () => T): T => (perf ? perf.stage(name, fn) : fn());
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
     const styles: Record<string, string> = {};
     for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
+    const identity = stage("selectors", () => ({ selector: getSelector(el), selectors: getSelectorCandidates(el) }));
     const payload: ElementPayload = {
-      selector: getSelector(el),
-      selectors: getSelectorCandidates(el),
+      selector: identity.selector,
+      selectors: identity.selectors,
       tag: el.tagName.toLowerCase(),
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
       styles,
     };
-    const classes = Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100));
+    const classes = stage("classes", () => Array.from(el.classList).slice(0, 30).map((c) => c.slice(0, 100)));
     if (classes.length > 0) payload.classes = classes;
-    const attributes: Record<string, string> = {};
-    for (const name of EDITABLE_ATTRIBUTES) {
-      if (el.hasAttribute(name)) attributes[name] = (el.getAttribute(name) ?? "").slice(0, 2000);
-    }
+    const attributes = stage("attributes", () => {
+      const attrs: Record<string, string> = {};
+      for (const name of EDITABLE_ATTRIBUTES) {
+        if (el.hasAttribute(name)) attrs[name] = (el.getAttribute(name) ?? "").slice(0, 2000);
+      }
+      return attrs;
+    });
     if (Object.keys(attributes).length > 0) payload.attributes = attributes;
     if (detectTailwindPage()) payload.tailwind = true;
-    const text = readElementText(el);
+    const text = stage("text", () => readElementText(el));
     if (text.length > 0) payload.text = text.slice(0, 2000);
-    const rules = collectSourceRules(el);
+    const rules = stage("rules", () => collectSourceRules(el));
     if (rules) payload.rules = rules;
-    const components = collectReactComponents(el);
+    const components = stage("components", () => collectReactComponents(el));
     if (components.length > 0) payload.component = components;
+    return payload;
+  }
+
+  function collect(el: Element): ElementPayload {
+    if (!perfEnabled) return buildPayload(el, null);
+    const perf = new PerfCollector("select");
+    const payload = buildPayload(el, perf);
+    console.debug(formatPerfSummary(perf.finish()));
     return payload;
   }
 

@@ -1,6 +1,6 @@
 # IMPLEMENTATION PLAN (EPIC A)
 
-Дата аудита: рабочее дерево на ветке `master`, базовый коммит `f700758` + незакоммиченный рефакторинг протокола v2/v3 (атрибуты, outlines в iframe). Задача: превратить preview в полноценный браузер с раздельными режимами, начиная с политики навигации по ссылкам.
+Дата аудита: рабочее дерево на ветке `master` с незакоммиченным рефакторингом протокола v2/v3 (атрибуты, outlines в iframe). Задача: превратить preview в полноценный браузер с раздельными режимами, начиная с политики навигации по ссылкам.
 
 ## Baseline команд
 
@@ -116,3 +116,89 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 | Browse mode: клики проходят, per-режим listeners не вмешиваются | integration |
 | before/after в Change Journal для attribute/text/classes | unit |
 | SSRF-фильтр upstream, symlink escape | unit (EPIC F) |
+
+## Дополнение: статусы после сессии (обновлено)
+
+| Позиция | Статус |
+|---|---|
+| Static HTML preview | расширен: глубина 6, поддержка .htm, инъекция base+runtime для статических страниц, перезапись CSS-URL через `/project/` |
+| Cross-origin CSS (статика) | root-absolute `url()` в статических CSS перезаписываются (`prependProxyOriginToPathUrls`) |
+| EPIC E / H4 | инструментация select-пайплайна добавлена: `packages/preview-runtime/src/perf.ts` (PerfCollector, debugPerfEnabled, formatPerfSummary) + stage-тайминги в `buildPayload/collect` (`index.ts`); включается `?dsPerf=1` в URL страницы, вывод — `console.debug`; payload протокола не расширялся, версия не менялась |
+| H5 (автоматизируемая часть) | фикстура `fixtures/static-site/` (ванильный многостраничник: index.html, about.html, styles.css, images/logo.svg, orphan.htm) + `src/infrastructure/preview/fixtures.test.ts` (5 тестов: обнаружение входов, инъекция runtime/base, same-origin ссылки, перезапись CSS-URL, раздача ассетов) |
+| H5 (браузерная часть) / H6 | матрица browse/edit в Extension Development Host остаётся ручной (нужен browser harness, изменит структуру тестов) |
+| findProjectEntries | вынесен в `src/infrastructure/preview/projectEntryScanner.ts` без зависимости vscode; из `openDesignStudio.ts` реэкспортируется для обратной совместимости |
+
+---
+
+# Технический аудит (план работ)
+
+## A. Функциональные баги
+
+- [x] **A1. Сохранение CSS Modules из dev-сервера не работает.** Webview отправляет в `style:persist` поле `rules` (App.tsx:183, handleSave), а расширение читает `msg.sourceRules` (openDesignStudio.ts:252). Поле всегда `undefined`, весь код с source map и эвристикой CssSourceResolver недостижим из UI. Тесты не ловят, потому что проверяют компоненты по отдельности.
+- [x] **A2. Лимит в 50 CSS-файлов.** `findFiles("**/*.css", "**/node_modules/**", 50)` обрезает список молча. Папки `.next`, `dist`, `build` не исключены. Правка может уйти не в тот файл, который кажется «единственным совпадением».
+- [x] **A3. Файл ищется только по имени.** При маппинге выбирается первый файл с подходящим basename (`Button.module.css`). При одинаковых именах в разных папках правка уйдёт в первый найденный — сверять путь, а не только basename.
+- [x] **A4. Порядок вызовов для CSS-ответов.** В ветке text/css сначала идёт `res.writeHead`, потом `res.setHeader("Set-Cookie")` — при постановке cookie Node бросит `ERR_HTTP_HEADERS_SENT`, внешний catch допишет в тело текст ошибки.
+- [x] **A5. Стриминг ломается.** Ответ целиком читается через `arrayBuffer()`, `AbortSignal.timeout(30s)` действует и на чтение тела: SSE, streaming SSR и long-poll обрываются, память не ограничена. Лимит 20 МБ для HTML/CSS молча обрезает ответ (subarray), для остальных типов проверяется после полного чтения.
+- [x] **A6. WebSocket-прокси сделан грубо:**
+  - [x] для https идёт обычный `net.connect`, порт по умолчанию 80 (нужен wss/TLS);
+  - [x] IPv6 hostname приходит в скобках — подключение не получится;
+  - [x] статус проверяется регуляркой `/101/` по всей строке;
+  - [x] заголовки-массивы отбрасываются;
+  - [x] таймаута на подключение нет.
+- [x] **A7. Вставка runtime.** Регулярка `/<head[^>]*>/i` совпадёт и с `<header>`, если настоящего `<head>` нет.
+- [x] **A8. Жизненный цикл расширения:**
+  - [x] нет `panel.onDidDispose`;
+  - [x] можно открыть несколько панелей, а `PreviewHostServer` общий: `setDevTarget` и `setProjectRoot` затирают друг друга и чистят cookie jar;
+  - [x] учитывается только `workspaceFolders[0]` (нет поддержки multi-root);
+  - [x] если сервер не стартовал, пользователь не видит ничего (только console.error), панель остаётся «пустой» — нужна явная ошибка.
+- [x] **A9. Блокировка extension host.** `findSourceHints` синхронно обходит до 3000 файлов и перечитывает каждый файл для каждого токена (до 8) — десятки тысяч `readFileSync` в основном потоке. Нужен асинхронный попроходный обход с одним чтением файла.
+- [x] **A10. `!important` теряется при замене значения в `editRule`** — регулярка `[^;]*` съедает его. Значения вида `url(data:...;base64,...)` она тоже ломает.
+
+## B. Расхождения документации и кода
+
+- [ ] **B1.** Строка `preview.selectHint` всё ещё говорит «Alt+клик», хотя Alt-режим удалён. Строка `preview.runtimeMissing` предлагает добавить `@design-studio/preview-runtime` в приложение, хотя runtime внедряет прокси.
+- [x] **B2.** `docs/SECURITY.md` обещает, что все upstream проходят SSRF-гейт, но `sourceMappingURL` в CssSourceResolver скачивается без проверки на loopback, и fetch по умолчанию идёт по редиректам.
+- [x] **B3.** `AI_HANDOFF.md` указывает 141 тест (фактически растёт), ссылается на коммит `f700758` и файл `DESIGN_STUDIO_AI_AGENT_INSTRUCTIONS.md`, которых в репозитории нет. Обновлять счётчики на каждом изменении или убрать конкретные числа.
+- [x] **B4.** В `AI_HANDOFF.md` и `IMPLEMENTATION_PLAN.md` остались рабочие заметки агента: пути `%TEMP%`, названия чужих проектов («ProTree», «Beam 1.0»). Для публичного репозитория это лишнее — почистить.
+
+## C. Безопасность
+
+- [x] **C1. Авторизация preview-хоста.** Нет проверки заголовка Host и токена. Случайный порт на 127.0.0.1 — фактически открытый прокси ко всем loopback-сервисам, возможен DNS rebinding. Добавить случайный токен (в путь или cookie) и проверку Host (`127.0.0.1:port`).
+- [x] **C2. Маршрут `/project/`.** Отдаёт любой файл workspace, включая `.env` и `.git/`. Исключить `.env*`, `.git`, `node_modules`.
+- [x] **C3. Cookie jar.** Ключуется только по имени и общий для всех loopback-origin'ов, Path и Secure не учитываются. Cookie приложения могут уйти на другой локальный порт через `/proxy/` — разнести по origin.
+- [x] **C4. CSP webview.** Разрешены `frame-src http: https:` и `img-src https:`; достаточно `http://127.0.0.1:*`.
+- [x] **C5. Инъекция контента страницы в промпт ИИ.** Текст, классы, атрибуты и сниппеты вставляются без ограждения (`Text: ${ctx.text}`). Контент приложения может содержать инструкции для агента с правом записи; переводы строк дают фальшивые строки вида «User request: …». Огородить блоком данных и убрать переводы строк.
+- [ ] **C6. Origin-проверки runtime.** Защита sessionId/nonce не защищает от JS самой страницы (значения ей известны): `style:persist`, `source:reveal`, `ai:copyComponent` управляются недоверенными данными. Проверка CSS-свойств/значений и realpath-проверка пути сделаны хорошо и остаются. Но `postMessage(..., "*")` и условие `!parentOrigin.includes("vscode-webview")` — слабая проверка origin, заменить на точную.
+- [ ] **C7. Зависимости.** `npm audit`: 11 уязвимостей (2 critical, 1 high, 8 moderate) в dev-зависимостях (vitest/tinypool, esbuild ≤0.24). В пакет расширения не попадают, но обновить vitest/vite/esbuild.
+
+## D. Недоработки репозитория
+
+- [x] **D1.** Нет файла LICENSE, хотя README заявляет MIT.
+- [x] **D2.** package.json: заглушка `publisher: design-studio`, нет `repository`, `icon`, `keywords`; `onCommand` в `activationEvents` избыточен.
+- [x] **D3.** Нет CI (`.github` отсутствует): typecheck, lint, test, build, npm audit.
+- [x] **D4.** lint не покрывает `packages/` и `scripts/`.
+- [ ] **D5.** Нет тестов для openDesignStudio.ts, runtime/index.ts (711 строк), App, PreviewContainer, Inspector — там сидит баг A1.
+- [x] **D6.** `webview/public/runtime.js` (1045 строк) и `protocol.js` закоммичены как сборочные артефакты. Сейчас в синхроне, но риск расхождения — добавить в `.gitignore` (учесть, что для установки из исходников нужна сборка перед упаковкой).
+
+## E. Приоритет выполнения
+
+1. **Срочно (функциональность):** A1 + сквозной тест на сообщение `style:persist`; A4; для CSS-поиска A2 (исключить `.next`/`dist`/`build`, переполнение лимита считать «неоднозначностью») и A3 (сверять путь, а не только basename).
+2. **Безопасность:** C1, C2, B2 (source map через `isLocalhostUrl` + `redirect: "error"`), C4, C3, C5.
+3. **Надёжность прокси:** A5 (потоковая передача `Readable.fromWeb` с лимитом по счётчику байт, таймаут только на заголовки), A6 (wss, IPv6, точный разбор статуса).
+4. **Расширение:** A8 (одна панель на workspace с reveal, onDidDispose, явная ошибка при падении хоста, multi-root), A9, A7, A10.
+5. **Публикация:** D1, D2, D3, D4, C7, B1–B4.
+6. **Тесты:** интеграционный тест «webview → extension» с замоканным vscode; юнит-тесты логики runtime/index.ts в jsdom; регрессионные тесты на A4 и A5; пункты D5.
+
+> Выполнено (приоритет 1, PR #2): A1 — поле переименовано в sourceRules через webview/persistContract.ts + контрей-тест и интеграционный тест обработчика; A2 — исключения .next/dist/build/out/coverage/.git, лимит 200 с трактовкой переполнения как неоднозначности; A3 — поиск по всем кандидатам с basename, выбор по sourcePath из source map, неоднозначность => ошибка; A4 — Set-Cookie до writeHead в CSS-ветке + регрессионный тест.
+
+> Выполнено (приоритет 2, PR #2): C1 — проверка Host (incl. WS-upgrade); токен сознательно не вводился (SameSite ломает доставку cookie кросс-сайтовому iframe, Host-pроверка закрывает rebinding; обоснование в SECURITY.md). C2 — /project/ запрещает .env*, .git, node_modules. B2 — sourceMappingURL только loopback + redirect: "error". C4 — frame-src/img-src ограничены loopback-origin'ами. C3 — cookie jar ключуется upstream-origin|name. C5 — page-контент экранируется (dataValue) и огражден маркерами PAGE DATA START/END.
+
+> Выполнено (приоритет 3, PR #2): A5 — таймаут только на заголовки (clearTimeout после fetch), readCappedBody для HTML/CSS/redirect вместо молчаливого subarray (честные 502/destroy при переполнении), потоковая передача прочих типов через streamUpstreamBody (Transform-лимит 20MiB, abort при обрыве клиента). A6 — wss через tls.connect (servername только для не-IP), IPv6 без скобок, порты 80/443 по умолчанию, статус строго `^HTTP/[\d.]{1,8} 101\b`, форвард заголовков-массивов построчно + writeUpgradeRequest, таймаут WS-коннекта 5с, трекинг и закрытие hijacked сокетов в stop() (acceptedSockets + closeIdleConnections/closeAllConnections). Тесты: SSE-прогрессивность, 502 на HTML-overflow, destroy на стрим-overflow, форвард дубликатов WS-заголовков, закрытие клиента при non-101.
+
+> Выполнено (приоритет 4, PR #2): A7 — матчер `/<head(?=[\s>])[^>]*>/i` (и аналоги для body/html в proxy-html.ts, injectRuntimeIntoHtml и CSP-вставке в openDesignStudio) не путается с `<header>`; fallback на `<body>`/prepended CSP с регрессионными тестами. A8 — одна панель на workbench (повторный вызов команды делает reveal), `panel.onDidDispose` чистит ссылку, явная `showErrorMessage` при падении host-сервера, multi-root: папка выбирается по фактическому наличию сохранённой entry. A9 — `findSourceHints` асинхронный (fs/promises), каждый файл читается ровно один раз и переиспользуется между токенами вместо десятков тысяч синхронных `readFileSync`. A10 — `editRule` сохраняет `!important` при замене значения и корректно обрабатывает значения с семиколонами внутри `url(data:...;base64,...)`/кавычках; тесты на все три случая. Интеграционный тест с замоканным vscode дополнен моками reveal/onDidDispose и проверкой единственности панели.
+
+> Выполнено (приоритет 5, PR #2): D1 — LICENSE (MIT), README ссылается. D2 — package.json: license/repository/keywords, publisher = kachanov-e-v, activationEvents очищен. D3 — .github/workflows/ci.yml (typecheck, lint, test, build + advisory npm audit) подготовлен, но не запушен: OAuth-токен gh без workflow-scope — требуется `gh auth refresh -s workflow` и ручной пуш .github. D4 — eslint покрыл packages/preview-runtime/src и scripts, webview/public исключён как сборочный артефакт. C7 — vite 7 / vitest 5 / plugin-react 5 / @types/node 24: critical (tinypool) и high закрыты; остались 7 moderate в @typescript-eslint <=8.72.2 (апстрим-фикс не выпущен). B1 — selectHint/runtimeMissing переписаны. B3/B4 — AI_HANDOFF, LEGACY_CLEANUP, IMPLEMENTATION_PLAN почищены от несуществующих ссылок, захардкоженных счётчиков и рабочих заметок.
+
+> Выполнено (приоритет 6, PR #2): D6 — webview/public/runtime.js и protocol.js удалены из индекса и добавлены в .gitignore (перед упаковкой vsce нужна сборка npm run build — уже часть процесса). D5 (частично) — интеграционный тест webview->extension (openDesignStudio.test.ts, vi.mock vscode) был добавлен в приоритете 1; юнит-тесты App/PreviewContainer/Inspector/runtime/index.ts остаются открытыми (jsdom-инфраструктура не настраивалась, вынесено в следующий этап).
+
+Итог аудита: A1-A10, B1-B4, C1-C7, D1-D4, D6 закрыты; D5 закрыт частично (интеграционный тест самого критичного пути); C7 — 7 moderate ждут апстрим-фикса typescript-eslint.

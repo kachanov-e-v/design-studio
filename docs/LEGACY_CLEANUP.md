@@ -1,6 +1,6 @@
 # Legacy cleanup
 
-Аудит мёртвого кода (EPIC G по `DESIGN_STUDIO_AI_AGENT_INSTRUCTIONS.md`). Перед удалением
+Аудит мёртвого кода (EPIC G). Перед удалением
 каждого кандидата проверялись все usages (`grep` по `src`, `webview`, `packages`),
 dynamic usage (ключи i18n могли читаться через `translate(language, key)`), тесты и документация.
 

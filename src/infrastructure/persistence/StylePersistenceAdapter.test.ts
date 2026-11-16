@@ -99,6 +99,32 @@ describe("StylePersistenceAdapter.apply", () => {
     expect(res.success).toBe(false);
     expect(res.message).toContain("Ambiguous");
   });
+
+  it("A10: preserves !important when replacing the value", async () => {
+    store.set("/tmp/a.css", ".a {\n  color: red !important;\n  margin: 0;\n}");
+    const adapter = new StylePersistenceAdapter();
+    await adapter.apply({ selector: ".a", property: "color", value: "blue" });
+    const newText = (globalThis as any).__replacements[0].newText as string;
+    expect(newText).toContain("color: blue !important;");
+  });
+
+  it("A10: does not duplicate !important when the new value has one", async () => {
+    store.set("/tmp/a.css", ".a { color: red !important; }");
+    const adapter = new StylePersistenceAdapter();
+    await adapter.apply({ selector: ".a", property: "color", value: "blue !important" });
+    const newText = (globalThis as any).__replacements[0].newText as string;
+    expect(newText.match(/!important/g)?.length).toBe(1);
+  });
+
+  it("A10: keeps url(data:...;base64,...) values intact when editing another property", async () => {
+    store.set("/tmp/a.css", ".a {\n  background: url(data:image/svg+xml;base64,AAAA+BB==) no-repeat;\n  color: red;\n}");
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".a", property: "color", value: "blue" });
+    expect(res.success).toBe(true);
+    const newText = (globalThis as any).__replacements[0].newText as string;
+    expect(newText).toContain("base64,AAAA+BB==");
+    expect(newText).toContain("color: blue;");
+  });
 });
 
 
