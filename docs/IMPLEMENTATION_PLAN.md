@@ -556,3 +556,42 @@ test 317 (25 файлов), build verify-build зелёный.
 
 Гейты после Фаз C+D+DOC-01: typecheck OK, lint OK, test OK,
 build (verify-build) OK — финальный прогон см. отчёт сессии.
+
+## RT-02 (P1) — «Не удалось определить файл компонента»
+- Корневая причина: React 19 dev убрал `_debugSource` (и `_debugStack`
+  фильтруется Turbopack'ом) → `collectReactComponents`
+  (`packages/preview-runtime/src/fiber.ts`) возвращал имя компонента без файла
+  → `pickRevealTarget`
+  (`src/infrastructure/source-analysis/ComponentResolver.ts`) → undefined →
+  `status.sourceMissing` в `PromptExportService.revealComponent` и
+  `copyComponent`.
+- Исправлено: новый экспорт `findComponentDefinition(root, name, options?)`
+  в `ComponentResolver.ts` — async fs.promises, детерминированный LIFO-обход,
+  SKIP_DIRS (`node_modules`, `.next`, …), бюджет 32 МБ
+  (`MAX_DEFINITION_TOTAL_BYTES`), 7 паттернов объявления (export default
+  function → export function/const/class → function → const|let/var → class).
+  `PromptExportService`: fallback `resolveByName` в `revealComponent`; в
+  `copyComponent` — fallback на `findComponentDefinition(...)?.file`, при
+  полном отсутствии файла по-прежнему `sourceMissing`.
+- Тесты: `ComponentResolver.test.ts` describe "findComponentDefinition
+  (RT-02…)" — по имени, const/let/class-формы, не-идентификатор, бюджет
+  maxTotalBytes:0 (4 теста, RED до фикса).
+- Коммит: fix(component): RT-02 resolve component source by name when React
+  fiber debug metadata is unavailable.
+
+## WV-03 (P1) — hover-подсветка edit-режима не работает на первой странице
+- Корневая причина: `ds:set-mode` от webview отправлялся однократно в момент
+  instant-connect по `ds:runtime-ready` (`webview/components/PreviewContainer.tsx`,
+  ready-ветка и effect `[editMode, runtimeStatus, url]`); если runtime ещё не
+  готов принять сообщение, режим оставался выключенным без повторной отправки.
+  После навигации по ссылке эффект переотправлял set-mode — поэтому
+  «после перехода и обратно всё работает».
+- Исправлено: resync без изменения протокола — `postSetModeWithResync()`:
+  пост set-mode + повтор каждые 400 мс (до 8 попыток, MODE_RESYNC_MAX_POSTS),
+  остановка по эхо `ds:mode-changed` с совпавшим `enabled`
+  (`stopModeResync()`); обе точки отправки переведены на resync.
+- Тесты: `PreviewContainer.test.tsx` describe "PreviewContainer mode resync
+  (WV-03)" — (1) без эха счётчик постов продолжает расти (RED до фикса),
+  (2) после эха с совпавшим enabled счётчик замораживается (guard).
+  Гейты: typecheck OK, lint 0 ошибок, test 328 (26 файлов), build OK.
+- Коммит: fix(webview): WV-03 re-post ds:set-mode until the runtime confirms.
