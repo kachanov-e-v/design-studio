@@ -420,3 +420,9 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > «already has this value», source-mapping heuristic через реальный loopback CSS-сервер,
 > source-path неоднозначность). Итоговое покрытие: shared 89.79%, persistence 90.51%,
 > preview 89.0%, runtime 88.33% строк. Счётчик тестов: 260→305, 23 файла.
+
+> Фаза 5 (релиз-подготовка): CHANGELOG.md 0.1.0 и иконка готовы; smoke `vsce package
+> --no-dependencies` — design-studio-0.1.0.vsix собран (16 файлов, 208 КБ, без мусора
+> fixtures/scripts/.github/coverage). Ручная матрица проверки (Next.js+логин, Vite,
+> статический проект, демо, RU/EN, Win/macOS/Linux) и публикация в Marketplace —
+> вне зоны автоматизации агента, выполняются человеком.

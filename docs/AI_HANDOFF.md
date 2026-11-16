@@ -180,3 +180,12 @@ npm run build (verify-build зелёный), vsce ls (чистая упаков�
 Осталось (Фаза 5): CHANGELOG финализировать под релиз, vsce package smoke в CI-артефакт
 (шаг уже в workflow), ручная матрица (Next.js+логин, Vite, статика, демо, RU/EN,
 Win/macOS/Linux) — помечена как ручная; публикация.
+
+Фаза 5 (релиз-подготовка) — автоматизируемая часть завершена:
+- CHANGELOG.md (0.1.0, полный hardening-список) и icons/design-studio.png в репозитории.
+- `npm run package` (vsce package --no-dependencies) — .vsix собирается, 16 файлов,
+  упаковка чистая (.vscodeignore без утечек). CI (Node 22) уже пакует и выкладывает
+  .vsix артефактом.
+- Ручная матрица (Next.js dev с авторизацией, Vite, статический проект, демо; RU/EN;
+  Windows/macOS/Linux) и `vsce publish` — требуют живой среды и аккаунта publisher'а,
+  агентом не выполняются. См. §8 инструкции.
