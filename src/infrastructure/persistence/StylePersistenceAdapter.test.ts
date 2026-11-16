@@ -228,12 +228,13 @@ describe("StylePersistenceAdapter.apply", () => {
     expect(res.message).toContain("already absent");
   });
 
-  it("rejects the edit when the property already has the requested value", async () => {
+  it("UX-01: treats a no-op edit (value already set) as a success that drains the queue", async () => {
     store.set("/tmp/same.css", ".a { color: red; }");
     const adapter = new StylePersistenceAdapter();
     const res = await adapter.apply({ selector: ".a", property: "color", value: "red" });
-    expect(res.success).toBe(false);
+    expect(res.success).toBe(true);
     expect(res.message).toContain("already has this value");
+    expect((res as { file?: string }).file).toBe("/tmp/same.css");
   });
 });
 

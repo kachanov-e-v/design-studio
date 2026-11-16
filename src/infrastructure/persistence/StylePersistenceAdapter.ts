@@ -145,7 +145,10 @@ export class StylePersistenceAdapter {
       const hadImportant = /!\s*important/i.test(valueText);
       const baseValue = valueText.replace(/!\s*important$/i, "").trim();
       if (baseValue === change.value || valueText === change.value) {
-        return { success: false, message: "Property already has this value" };
+        // UX-01: a no-op is a success — the target state already holds. Reporting
+        // it as a failure left the edit in the webview pending queue forever
+        // (acks are only drained on success).
+        return { success: true, message: "Property already has this value", file: uri.fsPath };
       }
       const important = hadImportant && !/!\s*important/i.test(change.value) ? " !important" : "";
       newBody = body.slice(0, decl.start) + `${change.property}: ${change.value}${important};` + body.slice(decl.end);
