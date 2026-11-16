@@ -3,16 +3,28 @@
   "displayName": "Дизайн-студия",
   "description": "Минималистичный визуальный редактор компонентов Next.js с экспортом инструкций для ИИ",
   "version": "0.0.1",
-  "publisher": "design-studio",
+  "publisher": "kachanov-e-v",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kachanov-e-v/design-studio.git"
+  },
+  "keywords": [
+    "vscode",
+    "design",
+    "nextjs",
+    "css",
+    "visual editor",
+    "design studio"
+  ],
   "engines": {
     "vscode": "^1.105.1"
   },
   "categories": [
+    "Visualization",
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:design-studio.open"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -32,25 +44,24 @@
     "inline:demo": "node scripts/inline-demo-runtime.js",
     "verify:build": "node scripts/verify-build.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src webview --ext .ts,.tsx",
+    "lint": "eslint src webview packages/preview-runtime/src scripts --ext .ts,.tsx,.js",
     "test": "vitest run",
     "dev:webview": "vite"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.105.0",
+    "@types/node": "^24.19.2",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^4.3.0",
+    "@types/vscode": "^1.105.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "esbuild": "^0.21.0",
     "eslint": "^8.57.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "typescript": "^5.4.0",
-    "vite": "^5.2.0",
-    "vitest": "^1.6.0"
+    "vite": "^7.3.8",
+    "vitest": "^5.1.0"
   }
 }
-
