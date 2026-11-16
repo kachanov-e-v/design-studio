@@ -4,7 +4,7 @@ import { PreviewContainer, type PreviewContainerHandle, type OpAppliedInfo } fro
 import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
-import { buildStylePersistMessage, type StylePersistEdit } from "./persistContract";
+import { ackPendingStyles, buildStylePersistMessage, type PendingStyleEdit } from "./persistContract";
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage } from "./types";
@@ -24,7 +24,7 @@ interface PendingStyleRequest {
 export function App(): React.ReactElement {
   const [state, setState] = useState<Partial<PreviewStateMessage>>({ url: "", status: "idle", language: "ru" });
   const [selected, setSelected] = useState<ElementPayload | null>(null);
-  const [pendingStyles, setPendingStyles] = useState<StylePersistEdit[]>([]);
+  const [pendingStyles, setPendingStyles] = useState<PendingStyleEdit[]>([]);
   const [edits, setEdits] = useState<DesignEdit[]>([]);
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
@@ -32,6 +32,7 @@ export function App(): React.ReactElement {
 
   const previewRef = useRef<PreviewContainerHandle | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingStyleRequest>>(new Map());
+  const persistSeqRef = useRef(0);
   const selectedRef = useRef<ElementPayload | null>(null);
   const previousClassesRef = useRef<string[] | undefined>(undefined);
   const language: Language = state.language === "en" ? "en" : "ru";
@@ -86,7 +87,8 @@ export function App(): React.ReactElement {
         setState((current) => ({ ...current, status: "error" }));
         setOperationStatus(msg.message ?? translate(languageRef.current, "status.previewError"));
       } else if (msg.type === "persist:result") {
-        if (msg.success) setPendingStyles([]);
+        // P0-4: drop only the acknowledged edit; failed/unconfirmed edits stay.
+        setPendingStyles((current) => ackPendingStyles(current, msg));
         setOperationStatus(msg.message ?? "");
       } else if (msg.type === "ai:result" || msg.type === "ai:componentResult") {
         setOperationStatus(msg.message ?? "");
@@ -173,7 +175,14 @@ export function App(): React.ReactElement {
         });
         setPendingStyles((previous) => [
           ...previous.filter((item) => !(item.selector === payload.selector && item.property === info.property)),
-          { selector: payload.selector, selectors: payload.selectors, property: info.property, value: info.value, sourceRules: payload.rules },
+          {
+            requestId: `persist-${++persistSeqRef.current}`,
+            selector: payload.selector,
+            selectors: payload.selectors,
+            property: info.property,
+            value: info.value,
+            sourceRules: payload.rules,
+          },
         ]);
         setOperationStatus(translate(language, "status.styleApplied"));
       }
@@ -235,8 +244,7 @@ export function App(): React.ReactElement {
       return;
     }
     for (const edit of pendingStyles) postToExtension(buildStylePersistMessage(edit));
-    setOperationStatus(translate(language, "status.saving"));
-  };
+    setOperationStatus(translate(language, "status.saving"));  };
 
   const handleCopyInstruction = (instruction: string) => {
     if (!selected && !instruction.trim() && edits.length === 0) {

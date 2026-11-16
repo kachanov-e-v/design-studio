@@ -107,6 +107,15 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
   const persistence = new StylePersistenceAdapter();
   const promptExport = new PromptExportService(root);
 
+  // P0-4: style persists touch project files by offset, so they must run one
+  // at a time. Chain them; a rejected task never poisons the queue.
+  let persistQueue: Promise<void> = Promise.resolve();
+  const enqueuePersist = (task: () => Promise<void>): Promise<void> => {
+    const run = persistQueue.then(task, task);
+    persistQueue = run.catch(() => {});
+    return run;
+  };
+
   const projectUrl = (): string | null => {
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
     return host && entry ? `${host.origin}/project/${entry}` : null;
@@ -239,8 +248,9 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "style:persist") {
+        const requestId = typeof msg.requestId === "string" && msg.requestId.length <= 128 ? msg.requestId : undefined;
         if (!root) {
-          panel.webview.postMessage({ type: "persist:result", success: false, message: translate(language, "status.noProject") });
+          panel.webview.postMessage({ type: "persist:result", success: false, message: translate(language, "status.noProject"), requestId });
           return;
         }
         const change = {
@@ -262,21 +272,28 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
                 })
             : undefined,
         };
-        const result = await persistence.apply(change);
-        if (result.success) {
-          panel.webview.postMessage({
-            type: "persist:result",
-            success: true,
-            message: translate(language, "status.styleSaved", { file: result.file ?? "" }),
-            file: result.file,
-          });
-        } else {
-          panel.webview.postMessage({
-            type: "persist:result",
-            success: false,
-            message: translate(language, "status.saveFailed", { error: result.message }),
-          });
-        }
+        // P0-4: style edits are offset-based against the current document
+        // text; two parallel applies would race (stale offsets, clobbered
+        // edits). Strictly serialize them and correlate results via requestId.
+        await enqueuePersist(async () => {
+          const result = await persistence.apply(change);
+          if (result.success) {
+            panel.webview.postMessage({
+              type: "persist:result",
+              success: true,
+              message: translate(language, "status.styleSaved", { file: result.file ?? "" }),
+              file: result.file,
+              requestId,
+            });
+          } else {
+            panel.webview.postMessage({
+              type: "persist:result",
+              success: false,
+              message: translate(language, "status.saveFailed", { error: result.message }),
+              requestId,
+            });
+          }
+        });
         return;
       }
       if (msg.type === "ai:copyInstruction") {

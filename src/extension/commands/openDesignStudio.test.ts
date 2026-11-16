@@ -148,6 +148,45 @@ describe("style:persist extension handler (webview -> extension integration)", (
     expect(mocks.apply).toHaveBeenCalledTimes(1);
     expect(lastMessage().type).toBe("persist:result");
   });
+
+  // P0-4: parallel style:persist messages must be applied strictly one at a
+  // time, in arrival order, even when the underlying apply() resolves out of order.
+  it("serializes concurrent persists in arrival order", async () => {
+    await openDesignStudio(makeContext());
+    // The unpersisted queue would resolve r3 first; deterministic behavior
+    // still posts results in arrival order and never overlaps applies.
+    let inflight = 0;
+    let maxInflight = 0;
+    mocks.apply.mockImplementation(
+      ({ value }: { value: string }) =>
+        new Promise<{ success: boolean; message: string }>((resolve) => {
+          inflight += 1;
+          maxInflight = Math.max(maxInflight, inflight);
+          const delay = value === "v-r1" ? 30 : value === "v-r2" ? 15 : 0;
+          setTimeout(() => {
+            inflight -= 1;
+            resolve({ success: true, message: "Saved to source" });
+          }, delay);
+        })
+    );
+    const send = (requestId: string) =>
+      mocks.handler!({ type: "style:persist", requestId, selector: ".x", property: "color", value: `v-${requestId}` });
+    await Promise.all([send("r1"), send("r2"), send("r3")]);
+
+    expect(mocks.apply).toHaveBeenCalledTimes(3);
+    expect(maxInflight).toBe(1);
+    const calls = mocks.postMessage.mock.calls as unknown as Array<[msg: { requestId?: string }]>;
+    expect(calls.filter((c) => c[0].requestId).map((c) => c[0].requestId)).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("correlates persist:result with the requestId of the request", async () => {
+    await openDesignStudio(makeContext());
+    mockApplySuccess();
+    await mocks.handler!({ type: "style:persist", requestId: "req-42", selector: ".x", property: "color", value: "red" });
+    const last = lastMessage();
+    expect(last.type).toBe("persist:result");
+    expect(last.requestId).toBe("req-42");
+  });
 });
 
 function mockApplySuccess(): void {
