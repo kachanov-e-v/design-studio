@@ -10,8 +10,10 @@ const messages = {
   "toolbar.serverPlaceholder": { ru: "http://localhost:3000", en: "http://localhost:3000" }, // P2-19: only full dev-server URLs are accepted
   "toolbar.noEntry": { ru: "Выберите страницу", en: "Select a page" }, // P2-19
   "toolbar.projectMissing": { ru: "Откройте папку проекта", en: "Open a project folder" },
-  "toolbar.edit": { ru: "Просмотр", en: "Browse" },
-  "toolbar.editOn": { ru: "Редактировать", en: "Edit" },
+  // P2-11: mode toggle labels are actions (the mode you switch INTO), matching
+  // the README flow "click Edit to start editing".
+  "toolbar.toEdit": { ru: "Редактировать", en: "Edit" },
+  "toolbar.toBrowse": { ru: "Просмотр", en: "Browse" },
   "toolbar.save": { ru: "Сохранить стили", en: "Save styles" },
   "toolbar.language": { ru: "Язык", en: "Language" },
   "toolbar.aria": { ru: "Панель Design Studio", en: "Design Studio toolbar" },
@@ -21,7 +23,7 @@ const messages = {
   "toolbar.detectedServer": { ru: "Обнаружен сервер разработки", en: "Development server detected" },
   "toolbar.serverOther": { ru: "Порт занят другим приложением", en: "Port is used by another app" },
   "toolbar.serverUnknown": { ru: "Сервер не проверен", en: "Server not verified" },
-  "toolbar.serverDown": { ru: "Сервер обнаружен", en: "Server detected" },
+  "toolbar.serverDown": { ru: "Сервер не запущен", en: "Server not running" },
   "preview.status": { ru: "Состояние", en: "Status" },
   "preview.connected": { ru: "Редактор подключён", en: "Editor connected" },
   "preview.editEnabled": { ru: "Кликните по элементу. Действия страницы отключены.", en: "Click an element. Page actions are disabled." },
@@ -113,6 +115,8 @@ const messages = {
 } as const;
 
 export type MessageKey = keyof typeof messages;
+/** Exposed for tests: the full RU/EN string table. */
+export const I18N_STRINGS = messages;
 
 export function translate(language: Language, key: MessageKey, values?: Record<string, string | number>): string {
   let value: string = messages[key][language];

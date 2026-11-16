@@ -116,7 +116,8 @@ export function Toolbar({
       </div>
       <nav className={styles.actions} aria-label={t("toolbar.aria")}>
         <button className={editMode ? styles.active : styles.quiet} type="button" onClick={onInspect} aria-pressed={editMode}>
-          {editMode ? t("toolbar.editOn") : t("toolbar.edit")}
+          {/* P2-11: the label is the target mode (the action), not the current state. */}
+          {editMode ? t("toolbar.toBrowse") : t("toolbar.toEdit")}
         </button>
         <button className={styles.quiet} type="button" onClick={onSave} disabled={!canSave}>{t("toolbar.save")}</button>
         <div className={styles.language} role="group" aria-label={t("toolbar.language")}>
