@@ -39,6 +39,19 @@ beforeAll(async () => {
       res.setHeader("Set-Cookie", ["csssession=7; Path=/"]);
       res.writeHead(200, { "Content-Type": "text/css" });
       res.end(stubCss);
+    } else if (p === "/sse") {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write("data: one\n\n");
+      setTimeout(() => {
+        res.write("data: two\n\n");
+        setTimeout(() => res.end("data: three\n"), 150);
+      }, 150);
+    } else if (p === "/big-html") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!DOCTYPE html><html><body>${"x".repeat(1024)}</body></html>`);
+    } else if (p === "/big-json") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ blob: "y".repeat(1024) }));
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
@@ -84,6 +97,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  stubServer.closeAllConnections();
   await new Promise<void>((r) => stubServer.close(() => r()));
 });
 
@@ -93,6 +107,49 @@ function makeTempWebviewRoot(): string {
   fs.writeFileSync(path.join(root, "runtime.js"), "console.log('rt')");
   return root;
 }
+
+/** Raw HTTP/1.1 upgrade request against a preview host; resolves with the
+ * received preamble bytes ("" when the socket is closed without a reply). */
+function rawUpgradeRequest(previewOrigin: string, requestPath: string, extraHeaders: string[] = []): Promise<string> {
+  const port = Number(new URL(previewOrigin).port);
+  const host = new URL(previewOrigin).host;
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, "127.0.0.1", () => {
+      sock.write(
+        `GET ${requestPath} HTTP/1.1\r\n` +
+          `Host: ${host}\r\n` +
+          "Upgrade: websocket\r\n" +
+          "Connection: Upgrade\r\n" +
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+          "Sec-WebSocket-Version: 13\r\n" +
+          extraHeaders.join("\r\n") +
+          "\r\n\r\n"
+      );
+    });
+    let data = Buffer.alloc(0);
+    let settled = false;
+    const finish = (result: string) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(data.toString("latin1")), 5000);
+    sock.on("data", (c: Buffer) => {
+      data = Buffer.concat([data, c]);
+      if (data.includes("\r\n\r\n")) {
+        clearTimeout(timer);
+        finish(data.toString("latin1"));
+      }
+    });
+    sock.on("close", () => finish(data.toString("latin1")));
+    sock.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
 
 function get(url: string): Promise<{ status: number; body: string; headers: Record<string, string> }> {
   return new Promise((resolve, reject) => {
@@ -177,6 +234,7 @@ describe("PreviewHostServer", () => {
   });
 
   afterAll(async () => {
+    
     await server.stop();
   });
 
@@ -531,6 +589,112 @@ describe("PreviewHostServer", () => {
       expect((JSON.parse(other.body) as { cookie: string | null }).cookie).toBeNull();
     } finally {
       await isolateServer.stop();
+    }
+  });
+
+  it("streams non-HTML responses progressively instead of buffering (SSE)", async () => {
+    let firstChunkAt = 0;
+    let endAt = 0;
+    const body = await new Promise<string>((resolve, reject) => {
+      const req = http.get(`${server.origin}/proxy/${stubOrigin}/sse`, (res) => {
+        let acc = "";
+        res.on("data", (c: Buffer) => {
+          if (firstChunkAt === 0) firstChunkAt = Date.now();
+          acc += c.toString("utf8");
+        });
+        res.on("end", () => {
+          endAt = Date.now();
+          resolve(acc);
+        });
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+    });
+    expect(body).toContain("data: one");
+    expect(body).toContain("data: two");
+    expect(body).toContain("data: three");
+    // The first chunk must arrive well before the stream ends: the response
+    // was not held back in a buffer until the upstream finished.
+    expect(endAt - firstChunkAt).toBeGreaterThan(100);
+  });
+
+  it("answers 502 instead of silently truncating oversized upstream HTML", async () => {
+    const cappedServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot(), maxResponseBytes: 32 });
+    await cappedServer.start();
+    try {
+      const res = await request(`${cappedServer.origin}/proxy/${stubOrigin}/big-html`, {});
+      expect(res.status).toBe(502);
+      expect(res.body).toContain("byte limit");
+    } finally {
+      await cappedServer.stop();
+    }
+  });
+
+  it("destroys the client instead of truncating oversized streamed responses", async () => {
+    const cappedServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot(), maxResponseBytes: 32 });
+    await cappedServer.start();
+    try {
+      const outcome = await new Promise<{ aborted: boolean; error?: string }>((resolve) => {
+        const req = http.get(`${cappedServer.origin}/proxy/${stubOrigin}/big-json`, (res) => {
+          res.on("aborted", () => resolve({ aborted: true }));
+          res.on("end", () => resolve({ aborted: false }));
+          res.on("error", (err) => resolve({ aborted: true, error: err.message }));
+        });
+        req.on("error", (err) => resolve({ aborted: true, error: err.message }));
+        setTimeout(() => resolve({ aborted: true, error: "test timeout" }), 5000);
+      });
+      expect(outcome.aborted).toBe(true);
+    } finally {
+      await cappedServer.stop();
+    }
+  });
+
+  it("forwards repeated WebSocket handshake headers instead of dropping them", async () => {
+    let upstreamSide: Duplex | null = null;
+    const up = http.createServer(() => {});
+    up.on("upgrade", (req, socket) => {
+      upstreamSide = socket;
+      const multi = req.headers["x-multi"];
+      const echo = Array.isArray(multi) ? multi.join(", ") : String(multi ?? "");
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Multi-Echo: ${echo}\r\n\r\n`);
+    });
+    await new Promise<void>((r) => up.listen(0, "127.0.0.1", r));
+    const upOrigin = `http://127.0.0.1:${(up.address() as { port: number }).port}`;
+    const upgrader = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await upgrader.start();
+    try {
+      const raw = await rawUpgradeRequest(upgrader.origin, `/proxy/${upOrigin}/hmr`, ["X-Multi: a", "X-Multi: b"]);
+      expect(raw).toContain("101 Switching Protocols");
+      // Both duplicate header values must reach the upstream relay.
+      expect(raw).toContain("X-Multi-Echo: a, b");
+    } finally {
+      (upstreamSide as net.Socket | null)?.destroy();
+      await upgrader.stop();
+      up.closeAllConnections();
+      await new Promise<void>((r) => up.close(() => r()));
+    }
+  });
+
+  it("closes the client without a relay when the upstream refuses the WS upgrade", async () => {
+    let upstreamSide: Duplex | null = null;
+    const up = http.createServer(() => {});
+    up.on("upgrade", (_req, socket) => {
+      upstreamSide = socket;
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+    });
+    await new Promise<void>((r) => up.listen(0, "127.0.0.1", r));
+    const upOrigin = `http://127.0.0.1:${(up.address() as { port: number }).port}`;
+    const upgrader = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await upgrader.start();
+    try {
+      const raw = await rawUpgradeRequest(upgrader.origin, `/proxy/${upOrigin}/hmr`);
+      expect(raw).not.toContain("101 Switching Protocols");
+      expect(raw).toBe("");
+    } finally {
+      (upstreamSide as net.Socket | null)?.destroy();
+      await upgrader.stop();
+      up.closeAllConnections();
+      await new Promise<void>((r) => up.close(() => r()));
     }
   });
 

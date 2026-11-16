@@ -1,7 +1,10 @@
 import * as http from "node:http";
 import * as net from "node:net";
+import * as tls from "node:tls";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor, injectIntoHtml, prependProxyOriginToPathUrls } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 import { validateUpstreamTarget } from "./upstream-validation";
@@ -9,6 +12,38 @@ import { validateUpstreamTarget } from "./upstream-validation";
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
+const WS_CONNECT_TIMEOUT_MS = 5_000;
+
+/**
+ * Read a whole upstream body into memory, refusing oversized responses instead
+ * of silently truncating them. Returns null when the cap is hit or the body
+ * errors mid-stream.
+ */
+async function readCappedBody(body: ReadableStream<Uint8Array> | null, cap: number): Promise<Buffer | null> {
+  if (!body) return Buffer.alloc(0);
+  const readable = Readable.fromWeb(body as never);
+  return await new Promise<Buffer | null>((resolve) => {
+    const parts: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (result: Buffer | null) => {
+      if (settled) return;
+      settled = true;
+      readable.destroy();
+      resolve(result);
+    };
+    readable.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > cap) {
+        finish(null);
+        return;
+      }
+      parts.push(Buffer.from(chunk));
+    });
+    readable.on("end", () => finish(Buffer.concat(parts)));
+    readable.on("error", () => finish(null));
+  });
+}
 
 /**
  * Host-side cookie jar for the upstream application.
@@ -67,6 +102,8 @@ export interface PreviewHostServerOptions {
   host?: string;
   /** Workspace root served under /project/ (project binding). */
   projectRoot?: string | null;
+  /** Proxy payload byte cap (tests shrink it; default 20 MiB). */
+  maxResponseBytes?: number;
   /** Optional sink for compact proxy diagnostics (redirects, 4xx, 5xx). */
   trace?: (line: string) => void;
 }
@@ -168,12 +205,14 @@ export class PreviewHostServer {
   private readonly host: string;
   private readonly webviewRoot: string;
   private readonly trace: (line: string) => void;
+  private readonly maxResponseBytes: number;
   private projectRoot: string | null = null;
 
   constructor(options: PreviewHostServerOptions) {
     this.host = options.host ?? "127.0.0.1";
     this.webviewRoot = options.webviewRoot;
     this.projectRoot = options.projectRoot ?? null;
+    this.maxResponseBytes = options.maxResponseBytes ?? MAX_RESPONSE_BYTES;
     this.trace = options.trace ?? (() => {});
   }
 
@@ -184,6 +223,9 @@ export class PreviewHostServer {
   private devTarget: string | null = null;
   /** Keys are `${upstreamOrigin}|${cookieName}`: cookies never leak across loopback origins/ports. */
   private cookieJar = new Map<string, JarCookie>();
+  /** Hijacked WebSocket sockets: closed() waits on them unless torn down. */
+  private upgradedSockets = new Set<net.Socket>();
+  private acceptedSockets = new Set<net.Socket>();
 
   /** Sticky dev-server target lets app routes stay at the preview origin's root. */
   setDevTarget(target: string | null): void {
@@ -257,6 +299,13 @@ export class PreviewHostServer {
     server.on("upgrade", (req, socket) => {
       this.handleUpgrade(req, socket as net.Socket).catch(() => socket.destroy());
     });
+    // Track every accepted socket: closeAllConnections() skips sockets that
+    // were detached for a WebSocket upgrade, so stop() must destroy them
+    // through its own registry to guarantee that close() fires.
+    server.on("connection", (socket) => {
+      this.acceptedSockets.add(socket);
+      socket.once("close", () => this.acceptedSockets.delete(socket));
+    });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, this.host, () => resolve());
@@ -275,6 +324,15 @@ export class PreviewHostServer {
     if (!server) return;
     this.server = null;
     this.port = 0;
+    // http.Server.close() only stops accepting new connections; hijacked
+    // upgrade sockets and idle keep-alive connections must be torn down
+    // explicitly or close() never fires.
+    for (const socket of this.upgradedSockets) socket.destroy();
+    this.upgradedSockets.clear();
+    for (const socket of this.acceptedSockets) socket.destroy();
+    this.acceptedSockets.clear();
+    server.closeIdleConnections();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
@@ -562,20 +620,27 @@ export class PreviewHostServer {
     method: string,
     headers: Record<string, string>,
     body?: Buffer
-  ): Promise<{ upstream: Response | null; errors: { url: string; message: string }[] }> {
+  ): Promise<{ upstream: Response | null; errors: { url: string; message: string }[]; abortUpstream: () => void }> {
     const candidates = candidateLoopbackTargets(target);
     const errors: { url: string; message: string }[] = [];
     for (const candidate of candidates) {
+      const controller = new AbortController();
+      // The timeout covers connection setup and response headers only: SSE,
+      // streaming SSR and long-poll bodies may stay open indefinitely and are
+      // bounded by the proxy byte cap instead.
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       try {
         const upstream = await fetch(candidate, {
           method: method === "HEAD" ? "HEAD" : method,
           redirect: "manual",
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          signal: controller.signal,
           headers,
           body: method === "GET" || method === "HEAD" ? undefined : body ? new Uint8Array(body) : undefined,
         });
-        return { upstream, errors };
+        clearTimeout(timer);
+        return { upstream, errors, abortUpstream: () => controller.abort() };
       } catch (err) {
+        clearTimeout(timer);
         const cause = (err as { cause?: { code?: string; message?: string } }).cause;
         const detail = [err instanceof Error ? err.message : String(err), cause?.code, cause?.message]
           .filter((p): p is string => typeof p === "string" && p.length > 0)
@@ -583,7 +648,7 @@ export class PreviewHostServer {
         errors.push({ url: candidate, message: detail });
       }
     }
-    return { upstream: null, errors };
+    return { upstream: null, errors, abortUpstream: () => {} };
   }
 
   /** Rewrite a 3xx Location so the browser stays on this origin. Cross-origin
@@ -663,7 +728,7 @@ export class PreviewHostServer {
       return;
     }
     const forwardHeaders = this.buildForwardHeaders(req, parsedTarget);
-    const { upstream, errors } = await this.fetchWithFallbacks(target, method, forwardHeaders, body);
+    const { upstream, errors, abortUpstream } = await this.fetchWithFallbacks(target, method, forwardHeaders, body);
     if (!upstream) {
       this.trace(`[proxy] ${method} ${target} -> 502 (${errors.map((e) => `${e.url}: ${e.message}`).join("; ")})`);
       res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
@@ -711,8 +776,8 @@ export class PreviewHostServer {
       // Next.js server-action responses are 303 with an x-action-redirect
       // header and an RSC flight body the client must read (no Location at
       // all); dropping the body makes React fail with "Connection closed".
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      if (buf.length > MAX_RESPONSE_BYTES) {
+      const buf = await readCappedBody(upstream.body, this.maxResponseBytes);
+      if (buf === null) {
         res.destroy();
         return;
       }
@@ -725,8 +790,15 @@ export class PreviewHostServer {
     delete headers["location"];
 
     if (/^text\/html/i.test(contentType) && method !== "HEAD") {
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      const html = buf.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
+      const buf = await readCappedBody(upstream.body, this.maxResponseBytes);
+      if (buf === null) {
+        // Headers not sent yet, so an honest 502 beats silently truncated HTML.
+        this.trace(`[proxy] ${method} ${target} -> 502 (body exceeds byte cap)`);
+        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Response body exceeds the preview byte limit");
+        return;
+      }
+      const html = buf.toString("utf8");
       const rewritten = rewriteProxiedHtml(html, finalTarget, `${this.origin}/__ds-runtime.js`, this.origin);
       headers["content-type"] = "text/html; charset=utf-8";
       headers["cache-control"] = "no-store";
@@ -736,8 +808,14 @@ export class PreviewHostServer {
       return;
     }
     if (/^text\/css/i.test(contentType) && method !== "HEAD") {
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      const css = buf.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
+      const buf = await readCappedBody(upstream.body, this.maxResponseBytes);
+      if (buf === null) {
+        this.trace(`[proxy] ${method} ${target} -> 502 (body exceeds byte cap)`);
+        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Response body exceeds the preview byte limit");
+        return;
+      }
+      const css = buf.toString("utf8");
       headers["cache-control"] = "no-store";
       // Set-Cookie must be registered before writeHead; after it Node throws
       // ERR_HTTP_HEADERS_SENT and the outer catch would append an error body.
@@ -753,12 +831,42 @@ export class PreviewHostServer {
       res.end();
       return;
     }
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    if (buf.length > MAX_RESPONSE_BYTES) {
-      res.destroy();
-      return;
+    // Everything else streams through untouched, capped by bytes: SSE,
+    // streaming SSR, long-poll and binaries stay live instead of buffering.
+    res.on("close", () => abortUpstream());
+    const streamed = await this.streamUpstreamBody(upstream, res);
+    if (!streamed) {
+      this.trace(`[proxy] ${method} ${finalTarget} -> destroyed (byte cap exceeded or upstream stream error)`);
     }
-    res.end(buf);
+  }
+
+  /** Pipe the upstream body to the client with a hard byte cap. Returns false
+   * when the pipe was aborted (overflow or upstream error). */
+  private async streamUpstreamBody(upstream: Response, res: http.ServerResponse): Promise<boolean> {
+    if (!upstream.body) {
+      res.end();
+      return true;
+    }
+    const readable = Readable.fromWeb(upstream.body as never);
+    const cap = this.maxResponseBytes;
+    let sent = 0;
+    const counter = new Transform({
+      transform(chunk: Buffer, _enc, callback) {
+        sent += chunk.length;
+        if (sent > cap) {
+          callback(new Error("Preview proxy response byte limit exceeded"));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    try {
+      await pipeline(readable, counter, res);
+      return true;
+    } catch {
+      res.destroy();
+      return false;
+    }
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket): Promise<void> {
@@ -785,21 +893,28 @@ export class PreviewHostServer {
       socket.destroy();
       return;
     }
-    const host = parsedTarget.hostname;
-    const port = parsedTarget.port !== "" ? Number(parsedTarget.port) : 80;
-    const upstreamSocket = net.connect(port, host, () => {
-      // Dev servers (Next 16 `allowedDevOrigins`, and other dev cross-origin
-      // checks) reject WebSocket upgrades whose Origin differs from the
-      // upstream host. The browser can only send the preview origin here, so
-      // re-point it at the upstream, mirroring the HTTP proxy below.
-      const headers = [`${req.method} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (key === "host" || key === "origin") continue;
-        if (typeof value === "string") headers.push(`${key}: ${value}`);
-      }
-      headers.push(`Host: ${parsedTarget.host}`);
-      headers.push(`Origin: ${parsedTarget.origin}`);
-      upstreamSocket.write(headers.join("\r\n") + "\r\n\r\n");
+    const isTls = parsedTarget.protocol === "https:";
+    const defaultPort = isTls ? 443 : 80;
+    // URL.hostname keeps IPv6 literals bracketed; connect() needs the bare
+    // address and the default port depends on the scheme.
+    const rawHostname =
+      parsedTarget.hostname.startsWith("[") && parsedTarget.hostname.endsWith("]")
+        ? parsedTarget.hostname.slice(1, -1)
+        : parsedTarget.hostname;
+    const port = parsedTarget.port !== "" ? Number(parsedTarget.port) : defaultPort;
+    this.trace(`[upgrade] ${parsedTarget.protocol}//${parsedTarget.host}${parsedTarget.pathname} -> ${isTls ? "tls" : "tcp"} connect to ${rawHostname}:${port}`);
+    const upstreamSocket: net.Socket = isTls
+      ? tls.connect({ port, host: rawHostname, servername: net.isIP(rawHostname) ? undefined : rawHostname }, () => {
+          this.writeUpgradeRequest(upstreamSocket, req, parsedTarget);
+        })
+      : net.connect({ port, host: rawHostname }, () => {
+          this.writeUpgradeRequest(upstreamSocket, req, parsedTarget);
+        });
+    // Fail fast when the upstream never completes the handshake.
+    upstreamSocket.setTimeout(WS_CONNECT_TIMEOUT_MS, () => {
+      this.trace(`[upgrade] connect timeout to ${rawHostname}:${port}`);
+      upstreamSocket.destroy();
+      socket.destroy();
     });
     let headerBuffer = Buffer.alloc(0);
     let headersForwarded = false;
@@ -809,11 +924,14 @@ export class PreviewHostServer {
         const idx = headerBuffer.indexOf("\r\n\r\n");
         if (idx === -1) return;
         const statusLine = headerBuffer.toString("latin1", 0, headerBuffer.indexOf("\r\n"));
-        if (!/101/.test(statusLine)) {
+        // Exact 101 response code: a loose /101/ test would also match ids or
+        // suffixes anywhere in the status line.
+        if (!/^HTTP\/[\d.]{1,8} 101\b/i.test(statusLine)) {
           socket.destroy();
           upstreamSocket.destroy();
           return;
         }
+        upstreamSocket.setTimeout(0);
         socket.write(headerBuffer);
         headersForwarded = true;
         return;
@@ -821,14 +939,41 @@ export class PreviewHostServer {
       socket.write(chunk);
     });
     socket.on("data", (chunk) => upstreamSocket.write(chunk));
+    this.upgradedSockets.add(socket);
     // Upgraded sockets may only signal a half-close ('end'): raw clients that
     // destroy their socket after a finished exchange never reach 'close' on
     // this side. Tear the relay down on either signal, in both directions.
-    upstreamSocket.on("close", () => socket.destroy());
-    upstreamSocket.on("end", () => socket.destroy());
-    socket.on("close", () => upstreamSocket.destroy());
+    const dropAndTearDown = () => {
+      this.upgradedSockets.delete(socket);
+      upstreamSocket.destroy();
+    };
+    upstreamSocket.on("close", dropAndTearDown);
+    upstreamSocket.on("end", dropAndTearDown);
+    socket.on("close", () => {
+      this.upgradedSockets.delete(socket);
+      upstreamSocket.destroy();
+    });
     socket.on("end", () => upstreamSocket.destroy());
     upstreamSocket.on("error", () => socket.destroy());
     socket.on("error", () => upstreamSocket.destroy());
+  }
+
+  /** Re-write the browser's WebSocket handshake for the upstream: dev servers
+   * reject upgrades whose Origin differs from the upstream host, and the
+   * browser can only send the preview origin here. Repeated (list-valued)
+   * headers such as Sec-WebSocket-Protocol are forwarded, not dropped. */
+  private writeUpgradeRequest(upstreamSocket: net.Socket, req: http.IncomingMessage, parsedTarget: URL): void {
+    const headers = [`${req.method ?? "GET"} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key === "host" || key === "origin") continue;
+      if (Array.isArray(value)) {
+        for (const item of value) if (item) headers.push(`${key}: ${item}`);
+      } else if (value) {
+        headers.push(`${key}: ${value}`);
+      }
+    }
+    headers.push(`Host: ${parsedTarget.host}`);
+    headers.push(`Origin: ${parsedTarget.origin}`);
+    upstreamSocket.write(headers.join("\r\n") + "\r\n\r\n");
   }
 }
