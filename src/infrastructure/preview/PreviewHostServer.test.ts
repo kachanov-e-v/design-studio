@@ -1,5 +1,7 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import * as http from "node:http";
+import * as net from "node:net";
+import type { Duplex } from "node:stream";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -56,6 +58,17 @@ beforeAll(async () => {
         res.writeHead(302, { Location: "/dashboard" });
         res.end("ok");
       });
+    } else if (p === "/api/logout" && req.method === "POST") {
+      res.setHeader("Set-Cookie", ["sid=abc; Max-Age=0"]);
+      res.writeHead(200);
+      res.end("bye");
+    } else if (p === "/ext-redirect") {
+      res.writeHead(302, { Location: "http://example.org/next" });
+      res.end();
+    } else if (p === "/loop-redirect") {
+      const port = new URL(stubOrigin).port;
+      res.writeHead(302, { Location: `http://localhost:${port}/after-loop-redirect` });
+      res.end();
     } else {
       res.writeHead(404);
       res.end("nf");
@@ -193,6 +206,72 @@ describe("PreviewHostServer", () => {
     expect(res.status).toBe(400);
   });
 
+  it("blocks non-loopback proxy targets before any network request (SSRF)", async () => {
+    const meta = await get(`${server.origin}/proxy/http://169.254.169.254/latest/meta-data/`);
+    expect(meta.status).toBe(403);
+    const lan = await get(`${server.origin}/proxy/http://192.168.1.5:3000/`);
+    expect(lan.status).toBe(403);
+    const external = await get(`${server.origin}/proxy/http://example.org/`);
+    expect(external.status).toBe(403);
+    const userinfo = await get(`${server.origin}/proxy/http://user:pw@127.0.0.1:9/`);
+    expect(userinfo.status).toBe(403);
+  });
+
+  it("still allows loopback addresses outside the common pair", async () => {
+    const v6 = await get(`${server.origin}/proxy/http://[::1]:9/`);
+    expect(v6.status).toBe(502);
+    const range = await get(`${server.origin}/proxy/http://127.9.9.9:9/`);
+    expect(range.status).toBe(502);
+  });
+
+  it("leaves external (non-loopback) redirect Location untouched so the browser follows it natively", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/ext-redirect`);
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe("http://example.org/next");
+  });
+
+  it("routes cross-origin loopback redirect Location back through the proxy path", async () => {
+    const port = new URL(stubOrigin).port;
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/loop-redirect`);
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe(`/proxy/http/localhost:${port}/after-loop-redirect`);
+  });
+
+  it("rejects non-loopback sticky dev targets", async () => {
+    const denied = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await denied.start();
+    try {
+      denied.setDevTarget("http://169.254.169.254:80");
+      const res = await get(`${denied.origin}/dashboard`);
+      expect(res.status).toBe(404);
+    } finally {
+      await denied.stop();
+    }
+  });
+
+  it("destroys WebSocket upgrades toward non-loopback targets", async () => {
+    const port = Number(new URL(server.origin).port);
+    await new Promise<void>((resolve) => {
+      const socket = net.connect(port, "127.0.0.1");
+      let closed = false;
+      const done = () => {
+        if (!closed) {
+          closed = true;
+          socket.destroy();
+          resolve();
+        }
+      };
+      socket.on("connect", () => {
+        socket.write(
+          "GET /proxy/http://example.com/ws HTTP/1.1\r\nHost: preview\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+        );
+      });
+      socket.on("close", done);
+      socket.on("error", done);
+      setTimeout(done, 3000);
+    });
+  });
+
   it("returns 502 when the target is unreachable", async () => {
     const res = await get(`${server.origin}/proxy/http://127.0.0.1:9/`);
     expect(res.status).toBe(502);
@@ -227,6 +306,56 @@ describe("PreviewHostServer", () => {
   it("still rejects POST to non-proxy paths", async () => {
     const res = await request(`${server.origin}/demo.html`, { method: "POST", body: "x" });
     expect(res.status).toBe(405);
+  });
+
+  it("keeps the upstream session in the host-side cookie jar across navigations", async () => {
+    await request(`${server.origin}/proxy/${stubOrigin}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.origin },
+      body: JSON.stringify({ user: "u", pass: "p" }),
+    });
+    // No browser cookie header at all — the jar must supply the session.
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+    const echo = JSON.parse(res.body) as { cookie: string | null };
+    expect(echo.cookie).toContain("sid=abc");
+    expect(echo.cookie).toContain("other=1");
+  });
+
+  it("deletes expired cookies from the jar", async () => {
+    await request(`${server.origin}/proxy/${stubOrigin}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: server.origin },
+      body: JSON.stringify({ user: "u", pass: "p" }),
+    });
+    await request(`${server.origin}/proxy/${stubOrigin}/api/logout`, {
+      method: "POST",
+      headers: { Origin: server.origin },
+    });
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+    const echo = JSON.parse(res.body) as { cookie: string | null };
+    expect(echo.cookie).not.toContain("sid=");
+  });
+
+  it("clears the cookie jar when the dev target changes", async () => {
+    const jarServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await jarServer.start();
+    try {
+      const origin = stubOrigin.replace("127.0.0.1", "localhost");
+      jarServer.setDevTarget(origin);
+      await request(`${jarServer.origin}/proxy/${stubOrigin}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: jarServer.origin },
+        body: JSON.stringify({ user: "u", pass: "p" }),
+      });
+      const before = await request(`${jarServer.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(before.body) as { cookie: string | null }).cookie).toContain("sid=abc");
+
+      jarServer.setDevTarget("http://localhost:9");
+      const after = await request(`${jarServer.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(after.body) as { cookie: string | null }).cookie).toBeNull();
+    } finally {
+      await jarServer.stop();
+    }
   });
 
   it("proxies bare SPA paths via the Referer fallback (RSC fetch, hard redirects)", async () => {
@@ -315,6 +444,26 @@ describe("PreviewHostServer", () => {
     }
   });
 
+  it("resolveProjectPath blocks symlink escapes out of the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-sym-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ds-sym-out-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "no");
+    let linkCreated = false;
+    try {
+      fs.symlinkSync(outside, path.join(projectRoot, "link"), process.platform === "win32" ? "junction" : "dir");
+      linkCreated = true;
+    } catch {
+      // No symlink privileges in this environment; the lexical checks are still covered.
+    }
+    if (linkCreated) {
+      const escaped = resolveProjectPath(projectRoot, "link/secret.txt");
+      expect(escaped).toMatchObject({ ok: false, reason: "forbidden" });
+      const nested = resolveProjectPath(projectRoot, "link/deep/secret.txt");
+      expect(nested).toMatchObject({ ok: false, reason: "forbidden" });
+    }
+    expect(resolveProjectPath(projectRoot, "secret.txt")).toMatchObject({ ok: true });
+  });
+
   it("resolveProjectPath rejects escaping paths and accepts project files", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-jail-"));
     fs.writeFileSync(path.join(projectRoot, "index.html"), "<html></html>");
@@ -329,5 +478,64 @@ describe("PreviewHostServer", () => {
     expect(resolveProjectPath(projectRoot, escapeEncoded)).toMatchObject({ ok: false, reason: "forbidden" });
     expect(resolveProjectPath(projectRoot, "%2E%2E%2Fetc")).toMatchObject({ ok: false, reason: "forbidden" });
     expect(resolveProjectPath(projectRoot, "a%ZZb")).toMatchObject({ ok: false, reason: "encoding" });
+  });
+
+  it("rewrites the Origin header of WebSocket upgrades to the upstream origin", async () => {
+    const stubPort = new URL(stubOrigin).port;
+    let upstreamEcho: Duplex | null = null;
+    stubServer.on("upgrade", (req, socket) => {
+      upstreamEcho = socket;
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+      );
+      const origin = String(req.headers["origin"] ?? "");
+      const payload = Buffer.from(origin, "utf8");
+      const frame = Buffer.alloc(2 + payload.length);
+      frame[0] = 0x81;
+      frame[1] = payload.length;
+      payload.copy(frame, 2);
+      socket.write(frame);
+    });
+    const previewPort = new URL(server.origin).port;
+    const raw = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(Number(previewPort), "127.0.0.1", () => {
+        sock.write(
+          `GET /proxy/http://127.0.0.1:${stubPort}/_next/hmr?id=ws-test HTTP/1.1\r\n` +
+            `Host: 127.0.0.1:${previewPort}\r\n` +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+            "Sec-WebSocket-Version: 13\r\n" +
+            "Origin: http://127.0.0.1:1\r\n" +
+            "\r\n"
+        );
+      });
+      let data = Buffer.alloc(0);
+      const timer = setTimeout(() => {
+        sock.destroy();
+        reject(new Error("WebSocket upgrade timed out"));
+      }, 5000);
+      sock.on("data", (c: Buffer) => {
+        data = Buffer.concat([data, c]);
+        if (data.includes("\r\n\r\n")) {
+          clearTimeout(timer);
+          sock.destroy();
+          resolve(data.toString("latin1"));
+        }
+      });
+      sock.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+    const statusLine = raw.split("\r\n")[0];
+    expect(statusLine).toContain("101");
+    const frame = raw.slice(raw.indexOf("\r\n\r\n") + 4);
+    // The upstream must have seen the stub origin, not the preview origin.
+    expect(frame.slice(2, 2 + stubOrigin.length)).toBe(stubOrigin);
+    // Tear down the half-open upstream side deterministically; leaving it to
+    // TCP half-close handling would keep the stub server's sockets open.
+    (upstreamEcho as Duplex | null)?.destroy();
+    await new Promise<void>((r) => setTimeout(r, 50));
   });
 });

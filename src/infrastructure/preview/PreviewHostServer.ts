@@ -2,12 +2,28 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets } from "./proxy-html";
+import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
+import { validateUpstreamTarget } from "./upstream-validation";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Host-side cookie jar for the upstream application.
+ *
+ * The preview page is a cross-site iframe inside a VS Code webview, so browser
+ * cookie storage cannot be relied on to keep the app session alive (SameSite,
+ * partitioned/third-party cookie policies). Cookies received from the dev
+ * server are stored here and re-attached to every proxied request, so
+ * authorization survives navigation inside the preview session.
+ */
+interface JarCookie {
+  value: string;
+  /** Epoch ms, or null for session cookies. */
+  expiresAt: number | null;
+}
 
 /** Scope upstream cookies to the local preview origin so app sessions survive navigation. */
 function rewriteSetCookieForPreview(cookie: string): string {
@@ -91,7 +107,12 @@ export type ProjectPathResolution =
   | { ok: true; filePath: string }
   | { ok: false; reason: "forbidden" | "encoding" };
 
-/** Resolve a project-relative request path inside the project root jail. */
+/**
+ * Resolve a project-relative request path inside the project root jail.
+ * The canonical check re-resolves the deepest existing ancestor through the
+ * filesystem, so a symlink/junction inside the workspace cannot redirect the
+ * read outside the jail.
+ */
 export function resolveProjectPath(projectRoot: string, relativePathRaw: string): ProjectPathResolution {
   let relativePath: string;
   try {
@@ -105,7 +126,33 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     return { ok: false, reason: "forbidden" };
   }
-  return { ok: true, filePath: resolved };
+  let rootReal: string;
+  try {
+    rootReal = fs.realpathSync(rootResolved);
+  } catch {
+    return { ok: false, reason: "forbidden" };
+  }
+  let existing = resolved;
+  let real: string;
+  for (;;) {
+    try {
+      real = fs.realpathSync(existing);
+      break;
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return { ok: false, reason: "forbidden" };
+      existing = parent;
+    }
+  }
+  const realRel = path.relative(rootReal, real);
+  const tail = path.relative(existing, resolved);
+  const escapedReal = realRel !== "" && (path.isAbsolute(realRel) || realRel.replace(/\\/g, "/").startsWith("../"));
+  if (escapedReal || (realRel === "" && !tail)) {
+    return { ok: false, reason: "forbidden" };
+  }
+  // Everything between `existing` and `resolved` is plain path segments below
+  // the verified ancestor, so joining them onto the canonical ancestor is safe.
+  return { ok: true, filePath: tail ? path.join(real, tail) : real };
 }
 
 export class PreviewHostServer {
@@ -128,19 +175,30 @@ export class PreviewHostServer {
   }
 
   private devTarget: string | null = null;
+  private cookieJar = new Map<string, JarCookie>();
 
   /** Sticky dev-server target lets app routes stay at the preview origin's root. */
   setDevTarget(target: string | null): void {
+    const previous = this.devTarget;
     if (!target) {
       this.devTarget = null;
+      this.cookieJar.clear();
       return;
     }
     try {
       const parsed = new URL(target);
-      this.devTarget = parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : null;
+      if ((parsed.protocol === "http:" || parsed.protocol === "https:") && validateUpstreamTarget(parsed).ok) {
+        this.devTarget = parsed.origin;
+        // A different upstream starts a fresh preview session: drop its cookies.
+        if (previous !== this.devTarget) this.cookieJar.clear();
+        return;
+      }
     } catch {
-      this.devTarget = null;
+      // fall through to rejection
     }
+    this.trace(`[dev-target] rejected non-loopback or invalid target: ${target}`);
+    this.devTarget = null;
+    this.cookieJar.clear();
   }
 
   /** Target of an explicit proxy route, referer-based request, or app route. */
@@ -397,7 +455,69 @@ export class PreviewHostServer {
         // keep as-is
       }
     }
+    const jarCookieHeader = this.buildCookieHeader(headers["cookie"]);
+    if (jarCookieHeader) headers["cookie"] = jarCookieHeader;
     return headers;
+  }
+
+  private buildCookieHeader(browserCookie: string | undefined): string | undefined {
+    if (this.cookieJar.size === 0) return browserCookie;
+    const cookies = new Map<string, string>();
+    for (const pair of (browserCookie ?? "").split(";")) {
+      const eq = pair.indexOf("=");
+      if (eq === -1) continue;
+      const name = pair.slice(0, eq).trim();
+      if (name) cookies.set(name, pair.slice(eq + 1).trim());
+    }
+    const now = Date.now();
+    for (const [name, entry] of this.cookieJar) {
+      if (entry.expiresAt !== null && entry.expiresAt <= now) {
+        this.cookieJar.delete(name);
+        continue;
+      }
+      cookies.set(name, entry.value);
+    }
+    if (cookies.size === 0) return undefined;
+    return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
+  }
+
+  private rememberSetCookie(rawCookie: string): void {
+    const eq = rawCookie.indexOf("=");
+    const semi = rawCookie.indexOf(";");
+    if (eq === -1) return;
+    const name = rawCookie.slice(0, eq).trim();
+    if (!name) return;
+    const valueEnd = semi === -1 ? rawCookie.length : semi;
+    const value = rawCookie.slice(eq + 1, valueEnd).trim();
+    const attributes = rawCookie.slice(valueEnd);
+    let expiresAt: number | null = null;
+    const maxAge = /max-age\s*=\s*(-?\d+)/i.exec(attributes);
+    if (maxAge) {
+      const seconds = Number(maxAge[1]);
+      if (seconds <= 0) {
+        this.cookieJar.delete(name);
+        return;
+      }
+      expiresAt = Date.now() + seconds * 1000;
+    } else {
+      const expires = /expires\s*=\s*([^;]+)/i.exec(attributes);
+      if (expires) {
+        const parsed = Date.parse(expires[1].trim());
+        if (Number.isNaN(parsed)) {
+          expiresAt = null;
+        } else if (parsed <= Date.now()) {
+          this.cookieJar.delete(name);
+          return;
+        } else {
+          expiresAt = parsed;
+        }
+      }
+    }
+    this.cookieJar.set(name, { value, expiresAt });
+  }
+
+  private rememberSetCookies(cookies: string[]): void {
+    for (const cookie of cookies) this.rememberSetCookie(cookie);
   }
 
   private async fetchWithFallbacks(
@@ -429,13 +549,23 @@ export class PreviewHostServer {
     return { upstream: null, errors };
   }
 
-  /** Rewrite a 3xx Location so the browser stays on the preview origin. */
+  /** Rewrite a 3xx Location so the browser stays on this origin. Cross-origin
+   * hops are routed back through the proxy path (re-validated there) instead of
+   * being handed to the browser as a raw external URL. */
   private rewriteLocation(location: string | undefined, target: URL): string | undefined {
     if (!location) return undefined;
     try {
       const u = new URL(location, target);
       if (u.protocol !== "http:" && u.protocol !== "https:") return location;
-      if (u.origin !== target.origin) return u.toString();
+      if (u.origin !== target.origin) {
+        // Cross-origin redirects stay inside the preview only when the target
+        // is another loopback server. External locations (e.g. OAuth providers)
+        // are left untouched: the browser follows them natively and the app's
+        // callback returns to the local origin afterwards. Rewriting them into
+        // proxy routes would trip the SSRF gate and render a raw 403 page.
+        if (!validateUpstreamTarget(u).ok) return location;
+        return proxyPathFor(u.toString());
+      }
       return `${this.origin}${u.pathname}${u.search}${u.hash}`;
     } catch {
       return location;
@@ -453,7 +583,10 @@ export class PreviewHostServer {
       if (url.origin === target.origin) {
         return `${url.pathname}${url.search}${url.hash}${navigationMode}`;
       }
-      return `${url.toString()}${navigationMode}`;
+      // External (non-loopback) action redirects navigate the frame natively;
+      // see rewriteLocation for the policy.
+      if (!validateUpstreamTarget(url).ok) return value;
+      return `${proxyPathFor(url.toString())}${navigationMode}`;
     } catch {
       return value;
     }
@@ -464,6 +597,18 @@ export class PreviewHostServer {
     if (!target) {
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Invalid proxy target");
+      return;
+    }
+    // SSRF gate: only loopback upstreams are ever fetched, no matter how the
+    // target arrived (explicit proxy route, Referer, sticky dev target).
+    const validation = validateUpstreamTarget(target);
+    if (!validation.ok) {
+      this.trace(`[proxy] blocked ${validation.reason} target: ${target}`);
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(
+        `Destination not supported in preview (${validation.reason}): ${target}\n` +
+        "Design Studio proxies only local (loopback) dev servers. External services reached via redirect open outside the preview frame."
+      );
       return;
     }
     const method = req.method === "HEAD" ? "HEAD" : (req.method ?? "GET");
@@ -498,13 +643,15 @@ export class PreviewHostServer {
         headers[key] = value;
       }
     });
-    // Forward the full cookie list (forEach collapses multiple Set-Cookie headers).
+    // Remember the app session in the host-side jar: browser cookie storage is
+    // unreliable for a cross-site iframe inside a VS Code webview.
     const upstreamCookies =
       typeof upstream.headers.getSetCookie === "function"
         ? upstream.headers.getSetCookie()
         : upstream.headers.get("set-cookie")
           ? [upstream.headers.get("set-cookie")!]
           : [];
+    this.rememberSetCookies(upstreamCookies);
     const setCookies = upstreamCookies.map(rewriteSetCookieForPreview);
     delete headers["set-cookie"];
 
@@ -589,15 +736,26 @@ export class PreviewHostServer {
       socket.destroy();
       return;
     }
+    // SSRF gate for WebSocket upgrades as well.
+    if (!validateUpstreamTarget(parsedTarget).ok) {
+      this.trace(`[upgrade] blocked non-loopback target: ${target}`);
+      socket.destroy();
+      return;
+    }
     const host = parsedTarget.hostname;
     const port = parsedTarget.port !== "" ? Number(parsedTarget.port) : 80;
     const upstreamSocket = net.connect(port, host, () => {
+      // Dev servers (Next 16 `allowedDevOrigins`, and other dev cross-origin
+      // checks) reject WebSocket upgrades whose Origin differs from the
+      // upstream host. The browser can only send the preview origin here, so
+      // re-point it at the upstream, mirroring the HTTP proxy below.
       const headers = [`${req.method} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
       for (const [key, value] of Object.entries(req.headers)) {
-        if (key === "host") continue;
+        if (key === "host" || key === "origin") continue;
         if (typeof value === "string") headers.push(`${key}: ${value}`);
       }
       headers.push(`Host: ${parsedTarget.host}`);
+      headers.push(`Origin: ${parsedTarget.origin}`);
       upstreamSocket.write(headers.join("\r\n") + "\r\n\r\n");
     });
     let headerBuffer = Buffer.alloc(0);
@@ -620,8 +778,13 @@ export class PreviewHostServer {
       socket.write(chunk);
     });
     socket.on("data", (chunk) => upstreamSocket.write(chunk));
+    // Upgraded sockets may only signal a half-close ('end'): raw clients that
+    // destroy their socket after a finished exchange never reach 'close' on
+    // this side. Tear the relay down on either signal, in both directions.
     upstreamSocket.on("close", () => socket.destroy());
+    upstreamSocket.on("end", () => socket.destroy());
     socket.on("close", () => upstreamSocket.destroy());
+    socket.on("end", () => upstreamSocket.destroy());
     upstreamSocket.on("error", () => socket.destroy());
     socket.on("error", () => upstreamSocket.destroy());
   }
