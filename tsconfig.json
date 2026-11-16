@@ -1,21 +1,10 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "react-jsx",
-    "types": ["node", "vitest/globals"],
-    "paths": {
-      "@design-studio/preview-runtime/*": ["./packages/preview-runtime/src/*"],
-      "@design-studio/shared/*": ["./src/shared/*"]
-    }
-  },
-  "include": ["src", "webview", "packages", "vite.config.ts", "vitest.config.ts"]
+  // P3-3: solution-style root. Real typechecks are split by runtime:
+  //  - tsconfig.extension.json (Node extension host, src/**, build scripts)
+  //  - tsconfig.webview.json   (browser webview + page runtime, DOM lib)
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.extension.json" },
+    { "path": "./tsconfig.webview.json" }
+  ]
 }

@@ -37,13 +37,13 @@
   },
   "scripts": {
     "build": "npm run build:ext && npm run build:runtime && npm run copy:runtime && npm run build:webview && npm run inline:demo && npm run verify:build",
-    "build:ext": "esbuild ./src/extension/extension.ts --bundle --platform=node --outfile=./dist/extension.js --external:vscode --format=cjs --sourcemap",
+    "build:ext": "esbuild ./src/extension/extension.ts --bundle --platform=node --outfile=./dist/extension.js --external:vscode --format=cjs --sourcemap --alias:@design-studio/preview-runtime=./packages/preview-runtime/src --alias:@design-studio/shared=./src/shared",
     "build:runtime": "npm --prefix packages/preview-runtime run build",
     "copy:runtime": "node scripts/copy-runtime.js",
     "build:webview": "vite build",
     "inline:demo": "node scripts/inline-demo-runtime.js",
     "verify:build": "node scripts/verify-build.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.extension.json && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src webview packages/preview-runtime/src scripts",
     "test": "vitest run",
     "dev:webview": "vite"
@@ -66,5 +66,8 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^16.5.0",
     "typescript-eslint": "^8.73.0"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

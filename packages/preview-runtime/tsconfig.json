@@ -9,5 +9,8 @@
     "lib": ["DOM", "DOM.Iterable", "ES2020"],
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // P3-3: tests run through vitest from the workspace root; they must not
+  // land in the published dist type surface.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
