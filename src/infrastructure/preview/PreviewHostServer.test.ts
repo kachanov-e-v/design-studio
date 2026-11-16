@@ -909,3 +909,69 @@ describe("PreviewHostServer", () => {
     await new Promise<void>((r) => setTimeout(r, 50));
   });
 });
+
+describe("P2-14: static project file serving (Range, MIME types)", () => {
+  let projectServer: PreviewHostServer;
+  let origin = "";
+  const data = Buffer.from("0123456789".repeat(100)); // 1000 bytes
+
+  let projectRootTmp = "";
+
+  beforeAll(async () => {
+    projectRootTmp = fs.mkdtempSync(path.join(os.tmpdir(), "ds-range-"));
+    fs.writeFileSync(path.join(projectRootTmp, "video.bin"), data);
+    projectServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot(), projectRoot: projectRootTmp });
+    await projectServer.start();
+    origin = projectServer.origin;
+  });
+
+  afterAll(async () => {
+    await projectServer.stop();
+  });
+  it("P2-14: knows modern media/font/sourcemap MIME types", async () => {
+    fs.writeFileSync(path.join(projectRootTmp, "video.mp4"), new Uint8Array(8));
+    fs.writeFileSync(path.join(projectRootTmp, "font.otf"), new Uint8Array(8));
+    expect((await get(`${origin}/project/video.mp4`)).headers["content-type"]).toBe("video/mp4");
+    expect((await get(`${origin}/project/font.otf`)).headers["content-type"]).toBe("font/otf");
+  });
+
+  async function getRange(url: string, range: string): Promise<{ status: number; body: string; headers: Record<string, string> }> {
+    return request(url, { headers: { Range: range } });
+  }
+
+  it("answers 206 with Content-Range for a byte range", async () => {
+    const res = await getRange(`${origin}/project/video.bin`, "bytes=0-9");
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 0-9/${data.length}`);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers["content-length"]).toBe("10");
+    expect(res.body).toBe("0123456789");
+  });
+
+  it("supports an open-ended range", async () => {
+    const res = await getRange(`${origin}/project/video.bin`, "bytes=995-");
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 995-999/${data.length}`);
+    expect(res.body).toHaveLength(5);
+  });
+
+  it("supports a suffix range", async () => {
+    const res = await getRange(`${origin}/project/video.bin`, "bytes=-10");
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 990-999/${data.length}`);
+    expect(res.body).toHaveLength(10);
+  });
+
+  it("answers 416 for a range beyond EOF", async () => {
+    const res = await getRange(`${origin}/project/video.bin`, "bytes=5000-");
+    expect(res.status).toBe(416);
+    expect(res.headers["content-range"]).toBe(`bytes */${data.length}`);
+  });
+
+  it("serves a full file with Accept-Ranges and correct length", async () => {
+    const res = await get(`${origin}/project/video.bin`);
+    expect(res.status).toBe(200);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers["content-length"]).toBe(String(data.length));
+  });
+});

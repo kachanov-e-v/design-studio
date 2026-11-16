@@ -125,7 +125,46 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".map": "application/json",
+  ".avif": "image/avif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".otf": "font/otf",
+  ".eot": "application/vnd.ms-fontobject",
 };
+
+/**
+ * P2-14: parse a single-range `Range: bytes=...` header against a total size.
+ * Returns [start, end] (inclusive), "invalid" for unsatisfiable/unsupported
+ * ranges (e.g. start >= total, malformed units), or null when the header is
+ * absent or uses a multi-range form the server does not serve.
+ */
+export function parseByteRange(header: string, total: number): [number, number] | "invalid" | null {
+  if (!header.startsWith("bytes=")) return null;
+  const spec = header.slice("bytes=".length).trim();
+  if (spec.includes(",")) return null; // multi-range requests are not served
+  const match = /^(\d*)-(\d*)$/.exec(spec);
+  if (!match) return "invalid";
+  const [, startRaw, endRaw] = match;
+  if (startRaw === "" && endRaw === "") return "invalid";
+  let start: number;
+  let end: number;
+  if (startRaw === "") {
+    // suffix form: last N bytes
+    const suffix = Number(endRaw);
+    if (!Number.isInteger(suffix) || suffix === 0) return "invalid";
+    start = Math.max(0, total - suffix);
+    end = total - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw === "" ? total - 1 : Math.min(Number(endRaw), total - 1);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return "invalid";
+    if (start > end) return "invalid";
+  }
+  if (start >= total || start < 0 || end < 0) return "invalid";
+  return [start, end];
+}
 
 export type ProjectPathResolution =
   | { ok: true; filePath: string }
@@ -375,11 +414,11 @@ export class PreviewHostServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  private serveFile(res: http.ServerResponse, fileName: string, contentType: string): void {
+  private async serveFile(res: http.ServerResponse, fileName: string, contentType: string): Promise<void> {
     const filePath = path.join(this.webviewRoot, fileName);
     let content: Buffer;
     try {
-      content = fs.readFileSync(filePath);
+      content = await fs.promises.readFile(filePath);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Missing file: ${fileName}. Run npm run build.`);
@@ -451,11 +490,11 @@ export class PreviewHostServer {
     }
 
     if (urlPath === "/demo.html") {
-      this.serveFile(res, "demo.html", "text/html; charset=utf-8");
+      await this.serveFile(res, "demo.html", "text/html; charset=utf-8");
       return;
     }
     if (urlPath === "/__ds-runtime.js") {
-      this.serveFile(res, "runtime.js", "application/javascript; charset=utf-8");
+      await this.serveFile(res, "runtime.js", "application/javascript; charset=utf-8");
       return;
     }
     if (urlPath === "/__ds-sw.js") {
@@ -468,11 +507,11 @@ export class PreviewHostServer {
       return;
     }
     if (urlPath === "/project/" || urlPath === "/project") {
-      this.handleProjectFile(res, "");
+      await this.handleProjectFile(req, res, "");
       return;
     }
     if (urlPath.startsWith("/project/")) {
-      this.handleProjectFile(res, urlPath.slice("/project/".length));
+      await this.handleProjectFile(req, res, urlPath.slice("/project/".length));
       return;
     }
     // The project is hosted on bare paths so client-side routers see the real
@@ -487,7 +526,7 @@ export class PreviewHostServer {
     res.end("Not found");
   }
 
-  private handleProjectFile(res: http.ServerResponse, relativePathRaw: string): void {
+  private async handleProjectFile(req: http.IncomingMessage, res: http.ServerResponse, relativePathRaw: string): Promise<void> {
     if (!this.projectRoot) {
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("No project bound to preview host");
@@ -502,23 +541,25 @@ export class PreviewHostServer {
     const resolved = resolution.filePath;
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(resolved);
-      if (stat.isDirectory()) {
-        const index = path.join(resolved, "index.html");
-        if (fs.existsSync(index)) {
-          this.serveProjectPath(res, index);
-          return;
-        }
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Directory has no index.html");
-        return;
-      }
+      stat = await fs.promises.stat(resolved);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not found in project: ${relativePathRaw}`);
       return;
     }
-    this.serveProjectPath(res, resolved);
+    if (stat.isDirectory()) {
+      const index = path.join(resolved, "index.html");
+      try {
+        await fs.promises.access(index);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Directory has no index.html");
+        return;
+      }
+      await this.serveProjectPath(req, res, index);
+      return;
+    }
+    await this.serveProjectPath(req, res, resolved);
   }
   /** The document URL prefix for /project/ pages: origin + /project/ + page directory. */
   private projectBaseHrefFor(filePath: string): string {
@@ -530,10 +571,10 @@ export class PreviewHostServer {
     return `${this.origin}/project/${encoded ? `${encoded}/` : ""}`;
   }
 
-  private serveProjectPath(res: http.ServerResponse, filePath: string): void {
+  private async serveProjectPath(req: http.IncomingMessage, res: http.ServerResponse, filePath: string): Promise<void> {
     let content: Buffer;
     try {
-      content = fs.readFileSync(filePath);
+      content = await fs.promises.readFile(filePath);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not found in project: ${this.projectRoot ? path.relative(this.projectRoot, filePath) : filePath}`);
@@ -563,7 +604,29 @@ export class PreviewHostServer {
       res.end(rewritten);
       return;
     }
-    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+    // P2-14: byte ranges (video/audio seeking) for the remaining static files.
+    const rangeHeader = req.headers.range;
+    if (typeof rangeHeader === "string" && rangeHeader.startsWith("bytes=")) {
+      const servedRange = parseByteRange(rangeHeader, content.length);
+      if (servedRange === "invalid") {
+        res.writeHead(416, { "Content-Type": "text/plain; charset=utf-8", "Content-Range": `bytes */${content.length}` });
+        res.end("Requested range not satisfiable");
+        return;
+      }
+      if (servedRange) {
+        const [start, end] = servedRange;
+        res.writeHead(206, {
+          "Content-Type": contentType,
+          "Cache-Control": "no-store",
+          "Accept-Ranges": "bytes",
+          "Content-Range": `bytes ${start}-${end}/${content.length}`,
+          "Content-Length": String(end - start + 1),
+        });
+        res.end(content.subarray(start, end + 1));
+        return;
+      }
+    }
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store", "Accept-Ranges": "bytes", "Content-Length": String(content.length) });
     res.end(content);
   }
 
