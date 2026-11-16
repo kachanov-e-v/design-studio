@@ -82,7 +82,8 @@ describe("contextToPrompt", () => {
     expect(prompt).toContain(".email-field");
     expect(prompt).toContain("_next/static/css/app.css");
     expect(prompt).toContain("app/login/page.tsx:5");
-    expect(prompt).toContain("Пожелание пользователя: Сделай border 1px этому элементу.");
+    expect(prompt).toContain("## Пожелание пользователя");
+    expect(prompt).toContain("Сделай border 1px этому элементу.");
   });
 
   it("adds attributes, edit lines for attribute changes", async () => {
@@ -98,25 +99,28 @@ describe("contextToPrompt", () => {
     expect(editsPrompt).toContain('"Email" → "Ваш e-mail"');
   });
 
-  it("adds Component and Owner chain lines from components", async () => {
+  it("adds Component, owner chain and ancestor file lines", async () => {
     const ctx = toSelectionContext({
       ...payload,
       component: [
         { name: "EmailField", file: "src/components/EmailField.tsx", line: 42 },
-        { name: "LoginForm" },
+        { name: "LoginForm", file: "src/components/LoginForm.tsx", line: 7 },
         { name: "LoginPage" },
       ],
     } as never, []);
     const prompt = contextToPrompt(ctx, "Сделай border 1px этому элементу.");
-    expect(prompt).toContain("Компонент React: EmailField — src/components/EmailField.tsx:42");
-    expect(prompt).toContain("Цепочка компонентов: EmailField > LoginForm > LoginPage");
+    expect(prompt).toContain("Компонент: EmailField — src/components/EmailField.tsx:42");
+    expect(prompt).toContain("Цепочка владения: EmailField > LoginForm > LoginPage");
+    expect(prompt).toContain("LoginForm — src/components/LoginForm.tsx:7");
   });
 
   it("omits optional sections when data is missing", async () => {
     const ctx = toSelectionContext({ selector: "p", tag: "p", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} } as never, []);
     const prompt = contextToPrompt(ctx, "make it red");
-    expect(prompt).toContain("Выбранный элемент: p (p)");
+    expect(prompt).toContain("Элемент: p (селектор: p)");
+    expect(prompt).toContain("Правки в редакторе: нет");
     expect(prompt).not.toContain("Tailwind CSS обнаружен");
+    expect(prompt).not.toContain("Вычисленные стили");
     expect(prompt).not.toContain("Возможные исходные файлы");
   });
 });
