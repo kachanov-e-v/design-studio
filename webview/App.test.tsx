@@ -29,7 +29,7 @@ describe("App session edit journal across navigation (WV-01)", () => {
 
   beforeEach(() => {
     posted = [];
-    vi.spyOn(crypto, "randomUUID").mockReturnValue(SESSION);
+    vi.spyOn(crypto, "randomUUID").mockReturnValue(SESSION as `${string}-${string}-${string}-${string}-${string}`);
     (window as unknown as { acquireVsCodeApi?: () => unknown }).acquireVsCodeApi = () => ({
       postMessage: (msg: unknown) => posted.push(msg),
     });

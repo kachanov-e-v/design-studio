@@ -75,7 +75,7 @@ describe("PreviewContainer address freshness (WV-02)", () => {
 
   it("uses the latest devServer even when the url is unchanged", async () => {
     const { PROTOCOL_VERSION } = await import("@design-studio/preview-runtime/protocol");
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("fixed-session-id");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("fixed-session-id" as `${string}-${string}-${string}-${string}-${string}`);
     const props = {
       status: "devserver",
       language: "ru" as const,

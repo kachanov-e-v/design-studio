@@ -47,7 +47,7 @@ export function buildStylePersistMessage(edit: StylePersistEdit): StylePersistMe
  */
 export function ackPendingStyles(
   pending: PendingStyleEdit[],
-  result: { success?: boolean; requestId?: string }
+  result: { success?: boolean; requestId?: string; message?: string }
 ): PendingStyleEdit[] {
   if (!result.success) return pending;
   if (typeof result.requestId !== "string" || result.requestId.length === 0) return pending;
