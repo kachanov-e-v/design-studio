@@ -41,18 +41,30 @@ vi.mock("vscode", () => {
   };
 });
 
-vi.mock("../../infrastructure/preview/PreviewHostServer", () => ({
-  PreviewHostServer: class {
+vi.mock("../../infrastructure/preview/PreviewHostServer", () => {
+  const instances: any[] = [];
+  const PreviewHostServer = class {
+    static instances = instances;
     running = true;
-    origin = "http://127.0.0.1:59999";
-    async start() {
-      return 59999;
-    }
-    async stop() {}
+    port = 0;
+    start = vi.fn(async () => {
+      this.port = 59999 + instances.length;
+      return this.port;
+    });
+    stop = vi.fn(async () => {
+      this.running = false;
+    });
     setProjectRoot() {}
     setDevTarget() {}
-  },
-}));
+    get origin() {
+      return `http://127.0.0.1:${this.port}`;
+    }
+    constructor() {
+      instances.push(this);
+    }
+  };
+  return { PreviewHostServer };
+});
 
 vi.mock("../../infrastructure/persistence/StylePersistenceAdapter", () => ({
   StylePersistenceAdapter: class {
@@ -186,6 +198,48 @@ describe("style:persist extension handler (webview -> extension integration)", (
     const last = lastMessage();
     expect(last.type).toBe("persist:result");
     expect(last.requestId).toBe("req-42");
+  });
+
+  // P1-2: closing the (single) panel must stop the preview host and wipe its
+  // session; reopening must start a fresh server, not resurrect the old one.
+  it("P1-2: panel disposal stops the host and reopening starts a fresh one", async () => {
+    const { PreviewHostServer } = (await import("../../infrastructure/preview/PreviewHostServer")) as any;
+    PreviewHostServer.instances.length = 0;
+    const ctx = makeContext();
+    await openDesignStudio(ctx);
+    expect(PreviewHostServer.instances).toHaveLength(1);
+    const first = PreviewHostServer.instances[0];
+    expect(first.start).toHaveBeenCalledTimes(1);
+
+    mocks.disposeCb?.();
+    expect(first.stop).toHaveBeenCalledTimes(1);
+    expect(first.running).toBe(false);
+
+    await openDesignStudio(makeContext());
+    expect(PreviewHostServer.instances).toHaveLength(2);
+    const second = PreviewHostServer.instances[1];
+    expect(second.start).toHaveBeenCalledTimes(1);
+    expect(second).not.toBe(first);
+  });
+
+  // P1-2: repeated open/close cycles must not pile up host dispose
+  // subscriptions that each reference a dead server instance.
+  it("P1-2: does not accumulate host dispose subscriptions across reopen cycles", async () => {
+    const { PreviewHostServer } = (await import("../../infrastructure/preview/PreviewHostServer")) as any;
+    PreviewHostServer.instances.length = 0;
+    await openDesignStudio(makeContext());
+    mocks.disposeCb?.();
+    await openDesignStudio(makeContext());
+    mocks.disposeCb?.();
+    await openDesignStudio(makeContext());
+    const instances = PreviewHostServer.instances as any[];
+    expect(instances).toHaveLength(3);
+    // The two earlier hosts were stopped exactly once (dispose or teardown);
+    // only the newest one is still running.
+    expect(instances[0].stop).toHaveBeenCalledTimes(1);
+    expect(instances[1].stop).toHaveBeenCalledTimes(1);
+    expect(instances[2].stop).not.toHaveBeenCalled();
+    expect(instances[2].running).toBe(true);
   });
 });
 

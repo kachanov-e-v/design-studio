@@ -434,6 +434,32 @@ describe("PreviewHostServer", () => {
     expect(echo.cookie).not.toContain("sid=");
   });
 
+  it("clears the cookie jar when the server stops (P1-2)", async () => {
+    const jarServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await jarServer.start();
+    try {
+      jarServer.setDevTarget(stubOrigin);
+      await request(`${jarServer.origin}/proxy/${stubOrigin}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: jarServer.origin },
+        body: JSON.stringify({ user: "u", pass: "p" }),
+      });
+      const before = await request(`${jarServer.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(before.body) as { cookie: string | null }).cookie).toContain("sid=abc");
+
+      await jarServer.stop();
+      expect(jarServer.running).toBe(false);
+      // Restarting the same host (reopening the panel) must not resurrect the
+      // old application session: the jar was wiped on stop.
+      await jarServer.start();
+      jarServer.setDevTarget(stubOrigin);
+      const after = await request(`${jarServer.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(after.body) as { cookie: string | null }).cookie).toBeNull();
+    } finally {
+      await jarServer.stop();
+    }
+  });
+
   it("clears the cookie jar when the dev target changes", async () => {
     const jarServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
     await jarServer.start();

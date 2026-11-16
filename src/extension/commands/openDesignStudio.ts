@@ -17,6 +17,9 @@ const DEMO_KEY = "designStudio.demoPreview.v1";
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
 let activePanel: vscode.WebviewPanel | null = null;
+// P1-2: exactly one live host-dispose subscription at a time; recreated hosts
+// replace the previous subscription instead of accumulating dead ones.
+let hostServerSubscription: vscode.Disposable | null = null;
 
 function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
   if (!sharedTraceChannel) {
@@ -40,7 +43,14 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
     });
     await server.start();
     sharedHostServer = server;
-    context.subscriptions.push({ dispose: () => void server.stop() });
+    // P1-2: dispose the previous subscription (its server is already stopped)
+    // before registering the new one, so reopen cycles don't pile up entries.
+    if (hostServerSubscription) {
+      hostServerSubscription.dispose();
+      hostServerSubscription = null;
+    }
+    hostServerSubscription = { dispose: () => void server.stop() };
+    context.subscriptions.push(hostServerSubscription);
     return server;
   } catch (err) {
     console.error("Design Studio: failed to start preview host server:", err);
@@ -100,6 +110,14 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
   activePanel = panel;
   panel.onDidDispose(() => {
     activePanel = null;
+    // P1-2: the preview host (and its cookie jar with the application
+    // session) must not outlive the panel. stop() also wipes the jar, so the
+    // next open starts a fresh session on a fresh port.
+    sharedHostServer = null;
+    if (hostServerSubscription) {
+      hostServerSubscription.dispose();
+      hostServerSubscription = null;
+    }
   }, undefined, context.subscriptions);
 
   panel.webview.html = getWebviewHtml(panel.webview, context.extensionUri);

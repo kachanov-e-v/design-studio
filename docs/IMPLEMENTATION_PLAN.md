@@ -222,3 +222,13 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > `packages/preview-runtime/src/index.test.ts` (untrusted/denied origins ignored, no pre-ping posts).
 > SECURITY.md updated (origin-bound messaging). Manual check of the full handshake/auth flow
 > (Next.js fixture, login) still pending — see AI_HANDOFF.
+
+> P1-2 (preview host lifetime) — FIXED: closing the (single) preview panel now stops the
+> shared PreviewHostServer and wipes its cookie jar; reopening starts a fresh host on a fresh
+> port without resurrecting the old application session. `ensureHostServer` replaces its
+> one live dispose-subscription instead of accumulating dead ones across reopen cycles.
+> Regression tests: `openDesignStudio.test.ts` (dispose stops host, reopen creates a new
+> instance, no dead hosts left running) and `PreviewHostServer.test.ts` (stop() clears the
+> jar — a restarted host no longer replays `sid`). SECURITY.md: new "Время жизни
+> preview-хоста" section; the random-port claim is now actually true. Manual handshake/
+> auth recheck (Next.js fixture) still pending — Phase 1 wrap-up note.

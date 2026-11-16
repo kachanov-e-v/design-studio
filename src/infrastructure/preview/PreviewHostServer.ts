@@ -308,6 +308,9 @@ export class PreviewHostServer {
 
   async stop(): Promise<void> {
     const server = this.server;
+    // P1-2: the host must not outlive the preview panel, and neither may the
+    // upstream application session it holds.
+    this.cookieJar.clear();
     if (!server) return;
     this.server = null;
     this.port = 0;
