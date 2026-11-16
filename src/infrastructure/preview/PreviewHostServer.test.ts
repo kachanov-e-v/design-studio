@@ -22,6 +22,9 @@ const stubHtmlWithStyle = `<!DOCTYPE html><html><head><style>.x { background: ur
 let stubServer: http.Server;
 let stubOrigin = "";
 
+/** P3-7: resolves when a stub's never-ending buffered response socket closes. */
+const slowResponseCloses: Record<string, Promise<void>> = {};
+
 function bs(parts: Buffer[]): string {
   return Buffer.concat(parts).toString("utf8");
 }
@@ -55,6 +58,28 @@ beforeAll(async () => {
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
+    } else if (p === "/slow-html" || p === "/slow-css" || p === "/slow-redirect") {
+      // P3-7: never-ending buffered responses; the preview must abort the
+      // upstream fetch once the client connection goes away. Next.js action
+      // redirects always carry an RSC body, hence the trailing write.
+      if (p === "/slow-redirect") {
+        res.writeHead(302, { Location: "/after-redirect", "Content-Type": "text/plain" });
+        res.write("action-flight-body");
+      } else {
+        res.writeHead(200, {
+          "Content-Type": p === "/slow-css" ? "text/css; charset=utf-8" : "text/html; charset=utf-8",
+        });
+        res.write(p === "/slow-css" ? ".slow { color: red; }" : "<!DOCTYPE html><html><body>never");
+      }
+      if (!slowResponseCloses[p]) {
+        slowResponseCloses[p] = new Promise<void>(
+          (resolve) => res.once("close", () => resolve())
+        );
+      }
+    } else if (p === "/aged-cookie") {
+      res.setHeader("Set-Cookie", ["aged=1; Max-Age=2; Path=/"]);
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
     } else if (p === "/dashboard") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end('<!DOCTYPE html><html><head><title>Dashboard</title></head><body><main>Dash</main></body></html>');
@@ -251,8 +276,17 @@ describe("proxy-html helpers", () => {
     expect(candidateLoopbackTargets("http://localhost:3000/app")).toEqual([
       "http://localhost:3000/app",
       "http://127.0.0.1:3000/app",
+      "http://[::1]:3000/app",
     ]);
-    expect(candidateLoopbackTargets("http://127.0.0.1/api")).toEqual(["http://127.0.0.1/api", "http://localhost/api"]);
+    expect(candidateLoopbackTargets("http://127.0.0.1/api")).toEqual([
+      "http://127.0.0.1/api",
+      "http://localhost/api",
+      "http://[::1]/api",
+    ]);
+    expect(candidateLoopbackTargets("http://[::1]:4200/")).toEqual([
+      "http://[::1]:4200/",
+      "http://127.0.0.1:4200/",
+    ]);
     expect(candidateLoopbackTargets("http://example.org/")).toHaveLength(1);
   });
 });
@@ -862,7 +896,7 @@ describe("PreviewHostServer", () => {
   it("rewrites the Origin header of WebSocket upgrades to the upstream origin", async () => {
     const stubPort = new URL(stubOrigin).port;
     let upstreamEcho: Duplex | null = null;
-    stubServer.on("upgrade", (req, socket) => {
+    const upgradeHandler = (req: http.IncomingMessage, socket: Duplex) => {
       upstreamEcho = socket;
       socket.write(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
@@ -874,7 +908,8 @@ describe("PreviewHostServer", () => {
       frame[1] = payload.length;
       payload.copy(frame, 2);
       socket.write(frame);
-    });
+    };
+    stubServer.on("upgrade", upgradeHandler);
     const previewPort = new URL(server.origin).port;
     const raw = await new Promise<string>((resolve, reject) => {
       const sock = net.connect(Number(previewPort), "127.0.0.1", () => {
@@ -917,6 +952,7 @@ describe("PreviewHostServer", () => {
     // Tear down the half-open upstream side deterministically; leaving it to
     // TCP half-close handling would keep the stub server's sockets open.
     (upstreamEcho as Duplex | null)?.destroy();
+    stubServer.off("upgrade", upgradeHandler);
     await new Promise<void>((r) => setTimeout(r, 50));
   });
 });
@@ -1021,5 +1057,98 @@ describe("P2-15: cookie jar scoping/cap", () => {
     expect(names.length).toBeLessThanOrEqual(512);
     expect(names).not.toContain("c0");
     expect(names).toContain("c599");
+  });
+});
+
+describe("P3-7: proxy reliability", () => {
+  let server: PreviewHostServer;
+  beforeAll(async () => {
+    server = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await server.start();
+  });
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  function stubHost(): string {
+    return stubOrigin.replace("http://", "");
+  }
+
+  function expectSlowClosed(route: string): Promise<void> {
+    // Resolves when the upstream server sees its response socket close; races
+    // against a watchdog so a missing abort surfaces as a timeout failure.
+    return Promise.race([
+      slowResponseCloses[route],
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 4000)),
+    ]).then((result) => {
+      if (result === "timeout") throw new Error(`upstream '${route}' was never aborted after client disconnect`);
+    });
+  }
+
+  async function abortedRequest(url: string): Promise<void> {
+    const req = http.request(url);
+    req.on("error", () => {
+      // expected: the connection is torn down mid-flight by the client
+    });
+    req.end();
+    // The buffered branches only forward headers after the upstream body has
+    // fully arrived, so nobody answers the client; destroy mid-flight.
+    await new Promise<void>((r) => setTimeout(r, 150));
+    req.destroy();
+    await new Promise<void>((r) => setTimeout(r, 50));
+  }
+
+  it("aborts a buffered HTML upstream when the client disconnects", async () => {
+    await abortedRequest(`${server.origin}/proxy/http/${stubHost()}/slow-html`);
+    await expectSlowClosed("/slow-html");
+  });
+
+  it("aborts a buffered CSS upstream when the client disconnects", async () => {
+    await abortedRequest(`${server.origin}/proxy/http/${stubHost()}/slow-css`);
+    await expectSlowClosed("/slow-css");
+  });
+
+  it("aborts a buffered 3xx upstream when the client disconnects", async () => {
+    await abortedRequest(`${server.origin}/proxy/http/${stubHost()}/slow-redirect`);
+    await expectSlowClosed("/slow-redirect");
+  });
+
+  it("merges the host cookie jar into WebSocket upgrade requests", async () => {
+    await request(`${server.origin}/proxy/http/${stubHost()}/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user: "u" }),
+    });
+    let seenCookie: string | null = null;
+    let stubSocket: Duplex | null = null;
+    const upgradeHandler = (req: http.IncomingMessage, socket: Duplex) => {
+      if (!req.url?.includes("/hmr-cookie")) return;
+      seenCookie = typeof req.headers.cookie === "string" ? req.headers.cookie : null;
+      stubSocket = socket;
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+      );
+    };
+    stubServer.on("upgrade", upgradeHandler);
+    try {
+      const raw = await rawUpgradeRequest(server.origin, `/proxy/http/${stubHost()}/hmr-cookie`);
+      expect(raw.split("\r\n")[0]).toContain("101");
+      expect(seenCookie).toContain("sid=abc");
+      expect(seenCookie).toContain("other=1");
+    } finally {
+      stubServer.off("upgrade", upgradeHandler);
+      (stubSocket as Duplex | null)?.destroy();
+      await new Promise<void>((r) => setTimeout(r, 50));
+    }
+  });
+
+  it("P2-15/P3-7: purges expired jar entries by timestamp", async () => {
+    await get(`${server.origin}/proxy/http/${stubHost()}/aged-cookie`);
+    const echo = await request(`${server.origin}/proxy/http/${stubHost()}/echo-headers`, { method: "GET" });
+    expect(JSON.parse(echo.body).cookie).toContain("aged=1");
+    const removed = server.purgeExpiredCookies(Date.now() + 4000);
+    expect(removed).toBeGreaterThanOrEqual(1);
+    const after = await request(`${server.origin}/proxy/http/${stubHost()}/echo-headers`, { method: "GET" });
+    expect(JSON.parse(after.body).cookie).not.toContain("aged=1");
   });
 });

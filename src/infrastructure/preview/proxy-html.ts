@@ -62,11 +62,19 @@ export function candidateLoopbackTargets(target: string): string[] {
   const candidates = [target];
   try {
     const u = new URL(target);
-    const other =
-      u.hostname === "localhost" ? "127.0.0.1" : u.hostname === "127.0.0.1" ? "localhost" : null;
-    if (other) {
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]") {
+      // P3-7: loopback dev servers may bind only to IPv4, only to ::1, or to
+      // either of the name forms; try every equivalent before giving up.
+      const loopbacks =
+        u.hostname === "localhost"
+          ? ["127.0.0.1", "[::1]"]
+          : u.hostname === "127.0.0.1"
+            ? ["localhost", "[::1]"]
+            : ["127.0.0.1"];
       const port = u.port ? `:${u.port}` : "";
-      candidates.push(`${u.protocol}//${other}${port}${u.pathname}${u.search}`);
+      for (const loopback of loopbacks) {
+        candidates.push(`${u.protocol}//${loopback}${port}${u.pathname}${u.search}`);
+      }
     }
   } catch {
     // ignore

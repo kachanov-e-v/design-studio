@@ -170,6 +170,9 @@ export function parseByteRange(header: string, total: number): [number, number] 
 
 /** P2-15: hard cap on jar entries to bound host memory. */
 const MAX_JAR_ENTRIES = 512;
+// P3-7: expired jar entries are pruned lazily as requests read them, plus a
+// periodic sweep so stale sessions do not linger on an idle host.
+const JAR_PURGE_INTERVAL_MS = 60_000;
 
 /** RFC 6265 path-match between a stored cookie path and the upstream request path. */
 function cookiePathMatches(cookiePath: string, requestPath: string): boolean {
@@ -298,6 +301,7 @@ export class PreviewHostServer {
   // with different Path attributes do not clobber each other, and the jar is
   // LRU-capped so a runaway upstream cannot grow it without bound.
   private cookieJar = new Map<string, JarCookie>();
+  private jarPurgeTimer: ReturnType<typeof setInterval> | null = null;
   /** Hijacked WebSocket sockets: closed() waits on them unless torn down. */
   private upgradedSockets = new Set<net.Socket>();
   private acceptedSockets = new Set<net.Socket>();
@@ -405,6 +409,9 @@ export class PreviewHostServer {
     }
     this.port = address.port;
     this.server = server;
+    // P3-7: periodic sweep for expired jar entries.
+    this.jarPurgeTimer = setInterval(() => this.purgeExpiredCookies(Date.now()), JAR_PURGE_INTERVAL_MS);
+    this.jarPurgeTimer.unref?.();
     return this.port;
   }
 
@@ -412,6 +419,10 @@ export class PreviewHostServer {
     const server = this.server;
     // P1-2: the host must not outlive the preview panel, and neither may the
     // upstream application session it holds.
+    if (this.jarPurgeTimer) {
+      clearInterval(this.jarPurgeTimer);
+      this.jarPurgeTimer = null;
+    }
     this.cookieJar.clear();
     if (!server) return;
     this.server = null;
@@ -785,6 +796,19 @@ export class PreviewHostServer {
     }
   }
 
+  /** P3-7: drop expired jar entries; invoked from the periodic timer in
+   * start(), public for deterministic testing. Returns the removed count. */
+  purgeExpiredCookies(now: number): number {
+    let removed = 0;
+    for (const [key, entry] of this.cookieJar) {
+      if (entry.expiresAt !== null && entry.expiresAt <= now) {
+        this.cookieJar.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   private rememberSetCookies(cookies: string[], upstreamOrigin: string): void {
     for (const cookie of cookies) this.rememberSetCookie(cookie, upstreamOrigin);
   }
@@ -912,7 +936,11 @@ export class PreviewHostServer {
       );
       return;
     }
-
+    // P3-7: tear the upstream down when the client goes away, in every branch.
+    // Buffering branches used to leave a hanging upstream connection behind
+    // (only the streaming branch aborted); registering once here covers 3xx,
+    // HTML, CSS and streaming alike.
+    res.on("close", () => abortUpstream());
     const headers: Record<string, string> = {};
     upstream.headers.forEach((value, key) => {
       if (!HEADERS_TO_STRIP.includes(key as (typeof HEADERS_TO_STRIP)[number])) {
@@ -1007,7 +1035,6 @@ export class PreviewHostServer {
     }
     // Everything else streams through untouched, capped by bytes: SSE,
     // streaming SSR, long-poll and binaries stay live instead of buffering.
-    res.on("close", () => abortUpstream());
     const streamed = await this.streamUpstreamBody(upstream, res);
     if (!streamed) {
       this.trace(`[proxy] ${method} ${finalTarget} -> destroyed (byte cap exceeded or upstream stream error)`);
@@ -1144,12 +1171,22 @@ export class PreviewHostServer {
     const headers = [`${req.method ?? "GET"} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
     for (const [key, value] of Object.entries(req.headers)) {
       if (key === "host" || key === "origin" || key === "sec-fetch-site") continue;
+      // P3-7: the browser WebSocket handshake often carries no cookies in a
+      // cross-site iframe; skip the raw header here and forward the merged
+      // (browser + host jar) value below instead.
+      if (key === "cookie") continue;
       if (Array.isArray(value)) {
         for (const item of value) if (item) headers.push(`${key}: ${item}`);
       } else if (value) {
         headers.push(`${key}: ${value}`);
       }
     }
+    const jarCookieHeader = this.buildCookieHeader(
+      typeof req.headers.cookie === "string" ? req.headers.cookie : undefined,
+      parsedTarget.origin,
+      parsedTarget.pathname
+    );
+    if (jarCookieHeader) headers.push(`Cookie: ${jarCookieHeader}`);
     headers.push(`Host: ${parsedTarget.host}`);
     headers.push(`Origin: ${parsedTarget.origin}`);
     // P1-4: the origin is rewritten above, so the fetch metadata must agree.
