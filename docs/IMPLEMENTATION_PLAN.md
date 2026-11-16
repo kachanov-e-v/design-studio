@@ -378,3 +378,45 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > инструкции), docs/README.md (ссылки на AI_HANDOFF/IMPLEMENTATION_PLAN/LEGACY_CLEANUP).
 > SECURITY.md и описания политики ссылок сверены — актуальны после P1-2/P0-3. Счётчик
 > тестов: 257→260 (22 файла). Коммит: 99adb28.
+
+> Фаза 4 (P3-1 CI): workflow переписан — `permissions: contents: read`, `concurrency`
+> (cancel-in-progress), матрица Node 20/22 (fail-fast:false), npm audit `--audit-level=high`
+> как hard-гейт (старый `npm audit --omit=dev` был no-op: в package.json нет dependencies)
+> + умеренный advisory-шаг с continue-on-error; на Node 22 — `vsce package --no-dependencies`
+> с загрузкой .vsix артефактом. Dependabot: npm weekly (grouped dev-minors) + github-actions.
+
+
+> Фаза 4 (P3-2 линт/зависимости): ESLint 8.57 + .eslintrc.cjs → ESLint 9 flat config
+> (`eslint.config.mjs`, typescript-eslint 8, react-hooks плагин: rules-of-hooks=error,
+> exhaustive-deps=warn, no-explicit-any=error). esbuild 0.21.5 → 0.25.12, @types/node 24 → 22
+> (выровнено с CI-матрицей 20/22). Известные 3 exhaustive-deps warning (PreviewContainer,
+> SelectionPopup ref-паттерны) оставлены как warnings.
+
+> Фаза 4 (P3-3 workspaces/tsconfig): npm workspaces `packages/*`, второй lock-файл
+> packages/preview-runtime/package-lock.json удалён; build:ext получил esbuild-алиасы
+> `@design-studio/preview-runtime`/`@design-studio/shared` (скрытая ловушка протокольных
+> импортов закрыт); из tsconfig пакета исключены *.test.ts из emit (тесты больше не
+> попадают в dist); tsconfig разделён на tsconfig.base/extension (без DOM)/webview (DOM),
+> корневой — solution references; typecheck = оба проектовых прохода.
+
+> Фаза 4 (P3-4/P3-5 манифест и упаковка): манифест — version 0.1.0, icon 128×128,
+> galleryBanner, bugs/homepage, capabilities.untrustedWorkspaces=false (расширение читает/
+> пишет файлы и держит loopback-сервер), virtualWorkspaces=false, extensionKind=[workspace],
+> engines.node >=20.19, packageManager, NLS-заголовки команды (package.nls.json/.ru.json),
+> скрипты package/publish (vsce --no-dependencies); .vscodeignore перечищен (fixtures,
+> .github, конфиги, lock-файлы); CHANGELOG.md 0.1.0; README docs-ссылки → абсолютные.
+> Smoke: `vsce ls` — 14 файлов в VSIX, утечек fixtures/scripts/.github/coverage нет.
+
+> Фаза 4 (P3-6 тесты и coverage): @vitest/coverage-v8; пороги в vitest.config.ts — ≥80%
+> строк для src/shared, persistence, preview и preview-runtime (провайдер v8, include
+>_per-область, репортеры text+lcov); скрипт `test:coverage`; CI: шаг Test гоняется с
+> coverage и порогами. Добавлены тесты: cssText (сплиттеры/поиск/валидаторы — 16),
+> протокольные валидаторы (граничные длины/sessionId/selection-массивы/component/rules —
+> 30 в файле), runtime-контуры сессий (set-mode/apply-style/apply-op: set-text, password
+> guard, delete→parent, move без соседей, duplicate, set-classes, set-attribute с
+> live-property зеркалом/javascript:-блокировкой/снятием атрибута, navigate-history;
+> тест-харнесс чистит слушатели старых инстансов), persistence (invalid value,
+> selectors-массив, truncated-search 200 файлов, удаление declaration, «already absent»,
+> «already has this value», source-mapping heuristic через реальный loopback CSS-сервер,
+> source-path неоднозначность). Итоговое покрытие: shared 89.79%, persistence 90.51%,
+> preview 89.0%, runtime 88.33% строк. Счётчик тестов: 260→305, 23 файла.

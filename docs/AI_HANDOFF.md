@@ -152,3 +152,31 @@ Next.js-фикстуре с логином (сессия живёт после �
 baseline (typecheck/lint/build+verify, 260 тестов в 22 файлах) зелёный после каждой задачи.
 Фаза 4 (P3 инженерия: CI-матрица, ESLint 9 flat config, workspaces/tsconfig-split,
 манифест/.vscodeignore, тест-инфраструктура + coverage) — следующая.
+
+Фаза 4 (P3 инженерия) — завершена:
+- 4a (CI/линт, коммит TBD): P3-1 — ci.yml переписан (permissions:contents:read,
+  concurrency, матрица Node 20/22, audit --audit-level=high hard + moderate advisory,
+  vsce package + vsix artifact на Node 22); dependabot (npm weekly grouped + actions).
+  P3-2 — ESLint 9 flat config (typescript-eslint 8, react-hooks, no-explicit-any=error),
+  .eslintrc.cjs удалён; esbuild 0.25.12, @types/node 22 (соответствие CI).
+- 4b (workspaces/tsconfig): P3-3 — npm workspaces packages/*, второй lock удалён,
+  build:ext получил esbuild-алиасы (протокол-импорты), тесты исключены из emit пакета,
+  tsconfig.base/extension/webview + solution references, typecheck = два прохода.
+- 4c (манифест/упаковка): P3-4/P3-5 — манифест 0.1.0 + icon/galleryBanner/bugs/homepage/
+  capabilities/extensionKind/engines.node/packageManager/NLS-заголовки, скрипты
+  package/publish; .vscodeignore перечищен; CHANGELOG 0.1.0; README docs-ссылки →
+  абсолютные (Marketplace). Smoke vsce ls: 14 файлов, утечек нет.
+- 4d (тесты/coverage): P3-6 — coverage-v8, пороги ≥80% строк для shared/persistence/
+  preview/runtime в vitest.config.ts, скрипт test:coverage, CI гоняет пороги.
+  +45 тестов: cssText edge-cases, protocol validator bounds, runtime control-message
+  ветки (jsdom, с очисткой слушателей между спавнами), persistence ветки
+  (truncated-search, удаление/absent/same-value, source-mapping heuristic + ambiguity).
+  Тестов 260→305 (23 файла); покрытие: shared 89.79 / persistence 90.51 / preview 89.0 /
+  runtime 88.33 % строк. Baseline (typecheck/lint/build+verify/test/test:coverage) — зелёный.
+
+Проверено: npm run typecheck, npm run lint (0 ошибок, 3 известных
+exhaustive-deps warning), npm test (305/23), npm test:coverage (пороги пройдены),
+npm run build (verify-build зелёный), vsce ls (чистая упаковка).
+Осталось (Фаза 5): CHANGELOG финализировать под релиз, vsce package smoke в CI-артефакт
+(шаг уже в workflow), ручная матрица (Next.js+логин, Vite, статика, демо, RU/EN,
+Win/macOS/Linux) — помечена как ручная; публикация.
