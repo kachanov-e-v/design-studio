@@ -330,3 +330,51 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > mentions inside comments», «does not save a dirty document», «saves a clean document»,
 > «matches legacy single-colon pseudo-elements», «tolerates whitespace differences»,
 > «rejects overlong VLQ sequences». Счётчик тестов: 227→234 (7 новых тестов).
+
+> Фаза 3f1 (preview-хост): P2-9 — `projectUrl` строился без percent-кодирования имени
+> entry (пробел/`#`/`?` ломали URL) → каждый сегмент кодируется `encodeURIComponent`.
+> P2-10 — статус состояния определялся подстрокой `url.includes("/project/")`; теперь
+> явный контракт по источникам состояния (demo/entry/devserver/idle). P2-22 — инлайновые
+> RU/EN тернарники вынесены в i18n-ключи (`panel.title`, `error.invalidEntry` и др.),
+> импорт поднят в шапку файла, `findProjectEntries`/`detectDevServers` кэшируются с
+> инвалидацией на preview:refresh/preview:demo/project:setEntry/project:setDevServer/
+> project:navigate. Коммит: 386a332.
+
+> Фаза 3f2 (preview-хост): P2-14 — статические файлы `/project/`: поддержка Range
+> (`parseByteRange`: single/suffix/open-ended, multi-range → null; 206/416 с Content-Range,
+> Accept-Ranges, Content-Length), MIME-таблица дополнена (.wasm/.map/.avif/.mp4/.webm/.otf/.eot),
+> блокирующие `readFileSync` заменены на `fs.promises`. Коммит: 99bcc62.
+
+> Фаза 3f3 (preview-хост): P2-15 — cookie jar ключи `origin|path|name` с RFC 6265
+> path-матчингом (same-name куки разных путей больше не затирают друг друга), LRU-лимит
+> 512 записей с refresh-recentency (`touchJar`), старый формат ключей дропается лениво.
+> Коммит: 1c25020.
+
+> Фаза 3f4 (preview-хост): P2-16 — `DevServerDetector`: probePort пробует оба loopback
+> (127.0.0.1 + ::1), `vite preview` матчится на порт 4173, слитный `-p4000` и env `PORT=4000`
+> парсятся, non-dev скрипты (build/eject/lint/test/...) отфильтровываются и в имени, и в
+> команде скрипта. Коммит: 2ffc5c9.
+
+> Фаза 3f5 (preview-хост, P3-7): (1) abort upstream при обрыве клиента регистрируется один
+> раз после `fetchWithFallbacks` и покрывает ВСЕ ветки — буферные HTML/CSS/3xx раньше
+> оставляли висящее upstream-соединение (abort был только в streaming-ветке); (2)
+> `candidateLoopbackTargets` пробует все loopback-формы (127.0.0.1 / localhost / ::1) —
+> dev-сервер, привязанный только к IPv6, больше не считается «down»; (3) WS-handshake
+> подмешивает cookies из host jar (браузер в кросс-сайтовом iframe часто шлёт upgrade без
+> cookies, HMR-сессия терялась); (4) периодический purge истёкших записей jar (60 c, unref,
+> очищается в stop()) поверх ленивой P2-15-очистки — `purgeExpiredCookies(now)` публичен
+> для детерминированного теста. Тесты: abort в каждой буферной ветке (HTML/CSS/redirect
+> с RSC-телом), ::1-кандидаты, cookie-merge в upgrade, expired-purge. Счётчик тестов:
+> 252→257. Коммит: e6eab90.
+
+> Фаза 3g (i18n + docs, P2-11 + §6): `toolbar.serverDown` («Сервер обнаружен» → «Сервер не
+> запущен»/«Server not running»); кнопка режима показывает действие (целевой режим):
+> «Редактировать» в browse, «Просмотр» в edit (ключи `toolbar.edit/editOn` →
+> `toolbar.toEdit/toBrowse`); README шаг 6 теперь соответствует UI. Экспортирована таблица
+> `I18N_STRINGS`, добавлен тест паритета RU/EN. Докс-синк §6: DEVELOPMENT_GUIDE (удалён
+> устаревший double-click буллет, подпись кнопки режима, маркер сборки вместо удалённого
+> runtime-лога), TROUBLESHOOTING (то же в шагах 1 и 4), README (пункт про «список изменений
+> до/после» переформулирован под реальный UI: счётчик правок + before/after в экспортируемой
+> инструкции), docs/README.md (ссылки на AI_HANDOFF/IMPLEMENTATION_PLAN/LEGACY_CLEANUP).
+> SECURITY.md и описания политики ссылок сверены — актуальны после P1-2/P0-3. Счётчик
+> тестов: 257→260 (22 файла). Коммит: 99adb28.

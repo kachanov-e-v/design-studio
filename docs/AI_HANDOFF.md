@@ -114,7 +114,7 @@
 Next.js-фикстуре с логином (сессия живёт после навигации, server action redirect, HMR WS),
 а также демо и статическую фикстуру в реальном VS Code — ручная матрица §8.
 
-## Фаза 3 (P2 — батчи по доменам) — в процессе
+## Фаза 3 (P2 — батчи по доменам) — завершена
 
 - 3a (протокол/типы, коммит 8c72f5f): P2-1 (types.ts реэкспортирует протокол, касты убраны),
   P2-2 (filter в STYLE_PROPS, PROTOCOL_VERSION "4"→"5"), P2-13 (ds:runtime-ready/error
@@ -132,3 +132,23 @@ Next.js-фикстуре с логином (сессия живёт после �
   пользователя не коммитятся), P2-21 (decodeVlq: throw при shift>30; normalizeCssSelector:
   :before≡::before, пробелы, escape-снятие, порядок запятых). 7 новых тестов (были красными
   до фиксов). Бaseline: typecheck/lint/test 227→234/21 файлов/build+verify — зелёные.
+- 3f (preview-хост, 5 коммитов): 3f1 386a332 — P2-9 (percent-кодирование сегментов entry в
+  projectUrl), P2-10 (статус по явному источнику состояния, не по подстроке URL),
+  P2-22 (инлайн-тернарники в i18n, импорты наверх, кэш entries/detect с инвалидацией).
+  3f2 99bcc62 — P2-14 (Range/206/416 для /project/, MIME .wasm/.map/.avif/.mp4/..., fs.promises).
+  3f3 1c25020 — P2-15 (jar-ключи origin|path|name с RFC 6265 path-матчингом, LRU-лимит 512).
+  3f4 2ffc5c9 — P2-16 (dual-stack probe 127.0.0.1+::1, vite preview→4173, слитный -p4000 и
+  PORT=, фильтр non-dev скриптов). 3f5 e6eab90 — P3-7 (abort upstream во всех ветках прокси
+  при обрыве клиента, ::1 в candidateLoopbackTargets, cookies из host jar в WS-handshake,
+  периодический purge истёкших jar-записей). Тестов 246→257/21 файлов.
+- 3g 99adb28 — P2-11 (toolbar.serverDown = «Сервер не запущен»; кнопка режима показывает
+  целевой режим «Редактировать»/«Просмотр», i18n-ключи toEdit/toBrowse, тест паритета RU/EN
+  с I18N_STRINGS) + §6 docs sync (DEVELOPMENT_GUIDE: double-click буллет/подпись кнопки/
+  маркер сборки; TROUBLESHOOTING: шаги 1 и 4; README: пункт про before/after переформулирован;
+  docs/README.md: ссылки на AI_HANDOFF/IMPLEMENTATION_PLAN/LEGACY_CLEANUP; SECURITY и
+  политика ссылок сверены). Тестов 260/22 файлов.
+
+Итог Фазы 3: 20 задач P2 (3a–3g) закрыты; каждый фикс с красным регрессионным тестом,
+baseline (typecheck/lint/build+verify, 260 тестов в 22 файлах) зелёный после каждой задачи.
+Фаза 4 (P3 инженерия: CI-матрица, ESLint 9 flat config, workspaces/tsconfig-split,
+манифест/.vscodeignore, тест-инфраструктура + coverage) — следующая.
