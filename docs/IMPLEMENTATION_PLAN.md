@@ -232,3 +232,11 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > jar — a restarted host no longer replays `sid`). SECURITY.md: new "Время жизни
 > preview-хоста" section; the random-port claim is now actually true. Manual handshake/
 > auth recheck (Next.js fixture) still pending — Phase 1 wrap-up note.
+
+> P1-3 (project jail denylist) — FIXED: `resolveProjectPath` now applies the forbidden-segment
+> check to the canonical realpath location (`path.relative(rootReal, real)`) and to the non-
+> existing tail, in addition to the requested path. An in-root symlink to `.git`/`.env` no
+> longer launders a secret past the segment check. Denylist extended with `.npmrc`, `.yarnrc`,
+> `.ssh/`, `.aws/`, `.gnupg/`, `.envrc`, `.htpasswd`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+> `id_rsa*`, `credentials*`. Tests: symlink laundering red->green (junction/dir symlink where
+> the platform allows), extended denylist cases, legit assets still served. SECURITY.md updated.

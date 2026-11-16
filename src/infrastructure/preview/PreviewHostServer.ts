@@ -137,6 +137,40 @@ export type ProjectPathResolution =
  * filesystem, so a symlink/junction inside the workspace cannot redirect the
  * read outside the jail.
  */
+// Never expose secrets or VCS/module metadata through /project/, even when a
+// project legitimately keeps them inside the served folder. P1-3: the check
+// runs on the canonical (realpath) location, so an in-root symlink to .git or
+// .env cannot launder a secret past segment checks.
+const FORBIDDEN_SEGMENTS = new Set([
+  ".git",
+  "node_modules",
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".npmrc",
+  ".yarnrc",
+  ".envrc",
+  ".htpasswd",
+]);
+
+function isForbiddenSegment(segment: string): boolean {
+  const s = segment.toLowerCase();
+  if (FORBIDDEN_SEGMENTS.has(s)) return true;
+  if (s === ".env" || /^\.env[.\-_]/.test(s)) return true;
+  if (/\.(?:pem|key|p12|pfx)$/.test(s)) return true;
+  if (/^id_rsa/.test(s)) return true;
+  if (/^credentials/.test(s)) return true;
+  return false;
+}
+
+function hasForbiddenSegment(relativePathLike: string): boolean {
+  return relativePathLike
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s.length > 0)
+    .some(isForbiddenSegment);
+}
+
 export function resolveProjectPath(projectRoot: string, relativePathRaw: string): ProjectPathResolution {
   let relativePath: string;
   try {
@@ -150,11 +184,7 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     return { ok: false, reason: "forbidden" };
   }
-  // Never expose secrets or VCS/module metadata through /project/, even when
-  // a project legitimately keeps them inside the served folder.
-  const segments = relativePath.split(/[\\/]+/).filter((s) => s.length > 0).map((s) => s.toLowerCase());
-  const base = segments[segments.length - 1] ?? "";
-  if (segments.includes(".git") || segments.includes("node_modules") || base === ".env" || /^\.env[.\-_]/.test(base)) {
+  if (hasForbiddenSegment(rel)) {
     return { ok: false, reason: "forbidden" };
   }
   let rootReal: string;
@@ -179,6 +209,11 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   const tail = path.relative(existing, resolved);
   const escapedReal = realRel !== "" && (path.isAbsolute(realRel) || realRel.replace(/\\/g, "/").startsWith("../"));
   if (escapedReal || (realRel === "" && !tail)) {
+    return { ok: false, reason: "forbidden" };
+  }
+  // P1-3: the symlink-resolved location may point at a forbidden file even
+  // though the requested path spelled innocent segment names.
+  if (hasForbiddenSegment(realRel) || hasForbiddenSegment(tail)) {
     return { ok: false, reason: "forbidden" };
   }
   // Everything between `existing` and `resolved` is plain path segments below

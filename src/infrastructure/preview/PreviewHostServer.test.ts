@@ -615,6 +615,66 @@ describe("PreviewHostServer", () => {
     expect(resolveProjectPath(projectRoot, "src/styles/site.css")).toMatchObject({ ok: true });
   });
 
+  // P1-3: the denylist must follow the canonical (realpath')d location, so an
+  // in-root symlink to .git/.env cannot launder a secret past segment checks.
+  it("resolveProjectPath blocks secrets reached through in-root symlinks (P1-3)", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-sym-git-"));
+    fs.mkdirSync(path.join(projectRoot, ".git"));
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), "[core]");
+    fs.writeFileSync(path.join(projectRoot, ".env"), "SECRET=1");
+    fs.writeFileSync(path.join(projectRoot, ".npmrc"), "token=1");
+    fs.writeFileSync(path.join(projectRoot, "server.key"), "key");
+    fs.writeFileSync(path.join(projectRoot, ".envrc"), "x");
+    let gitLinked = false;
+    let envLinked = false;
+    try {
+      fs.symlinkSync(
+        path.join(projectRoot, ".git"),
+        path.join(projectRoot, "assets"),
+        process.platform === "win32" ? "junction" : "dir"
+      );
+      gitLinked = true;
+    } catch {
+      // No symlink privileges; lexical denylist assertions still run.
+    }
+    if (process.platform !== "win32") {
+      try {
+        fs.symlinkSync(".env", path.join(projectRoot, "secret-env"), "file");
+        envLinked = true;
+      } catch {
+        // Privileges.
+      }
+    }
+    if (gitLinked) {
+      expect(resolveProjectPath(projectRoot, "assets/config")).toMatchObject({ ok: false, reason: "forbidden" });
+    }
+    if (envLinked) {
+      expect(resolveProjectPath(projectRoot, "secret-env")).toMatchObject({ ok: false, reason: "forbidden" });
+    }
+  });
+
+  it("resolveProjectPath denies extra secret file types (P1-3)", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-deny-"));
+    expect(resolveProjectPath(projectRoot, ".npmrc")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".yarnrc")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".envrc")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".htpasswd")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "server.pem")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "server.key")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "certs/cert.p12")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "certs/keystore.pfx")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "id_rsa")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "id_rsa.pub")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".ssh/id_rsa")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".aws/credentials")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".gnupg/private.key")).toMatchObject({ ok: false, reason: "forbidden" });
+    // Denylist follows the canonical path: a nested symlinked directory whose
+    // realpath target contains .git or .ssh must be denied too.
+    // Legitimate asset names must keep working.
+    expect(resolveProjectPath(projectRoot, "src/assets/logo.svg")).toMatchObject({ ok: true });
+    expect(resolveProjectPath(projectRoot, "styles/site.css")).toMatchObject({ ok: true });
+  });
+
   it("rejects requests whose Host header is not the preview origin", async () => {
     const hijack = await request(`${server.origin}/demo.html`, { headers: { Host: "evil.example" } });
     expect(hijack.status).toBe(403);
