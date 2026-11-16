@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import { PROTOCOL_VERSION } from "./protocol";
 
 const trustedOrigin = "vscode-webview://webview-abc";
-const ping = { type: "ds:ping", version: "4", nonce: "n-1", sessionId: "n-1" };
+const ping = { type: "ds:ping", version: PROTOCOL_VERSION, nonce: "n-1", sessionId: "n-1" };
 
 function receive(data: unknown, origin: string): void {
   window.dispatchEvent(new MessageEvent("message", { data, origin, source: window as unknown as MessageEventSource }));
@@ -151,5 +152,38 @@ describe("parent origin policy", () => {
     await spawnRuntime(' data-parent-origins="https://host.example"');
     const posted = withPostSpy(() => receive(ping, "https://host.example"));
     expect(posted.find((p) => p.msg.type === "ds:pong")).toBeDefined();
+  });
+});
+
+/**
+ * P2-13: runtime-ready / runtime-error now have producers. Announcements
+ * carry no page data and never go out to "*".
+ */
+describe("runtime announcements", () => {
+  it("posts ds:runtime-ready with the protocol version to a concrete origin", async () => {
+    const { postRuntimeAnnouncement } = await import("./index.js");
+    const posted = withPostSpy(() => postRuntimeAnnouncement("ready", undefined, { targetOrigin: trustedOrigin }));
+    expect(posted).toHaveLength(1);
+    expect(posted[0].msg.type).toBe("ds:runtime-ready");
+    expect(posted[0].msg.version).toBe(PROTOCOL_VERSION);
+    expect(posted[0].target).toBe(trustedOrigin);
+  });
+
+  it("posts ds:runtime-error with a truncated message", async () => {
+    const { postRuntimeAnnouncement } = await import("./index.js");
+    const long = "x".repeat(800);
+    const posted = withPostSpy(() => postRuntimeAnnouncement("error", long, { targetOrigin: trustedOrigin }));
+    expect(posted).toHaveLength(1);
+    expect(posted[0].msg.type).toBe("ds:runtime-error");
+    expect(String(posted[0].msg.message).length).toBe(500);
+  });
+
+  it("never announces without a known parent origin and never to '*'", async () => {
+    const { postRuntimeAnnouncement } = await import("./index.js");
+    const posted = withPostSpy(() => {
+      postRuntimeAnnouncement("ready", undefined, { targetOrigin: null });
+      postRuntimeAnnouncement("ready", undefined, { targetOrigin: "*" });
+    });
+    expect(posted).toHaveLength(0);
   });
 });

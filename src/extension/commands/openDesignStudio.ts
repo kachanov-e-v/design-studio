@@ -188,11 +188,9 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
     const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
     const demo = context.workspaceState.get<boolean>(DEMO_KEY, false);
-    const demoUrl = demo
-      ? host
-        ? `${host.origin}/demo.html?lang=${language}`
-        : `${panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"))}?lang=${language}`
-      : "";
+    // P2-13: the asWebviewUri demo fallback below was unreachable (the panel
+    // only renders after ensureHostServer succeeded, so a host always exists).
+    const demoUrl = demo && host ? `${host.origin}/demo.html?lang=${language}` : "";
     let devUrl: URL | null = null;
     try {
       if (devServer) devUrl = new URL(devServer);

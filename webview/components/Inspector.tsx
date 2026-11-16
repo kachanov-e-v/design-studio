@@ -292,7 +292,7 @@ export function Inspector({
   const attributeDefs = selected ? attributeDefinitionsForTag(selected.tag) : [];
   const coveredAttributes = new Set(attributeDefs.map((def) => def.name));
   const extraAttributeNames = selected
-    ? (EDITABLE_ATTRIBUTES as readonly string[]).filter((name) => !coveredAttributes.has(name) && name in (selected.attributes ?? {}))
+    ? EDITABLE_ATTRIBUTES.filter((name) => !coveredAttributes.has(name) && name in (selected.attributes ?? {}))
     : [];
 
   return (
@@ -379,8 +379,8 @@ export function Inspector({
           <section className={styles.section}>
             <h3>{t("inspector.attributes")}</h3>
             <div className={styles.editor}>
-              {attributeDefs.map((def) => renderAttributeEditor(def.name as EditableAttribute, def))}
-              {extraAttributeNames.map((name) => renderAttributeEditor(name as EditableAttribute, undefined))}
+              {attributeDefs.map((def) => renderAttributeEditor(def.name, def))}
+              {extraAttributeNames.map((name) => renderAttributeEditor(name, undefined))}
             </div>
           </section>
 

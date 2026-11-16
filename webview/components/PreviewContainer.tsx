@@ -1,7 +1,7 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
-import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
+import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import { SelectionPopup, type SelectionPopupTarget } from "./SelectionPopup";
 
@@ -16,15 +16,7 @@ export interface PreviewContainerHandle {
   applyOp: (op: ElementOp, value?: string, attribute?: EditableAttribute) => { requestId: string; sessionId: string } | null;
 }
 
-type RuntimeStatus =
-  | "idle"
-  | "iframe-loading"
-  | "connecting"
-  | "ready"
-  | "missing"
-  | "protocol-mismatch"
-  | "blocked-or-load-error"
-  | "error";
+type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "protocol-mismatch" | "error";
 
 export interface OpAppliedInfo {
   op: ElementOp;
@@ -249,7 +241,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
         const sid = typeof raw.sessionId === "string" ? raw.sessionId : undefined;
         if (nonce && nonce !== sessionIdRef.current) return;
-        if (!nonce) return;
+        // P2-13: ds:runtime-ready is sent at runtime init, before the webview
+        // pinged — it carries no nonce. It must still pass the origin filter
+        // above; its trust is the preview origin + matching session id.
+        if (raw.type === "ds:pong" && !nonce) return;
+        if (sid && sid !== sessionIdRef.current) return;
         if (sid && sid !== sessionIdRef.current) return;
         clearTimers();
         resolvedRef.current = true;
@@ -299,7 +295,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         onOpAppliedRef.current?.({
           op: data.op as ElementOp,
           value: data.value,
-          attribute: data.attribute as EditableAttribute | undefined,
+          attribute: isEditableAttribute(data.attribute) ? data.attribute : undefined,
           success: data.success,
           reason: data.reason,
           payload: data.payload ?? null,
@@ -342,8 +338,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const runtimeLabel =
     runtimeStatus === "idle"
       ? translate(language, "preview.idle")
-      : runtimeStatus === "iframe-loading"
-      ? translate(language, "preview.iframeLoading")
       : runtimeStatus === "connecting"
       ? translate(language, "preview.connecting")
       : runtimeStatus === "ready"
@@ -352,8 +346,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       ? translate(language, "preview.missing")
       : runtimeStatus === "protocol-mismatch"
       ? translate(language, "preview.protocolMismatch")
-      : runtimeStatus === "blocked-or-load-error"
-      ? translate(language, "preview.blocked")
       : translate(language, "preview.error");
 
   const statusText =
@@ -452,10 +444,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
               onLoad={() => {
                 if (url) startHandshake();
               }}
-              onError={() => {
-                setRuntimeStatus("blocked-or-load-error");
-                setDiagnostic("iframe failed to load.");
-              }}
             />
             {runtimeStatus === "missing" && (
               <div className={styles.overlay} role="status">
@@ -473,11 +461,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 Runtime protocol mismatch. {diagnostic}
               </div>
             )}
-            {runtimeStatus === "blocked-or-load-error" && (
-              <div className={styles.overlay} role="status">
-                Unable to connect to preview. {diagnostic}
-              </div>
-            )}
             {runtimeStatus === "connecting" && (
               <div className={styles.overlay} role="status">
                 {translate(language, "preview.connecting")}
@@ -493,7 +476,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             )}
           </>
         ) : (
-          <span>{translate(language, "preview.iframeLoading")}</span>
+          <span>{translate(language, "preview.idle")}</span>
         )}
       </div>
     </section>

@@ -35,7 +35,8 @@ const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   value: "value",
 };
 
-export function getSelector(el: Element): string {  if (el.id) {
+export function getSelector(el: Element): string {
+  if (el.id) {
     const idSelector = `#${CSS.escape(el.id)}`;
     if (idSelector.length <= 500) return idSelector;
   }
@@ -97,6 +98,45 @@ export function getSelectorCandidates(el: Element): string[] {
     result.push(path);
   }
   return result;
+}
+
+/**
+ * P2-13 producers: the runtime previously declared `ds:runtime-ready` and
+ * `ds:runtime-error` without ever sending them, so the webview handshake
+ * depended on ping timeouts. The announcement carries no page data and is only
+ * sent with a concrete target origin (never "*"): when Chromium exposes the
+ * immediate parent origin via `location.ancestorOrigins` (real VS Code
+ * webviews) the webview learns about the runtime immediately; otherwise the
+ * ping/pong handshake stays as fallback.
+ */
+export function postRuntimeAnnouncement(
+  kind: "ready" | "error",
+  errorMessage?: string,
+  via: { targetOrigin?: string | null } = {}
+): void {
+  if (typeof window === "undefined") return;
+  let targetOrigin = via.targetOrigin;
+  if (targetOrigin === undefined) {
+    try {
+      const origins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
+      targetOrigin = origins && origins.length > 0 ? String(origins[origins.length - 1]) : null;
+    } catch {
+      targetOrigin = null;
+    }
+  }
+  // Top-level page (no embedder): nothing meaningful to announce to.
+  if (via.targetOrigin === undefined && window.parent === window) return;
+  if (!targetOrigin || targetOrigin === "*") return;
+  try {
+    window.parent.postMessage(
+      kind === "ready"
+        ? { type: "ds:runtime-ready", version: PROTOCOL_VERSION }
+        : { type: "ds:runtime-error", version: PROTOCOL_VERSION, message: (errorMessage ?? "Runtime crashed").slice(0, 500) },
+      targetOrigin
+    );
+  } catch {
+    // Handshake falls back to ping/pong.
+  }
 }
 
 export function initDesignStudioRuntime(): void {
@@ -782,5 +822,14 @@ export function initDesignStudioRuntime(): void {
 }
 
 if (typeof window !== "undefined") {
-  initDesignStudioRuntime();
+  try {
+    initDesignStudioRuntime();
+    postRuntimeAnnouncement("ready");
+  } catch (err) {
+    try {
+      postRuntimeAnnouncement("error", err instanceof Error ? err.message : String(err));
+    } catch {
+      // Final fallback: nothing else can be done.
+    }
+  }
 }

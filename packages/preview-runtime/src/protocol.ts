@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = "4";
+export const PROTOCOL_VERSION = "5";
 
 /** A CSS rule from a real stylesheet the element matches. */
 export interface SourceRule {
@@ -440,6 +440,7 @@ export const STYLE_PROPS = [
   "overflow",
   "overflow-x",
   "overflow-y",
+  "filter",
   "object-fit",
   "aspect-ratio",
   "transform",

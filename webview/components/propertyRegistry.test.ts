@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { EDITABLE_ATTRIBUTES } from "../../packages/preview-runtime/src/protocol";
+import { EDITABLE_ATTRIBUTES, STYLE_PROPS } from "../../packages/preview-runtime/src/protocol";
 import {
   PROPERTY_DEFINITIONS,
   PROPERTY_GROUP_LABEL_KEYS,
@@ -67,5 +67,13 @@ describe("propertyRegistry", () => {
     for (const def of attributeDefinitionsForTag("a")) expect(whitelist.has(def.name)).toBe(true);
     for (const def of attributeDefinitionsForTag("video")) expect(whitelist.has(def.name)).toBe(true);
     for (const def of attributeDefinitionsForTag("form")) expect(whitelist.has(def.name)).toBe(true);
+  });
+
+  // P2-2: an editor without a matching STYLE_PROPS entry silently collects
+  // nothing — the value is never requested from the runtime and the Inspector
+  // always shows an empty before-value.
+  it("defines every property key inside the protocol STYLE_PROPS list", () => {
+    const missing = PROPERTY_DEFINITIONS.filter((def) => !(STYLE_PROPS as readonly string[]).includes(def.key));
+    expect(missing.map((def) => def.key)).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@
  * stay in the webview; only data crosses the postMessage boundary when needed.
  */
 import type { MessageKey } from "@design-studio/shared/i18n";
+import type { EditableAttribute } from "@design-studio/preview-runtime/protocol";
 
 export type PropertyEditorKind = "text" | "textarea" | "select" | "color" | "slider" | "unit";
 
@@ -105,8 +106,8 @@ export function parseUnitValue(value: string, units: string[]): { number: number
 export type AttributeEditorKind = "text" | "textarea" | "select" | "toggle" | "number" | "url";
 
 export interface AttributeDefinition {
-  /** Attribute name, must be listed in EDITABLE_ATTRIBUTES. */
-  name: string;
+  /** Attribute name, must be listed in EDITABLE_ATTRIBUTES (P2-1: typed, not cast). */
+  name: EditableAttribute;
   editor: AttributeEditorKind;
   options?: { label: string; value: string }[];
   /** Element tags the attribute applies to; empty array means every tag. */
@@ -121,7 +122,7 @@ const INPUT_TYPES = [
   "checkbox", "radio", "range", "file", "hidden", "submit", "button", "reset", "image",
 ].map((value) => ({ label: value, value }));
 
-const BINARY_TOGGLE = (name: string, tags: string[]): AttributeDefinition => ({ name, editor: "toggle", options: TRUE_TOGGLE, tags });
+const BINARY_TOGGLE = (name: EditableAttribute, tags: string[]): AttributeDefinition => ({ name, editor: "toggle", options: TRUE_TOGGLE, tags });
 
 export const ATTRIBUTE_DEFINITIONS: AttributeDefinition[] = [
   // universal

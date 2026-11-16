@@ -259,3 +259,26 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > component 500), max 200 rows. Tests: forced newlines in selector/classes/component/edit
 > fields no longer forge prompt lines at line start (red->green, en markers); legitimate
 > multiline text stays readable as `\n`; handler drops malformed edits.
+
+> P2-1 (webview protocol types) — FIXED: `webview/types.ts` now re-exports
+> `EditableAttribute`/`ElementOp`/`ElementPayload`/`SourceRule` from
+> `@design-studio/preview-runtime/protocol` (8-value EditableAttribute copy vs 41 is gone);
+> only webview-specific `PreviewStateMessage`/`DevServerSuggestion` remain. The hidden casts
+> are removed: `AttributeDefinition.name` is typed as `EditableAttribute`, `Inspector` renders
+> without `as` casts, `PreviewContainer` validates incoming `attribute` via `isEditableAttribute`.
+>
+> P2-2 (`filter` editor without STYLE_PROPS) — FIXED: `filter` added to `STYLE_PROPS`
+> (41 -> 69 entries... exact count: 69), `PROTOCOL_VERSION` bumped "4" -> "5". Regression test:
+> `propertyRegistry.test.ts` parity check fails for any editor whose key is missing from
+> `STYLE_PROPS` (red: `['filter']`, green).
+>
+> P2-13 (dead protocol entities) — FIXED by implementing producers: the runtime now posts
+> `ds:runtime-ready` right after init and `ds:runtime-error` from the auto-init catch, both
+> without page data and only with a concrete target origin (Chromium `ancestorOrigins`;
+> never "*", otherwise ping/pong stays the fallback). `PreviewContainer` accepts a nonce-less
+> `ds:runtime-ready` (origin-filtered) and resolves the handshake instantly. Unreachable
+> entities removed: statuses `iframe-loading`/`blocked-or-load-error` + iframe `onError`
+> branch, i18n keys `preview.iframeLoading`/`preview.blocked`, unreachable `asWebviewUri`
+> demo fallback in `openDesignStudio.ts`, and `protocol.js` from copy-runtime/verify-build
+> (protocol is bundled into runtime.js and the webview). Tests: runtime announcements
+> (concrete origin, no "*", truncation), webview handshake on runtime-ready.
