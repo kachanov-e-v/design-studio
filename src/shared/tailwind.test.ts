@@ -73,8 +73,21 @@ describe("styleToUtilities", () => {
 describe("resolveTailwindClassList", () => {
   it("replaces classes in the same property group", () => {
     expect(resolveTailwindClassList(["kanban-card", "p-4", "bg-white"], ["p-2"])).toEqual(["kanban-card", "bg-white", "p-2"]);
-    expect(resolveTailwindClassList(["p-4", "px-6"], ["py-2"])).toEqual(["py-2"]);
-    expect(resolveTailwindClassList(["ml-2", "-mr-1"], ["my-4"])).toEqual(["my-4"]);
+    // P2-4: py-2 overrides only the vertical axis — the horizontal px-6 stays.
+    expect(resolveTailwindClassList(["p-4", "px-6"], ["py-2"])).toEqual(["px-6", "py-2"]);
+    // P2-4: my-4 overrides top/bottom — side classes on the horizontal axis stay.
+    expect(resolveTailwindClassList(["ml-2", "-mr-1"], ["my-4"])).toEqual(["ml-2", "-mr-1", "my-4"]);
+  });
+
+  it("keeps classes on non-overlapping axes (P2-4)", () => {
+    // Adding a side class keeps the perpendicular axis and drops the covering axis.
+    expect(resolveTailwindClassList(["px-8", "py-2"], ["pt-4"])).toEqual(["px-8", "pt-4"]);
+    // Adding an axis class keeps the perpendicular axis.
+    expect(resolveTailwindClassList(["px-8", "py-2"], ["px-4"])).toEqual(["py-2", "px-4"]);
+    // Adding the shorthand drops every axis/side class it covers.
+    expect(resolveTailwindClassList(["pt-4", "pl-2"], ["p-6"])).toEqual(["p-6"]);
+    // Negative utilities follow the same rule: mt-4 overrides -mt-2 (same side).
+    expect(resolveTailwindClassList(["-mt-2", "mb-1"], ["mt-4"])).toEqual(["mb-1", "mt-4"]);
   });
 
   it("keeps other prefix groups intact", () => {

@@ -391,14 +391,26 @@ function wrap(cls: string | null): string[] | null {
   return cls === null ? null : [cls];
 }
 
+/** Spacing (padding/margin) class coverage: which box sides a class sets. */
+function spacingSides(cls: string): { group: string; sides: string } | null {
+  const m = /^(-?)([pm])([xytrbl])?-.+$/.exec(cls);
+  if (!m) return null;
+  const sides: Record<string, string> = { "": "tbrl", x: "lr", y: "tb", t: "t", r: "r", b: "b", l: "l" };
+  return { group: m[2], sides: sides[m[3] ?? ""] };
+}
+
 /** Conflicts: an existing class is removed when it sets the same properties as one of the added classes. */
 function conflicts(existing: string, added: string): boolean {
   const e = existing.trim();
   const a = added.trim();
   if (!e || !a) return false;
   if (e === a) return true;
-  if (/^-?p([xytrbl])?-/.test(e) && /^-?p([xytrbl])?-/.test(a)) return true;
-  if (/^-?m([xytrbl])?-/.test(e) && /^-?m([xytrbl])?-/.test(a)) return true;
+  // P2-4: padding/margin classes conflict only when they share a box side,
+  // so adding pt-4 keeps px-8/py? (py sets top → dropped) but never the
+  // perpendicular axis.
+  const es = spacingSides(e);
+  const as = spacingSides(a);
+  if (es && as && es.group === as.group && es.sides.split("").some((s) => as.sides.includes(s))) return true;
   if (!e.startsWith("-") && /^w-/.test(e) && /^w-/.test(a)) return true;
   if (/^h-/.test(e) && /^h-/.test(a)) return true;
   if (/^min-w-/.test(e) && /^min-w-/.test(a)) return true;
