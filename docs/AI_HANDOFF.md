@@ -113,3 +113,22 @@
 Осталось вручную (автоматизация невозможна): сверить полный handshake после P1-1/P1-2 на
 Next.js-фикстуре с логином (сессия живёт после навигации, server action redirect, HMR WS),
 а также демо и статическую фикстуру в реальном VS Code — ручная матрица §8.
+
+## Фаза 3 (P2 — батчи по доменам) — в процессе
+
+- 3a (протокол/типы, коммит 8c72f5f): P2-1 (types.ts реэкспортирует протокол, касты убраны),
+  P2-2 (filter в STYLE_PROPS, PROTOCOL_VERSION "4"→"5"), P2-13 (ds:runtime-ready/error
+  реализованы, мёртвые статусы и protocol.js удалены).
+- 3b (runtime, коммит 2062c6a): P2-3 (рекурсивный collectSourceRulesFromStylesheets — @media/
+  @supports/@layer видны «Сохранить стили» и промпту), P2-12 (fiber-префикс
+  __reactInternalInstance$), P2-17 (getSelector уникален до body, duplicate снимает id потомков).
+- 3c (tailwind, коммит 831f962): P2-4 (конфликты по оси/стороне: pt-4 больше не сносит
+  px-8/py-2).
+- 3d (webview UX, коммит 744a83c): P2-5 (дебаунс slider/color), P2-6 (ds:rect — попап
+  следует за скроллом/ресайзом, close+Escape), P2-18 (onBlur commit), P2-19 (placeholder
+  select'а), P2-20 (ErrorBoundary). PROTOCOL_VERSION "6".
+- 3e (persistence): P2-7 (top-level парсер объявлений вместо regex — вложенные правила и
+  комментарии больше не правятся; dirty-документ не save()'ится — чужие несохранённые правки
+  пользователя не коммитятся), P2-21 (decodeVlq: throw при shift>30; normalizeCssSelector:
+  :before≡::before, пробелы, escape-снятие, порядок запятых). 7 новых тестов (были красными
+  до фиксов). Бaseline: typecheck/lint/test 227→234/21 файлов/build+verify — зелёные.

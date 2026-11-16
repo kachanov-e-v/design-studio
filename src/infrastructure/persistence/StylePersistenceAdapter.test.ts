@@ -17,7 +17,11 @@ vi.mock("vscode", () => {
       return {
         getText: () => text,
         positionAt: (offset: number) => new Position(0, offset),
-        save: async () => true,
+        isDirty: uri.fsPath.includes("dirty"),
+        save: async () => {
+          (globalThis as any).__saved.push(uri.fsPath);
+          return true;
+        },
       };
     },
     applyEdit: async (edit: any) => {
@@ -69,12 +73,26 @@ describe("persistence utils", () => {
     const rules = findCssRules(text, ".a");
     expect(rules.length).toBe(2);
   });
+
+  it("P2-21: matches legacy single-colon pseudo-elements against double-colon rules", () => {
+    const authored = ".card:before { color: red; }";
+    expect(findCssRules(authored, ".card::before").length).toBe(1);
+    const modern = ".card::before { color: red; }";
+    expect(findCssRules(modern, ".card:before").length).toBe(1);
+  });
+
+  it("P2-21: tolerates whitespace differences in selector comparison", () => {
+    const text = ".a,\n  .b { color: red; }";
+    expect(findCssRules(text, [".a", ".b"]).length).toBe(1);
+    expect(findCssRules(text, [".a ,.b"]).length).toBe(1);
+  });
 });
 
 describe("StylePersistenceAdapter.apply", () => {
   beforeEach(() => {
     store.clear();
     (globalThis as any).__replacements = [];
+    (globalThis as any).__saved = [];
   });
 
   it("returns no match for missing rule", async () => {
@@ -125,11 +143,41 @@ describe("StylePersistenceAdapter.apply", () => {
     expect(newText).toContain("base64,AAAA+BB==");
     expect(newText).toContain("color: blue;");
   });
+
+  it("P2-7: does not edit a declaration inside a nested rule", async () => {
+    store.set("/tmp/nest.css", ".card {\n  &:hover {\n    color: blue;\n  }\n  color: red;\n}");
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".card", property: "color", value: "green" });
+    expect(res.success).toBe(true);
+    const newText = (globalThis as any).__replacements[0].newText as string;
+    expect(newText).toContain("&:hover {\n    color: blue;\n  }");
+    expect(newText).toContain("color: green;");
+    expect(newText).not.toContain("color: red;");
+  });
+
+  it("P2-7: ignores property mentions inside comments", async () => {
+    store.set("/tmp/com.css", ".card { /* ; color: red; */ padding: 4px; }");
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".card", property: "color", value: "green" });
+    expect(res.success).toBe(true);
+    const newText = (globalThis as any).__replacements[0].newText as string;
+    expect(newText).toContain("/* ; color: red; */ padding: 4px; color: green;");
+    expect(newText).not.toContain("color: green; */");
+  });
+
+  it("P2-7: does not save a dirty document (user keeps their unsaved changes)", async () => {
+    store.set("/tmp/dirty.css", ".a { color: red; }");
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".a", property: "color", value: "green" });
+    expect(res.success).toBe(true);
+    expect((globalThis as any).__saved).not.toContain("/tmp/dirty.css");
+  });
+
+  it("P2-7: saves a clean document", async () => {
+    store.set("/tmp/clean.css", ".a { color: red; }");
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".a", property: "color", value: "green" });
+    expect(res.success).toBe(true);
+    expect((globalThis as any).__saved).toContain("/tmp/clean.css");
+  });
 });
-
-
-
-
-
-
-

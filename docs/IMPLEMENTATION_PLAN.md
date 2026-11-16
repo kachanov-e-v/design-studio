@@ -282,3 +282,51 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 > demo fallback in `openDesignStudio.ts`, and `protocol.js` from copy-runtime/verify-build
 > (protocol is bundled into runtime.js and the webview). Tests: runtime announcements
 > (concrete origin, no "*", truncation), webview handshake on runtime-ready.
+
+### Фаза 3 — P2 (продолжение)
+
+> Фаза 3b (runtime): P2-3 — «Сохранить стили» видела только правила верхнего уровня
+> `document.styleSheets`, @media/@supports/@layer/@container (Tailwind v4) были невидимы.
+> Фикс: новый экспорт `collectSourceRulesFromStylesheets(sheets, el, opts?)` в
+> `packages/preview-runtime/src/index.ts` с рекурсивным обходом CSSGroupingRule (лимиты
+> maxRules=8/maxScanned=1500, дедупликация по href+selectorText+cssText); внутренняя
+> `collectSourceRules` использует его для документа. P2-12 — `fiber.ts` матчил
+> `"__reactInternal$"` вместо `"__reactInternalInstance$"` (React 16 keys всегда мимо);
+> префикс исправлен. P2-17 — `getSelector` обрезался depth<6 (возможный неуникальный
+> селектор) → теперь цепочка до body; `duplicate` сохранял id потомков → дубль id в DOM:
+> id снимаются с клонированных потомков. Тесты: collectSourceRulesFromStylesheets с
+> @media (@vitest jsdom), fiber-префикс, duplicate id-strip.
+> Коммит: 2062c6a.
+
+> Фаза 3c (tailwind): P2-4 — грубые группы конфликтов (добавление `pt-4` удаляло
+> `px-8`/`py-2`); `conflicts()` в `src/shared/tailwind.ts` переписан через `spacingSides()`:
+> конфликт по точной оси/стороне (p+m, ось p↔(px/py/pt/pb) с пересечением сторон). Старые
+> ассерты переписаны на осевую модель, добавлены тесты сохранения px/py при pt/pb.
+> Коммит: 831f962.
+
+> Фаза 3d (webview UX): P2-5 — slider/color отправляли `ds:apply-style` на каждый
+> `onChange` (шквал сообщений + полный collect на каждый тик): preview с дебаунсом 100 мс,
+> финальный commit на pointerUp/keyup/blur. P2-6 — SelectionPopup не следовал за скроллом/
+> ресайзом: протокол bump "5"→"6" + `ds:rect` (RectMessage+валидатор), runtime постит rect
+> в scheduleOutlineUpdate (rAF), PreviewContainer принимает; кнопка close + Escape закрывает.
+> P2-18 — текстовый инспектор коммитится по onBlur, мёртвый guard `type` удалён. P2-19 —
+> пустая disabled-опция в select Toolbar'а, placeholder серверного поля больше не обещает
+> путь страницы. P2-20 — ErrorBoundary оборачивает App (кнопка перезагрузки, i18n
+> app.errorTitle/app.reload). Коммит: 744a83c.
+
+> Фаза 3e (persistence): P2-7 — regex в `StylePersistenceAdapter.editRule` с разделителями
+> `^|;|{`.matched первое совпадение с property, включая объявления ВЛОЖЕННЫХ правил (CSS
+> nesting) и вход внутрь комментариев (упоминание `color:` в комментарии правилось как
+> объявление), а `doc.save()` коммитил и несохранённые правки пользователя. Фикс: новый
+> `findTopLevelDeclarations(body)` в `cssText.ts` — лексер верхнего уровня тела (комментарии,
+> строки, url(...), вложенные `{}` пропускаются); замена/удаление по точному диапазону
+> объявления; dirty-документ не save()'ится (правка остаётся в буфере редактора). P2-21 —
+> (1) `decodeVlq` без ограничения shift (битые sourcemap декодировались в мусор через 32-бит
+> переполнение) → throw при shift>30; (2) точное строковое сравнение селекторов →
+> `normalizeCssSelector` (`:before`≡`::before`, коллапс пробелов, снятие escape-обратных
+> слэшей) применён к обеим сторонам сравнения в findCssRules, wanted-строки со списками
+> через `splitTopLevelSelectors` (порядок запятых не важен). Тест-доказательство (красные до
+> фикса, зелёные после): «does not edit a declaration inside a nested rule», «ignores property
+> mentions inside comments», «does not save a dirty document», «saves a clean document»,
+> «matches legacy single-colon pseudo-elements», «tolerates whitespace differences»,
+> «rejects overlong VLQ sequences». Счётчик тестов: 227→234 (7 новых тестов).
