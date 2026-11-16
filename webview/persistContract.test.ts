@@ -28,6 +28,22 @@ describe("style:persist webview -> extension contract", () => {
     expect(message.sourceRules).toBeUndefined();
     expect(message.selectors).toBeUndefined();
   });
+
+  it("UX-01: a no-op success ack (value already set) drains the pending queue", () => {
+    const pending: PendingStyleEdit[] = [
+      {
+        requestId: "persist-1",
+        selector: ".a",
+        property: "color",
+        value: "red",
+        sourceRules: undefined,
+      },
+    ];
+    // The adapter reports "Property already has this value" with success:true
+    // since UX-01; the queue must drain on it exactly like a real save.
+    const next = ackPendingStyles(pending, { success: true, requestId: "persist-1", message: "Property already has this value" });
+    expect(next).toEqual([]);
+  });
 });
 
 // P0-4: per-edit acknowledgement — an acknowledged edit leaves the queue,

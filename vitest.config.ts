@@ -18,6 +18,8 @@ export default defineConfig({
         "src/infrastructure/persistence/**",
         "src/infrastructure/preview/**",
         "packages/preview-runtime/src/**",
+        "webview/**/*.ts",
+        "webview/**/*.tsx",
       ],
       reporter: ["text", "lcov"],
       // P3-6: per-area line thresholds (≥80% lines for shared, persistence,
@@ -27,6 +29,11 @@ export default defineConfig({
         "src/infrastructure/persistence/**": { lines: 80 },
         "src/infrastructure/preview/**": { lines: 80 },
         "packages/preview-runtime/src/**": { lines: 80 },
+        // ENG-02: the webview UI area is under a threshold as well. The bar
+        // starts at the measured baseline (App/Toolbar/Inspector are only
+        // partially covered by the message-flow and component tests) and must
+        // be raised to 80 as more component tests land.
+        "webview/**": { lines: 54 },
       },
     },
   },

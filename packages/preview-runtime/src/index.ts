@@ -13,6 +13,8 @@ import {
   STYLE_PROPERTY_PATTERN,
 } from "./protocol.js";
 import { collectReactComponents } from "./fiber.js";
+import { pickAnnouncementOrigin } from "./announcementOrigin.js";
+import { shouldHijackToAssign } from "./navigation.js";
 import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 
 export { PROTOCOL_VERSION } from "./protocol.js";
@@ -117,7 +119,7 @@ export function postRuntimeAnnouncement(
   if (targetOrigin === undefined) {
     try {
       const origins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
-      targetOrigin = origins && origins.length > 0 ? String(origins[origins.length - 1]) : null;
+      targetOrigin = pickAnnouncementOrigin(origins);
     } catch {
       targetOrigin = null;
     }
@@ -266,6 +268,18 @@ export function initDesignStudioRuntime(): void {
     }
     try {
       return window.location.origin && window.location.origin !== "null" ? window.location.origin : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  // The preview host serves the app both at its own origin (sticky bare paths,
+  // /proxy/ routes) and at the upstream origin: a link is navigable when it
+  // targets either of them. Everything else stays blocked (NAV-01).
+  const previewOrigin = (() => {
+    try {
+      const origin = window.location.origin;
+      return origin && origin !== "null" ? origin : null;
     } catch {
       return null;
     }
@@ -851,9 +865,11 @@ export function initDesignStudioRuntime(): void {
     const anchor = target.closest<HTMLAnchorElement>("a[href]");
     if (!anchor || !upstreamOrigin || anchor.hasAttribute("download")) return;
     // Predictable link policy for the preview iframe (browse mode):
-    // - same-origin upstream routes navigate inside the preview frame (proxy stays alive);
-    // - links whose target cannot be served by the preview host (any upstream route after an
-    //   href edit, other origins, and dangerous schemes) are blocked with a UI notification.
+    // - links targeting the upstream origin OR the preview host origin (the
+    //   document's own origin: sticky bare paths, /proxy/ routes) navigate
+    //   inside the preview frame (NAV-01);
+    // - links whose target cannot be served by the preview host (other origins,
+    //   dangerous schemes) are blocked with a UI notification.
     let href: URL;
     try {
       href = new URL(anchor.href, window.location.href);
@@ -864,7 +880,10 @@ export function initDesignStudioRuntime(): void {
     const dangerousScheme = ["javascript:", "data:", "vbscript:", "blob:", "about:"].includes(href.protocol);
     if (!dangerousScheme && href.protocol !== "http:" && href.protocol !== "https:") return; // mailto:, tel: — native
     const escapesFrame = Boolean(anchor.target) && anchor.target !== "_self";
-    if (dangerousScheme || href.origin !== upstreamOrigin || escapesFrame) {
+    const navigable =
+      href.origin === upstreamOrigin ||
+      (previewOrigin !== null && href.origin === previewOrigin);
+    if (dangerousScheme || !navigable || escapesFrame) {
       event.preventDefault();
       postToParent({
         type: "ds:navigate-blocked",
@@ -874,6 +893,12 @@ export function initDesignStudioRuntime(): void {
       });
       return;
     }
+    // NAV-02: on bare-path documents (sticky dev routes) same-origin links are
+    // left entirely to the page — native navigation (and SPA client-side
+    // routing with it) keeps working; the proxy + service worker hold the
+    // frame on the preview host. Structured /proxy/ documents and
+    // upstream-origin links keep the explicit hijack below.
+    if (!shouldHijackToAssign(window.location.pathname, href.origin, previewOrigin)) return;
     event.preventDefault();
     window.location.assign(`${href.pathname}${href.search}${href.hash}`);
   }, true);

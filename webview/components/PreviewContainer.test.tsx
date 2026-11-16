@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
-import { describe, it, expect, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, fireEvent, act } from "@testing-library/react";
 import { PreviewContainer } from "./PreviewContainer";
 
 /**
@@ -59,5 +59,56 @@ describe("PreviewContainer origin policy", () => {
     expect(setMode).toBeDefined();
     expect((setMode![0] as { enabled?: boolean }).enabled).toBe(false);
     expect(typeof (setMode![0] as { sessionId?: string }).sessionId).toBe("string");
+  });
+});
+
+/**
+ * WV-02: the ds:navigate address must be built from the CURRENT dev server,
+ * not the one captured when the message-handler effect (deps [url]) was
+ * created. Also regression-guards the duplicated sessionId check that this
+ * fix removed.
+ */
+describe("PreviewContainer address freshness (WV-02)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("uses the latest devServer even when the url is unchanged", async () => {
+    const { PROTOCOL_VERSION } = await import("@design-studio/preview-runtime/protocol");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("fixed-session-id" as `${string}-${string}-${string}-${string}-${string}`);
+    const props = {
+      status: "devserver",
+      language: "ru" as const,
+      editMode: false,
+      onEditModeChange: () => {},
+      onRefresh: () => {},
+      onNavigate: () => {},
+      onLocationChange: () => {},
+      onSelect: () => {},
+    };
+    const { container, rerender } = render(
+      React.createElement(PreviewContainer, { url: "http://127.0.0.1:4100/boards/a", ...props })
+    );
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    fireEvent(iframe, new Event("load"));
+
+    rerender(
+      React.createElement(PreviewContainer, {
+        url: "http://127.0.0.1:4100/boards/a",
+        ...props,
+        devServer: "http://localhost:4700",
+      })
+    );
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "ds:navigate", version: PROTOCOL_VERSION, path: "/boards/b", sessionId: "fixed-session-id" },
+        origin: "http://127.0.0.1:4100",
+        source: iframe.contentWindow,
+      }));
+    });
+
+    const addressInput = container.querySelector("input[aria-label]") as HTMLInputElement;
+    expect(addressInput?.value).toBe("http://localhost:4700/boards/b");
   });
 });

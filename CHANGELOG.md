@@ -15,7 +15,14 @@ source audit (see `docs/IMPLEMENTATION_PLAN.md`, phases 0–4).
 - Browse-mode link policy works: upstream origin is passed via
   `data-upstream-origin`; external links, `target=_blank/_top/_parent` and
   dangerous schemes (`javascript:`, `data:`, `blob:`) are blocked with a UI
-  notification (P0-3).
+  notification (P0-3). Correction: in dev-server (proxy) mode the P0-3 origin
+  check was inverted — every `<base>`-resolved link targeted the preview host
+  origin and was blocked. The policy now allows BOTH the preview host origin
+  and the upstream origin (NAV-01). Follow-up: on bare-path (sticky) routes
+  same-origin link clicks are passed to native navigation again — SPA client
+  side routing (Next.js `<Link>`) works without full page reloads; the explicit
+  `location.assign` hijack remains only for structured `/proxy/…` documents
+  and upstream-origin links (NAV-02).
 - "Save styles": persistence requests are serialized with request-id
   correlation; a failed edit no longer discards the pending queue (P0-4).
 - Security: origin-checked `postMessage` between webview and runtime (P1-1);

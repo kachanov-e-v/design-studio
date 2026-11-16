@@ -92,9 +92,11 @@ export interface InjectOptions {
    */
   respectAuthoredBase?: boolean;
   /**
-   * Origin the runtime anchors its browse-mode link policy to. Without it the
-   * anchor handler exits early and every link (including external and
-   * javascript: ones) navigates the preview frame natively.
+   * Origin of the real upstream (dev) server the runtime anchors its
+   * browse-mode link policy to. The policy navigable set ALSO includes the
+   * document's own (preview host) origin, which links resolve to via the
+   * injected <base>; this attribute keeps links pointing directly at the dev
+   * server navigable too (NAV-01).
    */
   upstreamOrigin?: string;
   /** Extra parent origins the runtime may accept in the handshake (P1-1). */

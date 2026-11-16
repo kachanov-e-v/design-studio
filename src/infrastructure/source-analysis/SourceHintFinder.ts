@@ -23,7 +23,16 @@ const SKIP_DIRS = new Set([
 
 const MAX_FILES = 3000;
 const MAX_FILE_BYTES = 300_000;
+// EXT-01: shared byte budget across the whole scan. Without it the worst case
+// (MAX_FILES x MAX_FILE_BYTES, ~900 MB) was read into memory on every
+// "Copy instruction".
+const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_HINTS = 8;
+
+export interface FindSourceHintsOptions {
+  /** Overrides the shared read budget (bytes) — used by tests. */
+  maxTotalBytes?: number;
+}
 
 /**
  * Find likely source-file locations for a preview element by searching the
@@ -33,7 +42,12 @@ const MAX_HINTS = 8;
  * Async and single-pass: every candidate file is read at most once, and the
  * reads happen off the extension-host critical path via fs/promises.
  */
-export async function findSourceHints(root: string, payload: ElementPayload): Promise<SourceHint[]> {
+export async function findSourceHints(
+  root: string,
+  payload: ElementPayload,
+  options: FindSourceHintsOptions = {}
+): Promise<SourceHint[]> {
+  const maxTotalBytes = options.maxTotalBytes ?? MAX_TOTAL_BYTES;
   const tokens = collectTokens(payload);
   if (tokens.length === 0) return [];
 
@@ -62,16 +76,24 @@ export async function findSourceHints(root: string, payload: ElementPayload): Pr
 
   // One read per file for the entire token loop: previously every file was
   // re-read for every token (thousands of synchronous reads on the UI thread).
+  // Reads go in deterministic walk order under a shared byte budget (EXT-01):
+  // once the budget is spent no NEW files are read, but the search still runs
+  // over everything already read. With MAX_FILE_BYTES capping single files,
+  // the total overshoot is at most one file.
   const contents = new Map<string, string>();
-  await Promise.all(files.map(async (file) => {
+  let totalBytes = 0;
+  for (const file of files) {
+    if (totalBytes >= maxTotalBytes) break;
     try {
       const stat = await fs.promises.stat(file);
-      if (stat.size > MAX_FILE_BYTES) return;
-      contents.set(file, await fs.promises.readFile(file, "utf8"));
+      if (stat.size > MAX_FILE_BYTES) continue;
+      const content = await fs.promises.readFile(file, "utf8");
+      totalBytes += content.length;
+      contents.set(file, content);
     } catch {
       // Unreadable files simply yield no hints.
     }
-  }));
+  }
 
   const found: SourceHint[] = [];
   const seen = new Set<string>();

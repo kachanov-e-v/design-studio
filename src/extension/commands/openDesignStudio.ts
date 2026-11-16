@@ -458,9 +458,10 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   html = html.replace(/(src|href)="\.\/([^"]+)"/g, (_m, attr, p) => `${attr}="${baseUri}/${p}"`);
 
   // Only the preview host origins are frameable; wide http:/https: frame-src
-  // would turn the webview into an embed surface for arbitrary sites.
+  // would turn the webview into an embed surface for arbitrary sites. ENG-07:
+  // `data:` is kept for images (inlined previews) only — it is not frameable.
   const previewOrigins = "http://127.0.0.1:* http://localhost:* http://[::1]:*";
-  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} ${previewOrigins} data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} ${previewOrigins} data:;" />`;
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} ${previewOrigins} data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} ${previewOrigins};" />`;
   if (!html.includes("Content-Security-Policy")) {
     // Match the real <head> element only (with attributes, without <header>)
     // and fall back to prepending before the document body.

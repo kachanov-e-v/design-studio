@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Toolbar } from "./components/Toolbar";
 import { PreviewContainer, type PreviewContainerHandle, type OpAppliedInfo } from "./components/PreviewContainer";
 import { Inspector } from "./components/Inspector";
@@ -50,6 +50,15 @@ export function App(): React.ReactElement {
     pendingRequestsRef.current.clear();
   };
 
+  // WV-01: the selection and the edit journal are valid for one document route.
+  const resetSessionEdits = useCallback(() => {
+    setSelected(null);
+    setPendingStyles([]);
+    setEdits([]);
+    setStyleError("");
+  }, []);
+  const lastRouteRef = useRef<string | null>(null);
+
   const recordEdit = (edit: DesignEdit) => {
     setEdits((previous) => {
       const replaceable = edit.kind === "style" || edit.kind === "classes" || edit.kind === "text" || edit.kind === "attribute";
@@ -100,10 +109,8 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     clearPending();
-    setSelected(null);
-    setPendingStyles([]);
-    setEdits([]);
-    setStyleError("");
+    resetSessionEdits();
+    lastRouteRef.current = null;
   }, [state.url]);
 
   const handleChange = (property: string, value: string) => {
@@ -260,6 +267,10 @@ export function App(): React.ReactElement {
   };
 
   const handlePreviewLocationChange = (path: string) => {
+    // WV-01: ds:navigate also arrives on set-mode with an unchanged path;
+    // only a real route change clears the session edit journal.
+    if (lastRouteRef.current !== null && lastRouteRef.current !== path) resetSessionEdits();
+    lastRouteRef.current = path;
     postToExtension({ type: "project:rememberNavigation", path });
   };
 

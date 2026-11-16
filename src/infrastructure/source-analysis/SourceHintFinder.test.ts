@@ -120,3 +120,39 @@ describe("contextToPrompt", () => {
     expect(prompt).not.toContain("Возможные исходные файлы");
   });
 });
+
+// EXT-01: the scan must obey the shared read budget. Files are read in
+// deterministic order under a total-bytes cap; once the cap is spent, new
+// files are not read, but hints in the files already read are still found.
+describe("findSourceHints read budget (EXT-01)", () => {
+  const budgetPayload = {
+    selector: "div",
+    tag: "div",
+    rect: { top: 0, left: 0, width: 10, height: 10 },
+    styles: {},
+    text: "alpha",
+  };
+
+  it("stops reading new files once the budget is spent and keeps found hints", async () => {
+    const root = makeProject({
+      "aaa/first.tsx": "// alpha marker in the first file\nexport const a = 1;\n",
+      "mmm/middle.tsx": "// alpha marker in the middle file\nexport const m = 2;\n",
+      "zzz/last.tsx": "// alpha marker in the last file\nexport const z = 3;\n",
+    });
+    // Readdir + LIFO directory walk gives zzz/last.tsx as the first candidate;
+    // with a 10-byte budget only that single file is read.
+    const hints = await findSourceHints(root, budgetPayload as never, { maxTotalBytes: 10 });
+    expect(hints.map((h) => h.file)).toEqual(["zzz/last.tsx"]);
+    expect(hints[0].snippet).toContain("alpha");
+  });
+
+  it("reads everything when the contents fit the budget", async () => {
+    const root = makeProject({
+      "aaa/first.tsx": "// alpha marker in the first file\nexport const a = 1;\n",
+      "mmm/middle.tsx": "// alpha marker in the middle file\nexport const m = 2;\n",
+      "zzz/last.tsx": "// alpha marker in the last file\nexport const z = 3;\n",
+    });
+    const hints = await findSourceHints(root, budgetPayload as never, { maxTotalBytes: 32 * 1024 * 1024 });
+    expect(hints.map((h) => h.file)).toEqual(["aaa/first.tsx", "mmm/middle.tsx", "zzz/last.tsx"]);
+  });
+});

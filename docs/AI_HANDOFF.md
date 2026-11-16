@@ -189,3 +189,63 @@ Win/macOS/Linux) — помечена как ручная; публикация.
 - Ручная матрица (Next.js dev с авторизацией, Vite, статический проект, демо; RU/EN;
   Windows/macOS/Linux) и `vsce publish` — требуют живой среды и аккаунта publisher'а,
   агентом не выполняются. См. §8 инструкции.
+
+## Сессия NAV/RT/WV/EXT/UX (docs/AI_AGENT_FIX_PLAN.md, Фазы A+B)
+
+Выполнено по `docs/AI_AGENT_FIX_PLAN.md` (Фазы A и B; ledger с деталями —
+`docs/IMPLEMENTATION_PLAN.md`, раздел «Ledger: план NAV/RT/WV/EXT/UX»):
+
+- NAV-01: политика ссылок browse-режима допускает origin preview-хоста И
+  upstream (было: только upstream, из-за `<base>` Polитика была инвертирована
+  и блокировала все внутренние ссылки dev-режима). 4 новых jsdom-теста
+  (preview-origin/upstream/external/target=_blank), jsdom URL через
+  `@vitest-environment-options`.
+- RT-01: `ds:runtime-ready/error` адресуется в непосредственного родителя
+  (`pickAnnouncementOrigin(origins)=origins[0]`), а не в topmost.
+- WV-01: журнал правок webview очищается при реальной смене маршрута из
+  `ds:navigate` (`resetSessionEdits` + `lastRouteRef`); тест на App целиком.
+- WV-02: убран дубль sessionId-проверки; `devServer` в `ds:navigate` берётся
+  из ref (нет устаревшего замыкания); тест адресной строки.
+- EXT-01: `SourceHintFinder` — общий бюджет чтения 32 МБ
+  (`MAX_TOTAL_BYTES`, опция `maxTotalBytes`), детерминированный порядок; тесты.
+- UX-01: no-op персистентности («Property already has this value») = успех,
+  очередь `pendingStyles` дренируется; тесты адаптера и persistContract.
+- DOC: TROUBLESHOOTING (симптом NAV-01), CHANGELOG (P0-3 уточнён), план
+  переименован в `docs/AI_AGENT_FIX_PLAN.md`.
+
+Гейты: typecheck, lint (0 ошибок), test 317 (25 файлов), build+verify —
+зелёные. Коммиты: NAV-01, docs, RT-01, WV-01, WV-02, EXT-01, UX-01, type-fixes.
+
+Не выполнено (следующие фазы вручную проверяемого характера):
+- Фаза C — NAV-02 (нативная SPA-навигация на голых маршрутах).
+- Фаза D — CSS-01 (нужен protocol bump), ENG-бэклог.
+- Ручная матрица §14 (Extension Development Host, F5, Next.js с
+  авторизацией) — выполняет пользователь после `npm run build` +
+  Developer: Reload Window.
+
+## Сессия NAV/RT/WV/EXT/UX (продолжение): Фаза C + Фаза D (частично) + DOC-01
+
+- Фаза C — NAV-02: same-origin клики на голых маршрутах проходят нативно
+  (без preventDefault/location.assign) — SPA-роутеры (Next.js Link) работают
+  штатно; hijack через location.assign сохранён только под `/proxy/…`.
+  Новый модуль `packages/preview-runtime/src/navigation.ts`
+  (`shouldHijackToAssign`), протокол не менялся. Обязательная ручная проверка
+  на Next.js — см. матрицу ниже.
+- Фаза D (частично): ENG-02 (coverage-порог `webview/**`), ENG-07 (без `data:`
+  в frame-src), ENG-08 (*.map не в VSIX), ENG-06 (cookie-заметки в SECURITY.md).
+  ENG-03: отклонение от плана — `allowScripts` оставлен (npm потребляет это
+  поле). CSS-01: задокументирован как ограничение в TROUBLESHOOTING — требует
+  protocol bump, остался в backlog. ENG-01/04/05/09/10/11 — backlog.
+- DOC-01 завершён: `docs/AI_AGENT_INSTRUCTIONS.md` синхронизирован (протокол v6,
+  STYLE_PROPS=70, EDITABLE_ATTRIBUTES=40, продюсеры runtime-ready/error есть,
+  ссылка на `docs/AI_AGENT_FIX_PLAN.md`).
+- Ledger с деталями: `docs/IMPLEMENTATION_PLAN.md`, раздел
+  «Ledger: план NAV/RT/WV/EXT/UX», записи NAV-02 / Фаза D / DOC-01.
+
+Гейты после Фаз C+D: typecheck, lint, test, build — зелёные.
+
+Ручная матрица §14 плана (Extension Development Host, F5) — выполняет
+пользователь: `npm run build`, затем Developer: Reload Window; ключевые пункты —
+навигация по `/boards/<id>` внутри превью без потери сессии (NAV-01),
+SPA-переходы без полной перезагрузки (NAV-02), блокировка внешних/javascript
+ссылок, дренирование очереди стилей, демо и /project/ без регрессий.
