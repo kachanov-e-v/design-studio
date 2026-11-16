@@ -304,6 +304,26 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         });
         return;
       }
+      if (msg.type === "source:reveal") {
+        const raw = Array.isArray(msg.components) ? (msg.components as unknown[]) : [];
+        const valid: { name?: string; file?: string; line?: number }[] = [];
+        for (const entry of raw.slice(0, 20)) {
+          if (!entry || typeof entry !== "object") continue;
+          const item = entry as { name?: unknown; file?: unknown; line?: unknown };
+          valid.push({
+            name: typeof item.name === "string" ? item.name.slice(0, 500) : undefined,
+            file: typeof item.file === "string" ? item.file.slice(0, 500) : undefined,
+            line: typeof item.line === "number" && Number.isFinite(item.line) && item.line > 0 ? Math.floor(item.line) : undefined,
+          });
+        }
+        const result = await promptExport.revealComponent(valid, language);
+        panel.webview.postMessage({
+          type: "ai:componentResult",
+          success: result.success,
+          message: result.message,
+        });
+        return;
+      }
       if (msg.type === "ai:copyComponent") {
         const component = msg.component;
         if (!component || typeof component !== "object") {
