@@ -50,7 +50,7 @@ describe("static-site integration fixture", () => {
     const res = await get(`${server.origin}/project/`);
     expect(res.status).toBe(200);
     expect(res.body).toContain("Static fixture home");
-    expect(res.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
+    expect(res.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer data-upstream-origin="');
     expect(res.body).toContain("<base");
   });
 
@@ -60,7 +60,7 @@ describe("static-site integration fixture", () => {
     const about = await get(`${server.origin}/project/about.html`);
     expect(about.status).toBe(200);
     expect(about.body).toContain("About this fixture");
-    expect(about.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
+    expect(about.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer data-upstream-origin="');
   });
 
   it("rewrites root-absolute css urls to the /project/ prefix", async () => {
@@ -110,5 +110,12 @@ describe("static-site integration fixture", () => {
       const tags = res.body.match(/<script[^>]*src="\/__ds-runtime\.js"[^>]*><\/script>/g) ?? [];
       expect(tags, `page ${page}`).toHaveLength(1);
     }
+  });
+
+  // P0-3: project pages also carry the upstream origin (the preview origin
+  // itself), so dangerous schemes are blocked and same-origin links resolve.
+  it("stamps data-upstream-origin on project runtime scripts", async () => {
+    const res = await get(`${server.origin}/project/`);
+    expect(res.body).toContain(`data-upstream-origin="${server.origin}"`);
   });
 });

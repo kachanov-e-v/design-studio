@@ -120,10 +120,28 @@ export function initDesignStudioRuntime(): void {
   // Opt-in diagnostics for the select pipeline; see docs/IMPLEMENTATION_PLAN.md (EPIC E/H4).
   perfEnabled = debugPerfEnabled(window.location.search);
   const upstreamOrigin = (() => {
+    // Explicit injection attribute is the primary source (proxied and project
+    // pages); fall back to the document base/own origin so the browse-mode
+    // link policy stays alive when an app embeds the runtime itself.
     const raw = runtimeScript?.dataset.upstreamOrigin;
-    if (!raw) return null;
+    if (raw) {
+      try {
+        return new URL(raw).origin;
+      } catch {
+        // fall through
+      }
+    }
+    const base = document.querySelector("base[href]");
+    if (base) {
+      try {
+        const origin = new URL(base.getAttribute("href")!, window.location.href).origin;
+        if (origin && origin !== "null") return origin;
+      } catch {
+        // fall through
+      }
+    }
     try {
-      return new URL(raw).origin;
+      return window.location.origin && window.location.origin !== "null" ? window.location.origin : null;
     } catch {
       return null;
     }

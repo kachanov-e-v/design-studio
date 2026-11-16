@@ -193,6 +193,14 @@ describe("proxy-html helpers", () => {
     expect(out.indexOf("<base")).toBeLessThan(out.indexOf("<title>"));
   });
 
+  // P0-3: proxied HTML must carry the upstream origin so the runtime can
+  // enforce the browse-mode link policy.
+  it("stamps data-upstream-origin on the proxied runtime script", () => {
+    const out = rewriteProxiedHtml(stubHtml, "https://upstream.example:3443/app/", "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1");
+    expect(out).toContain('data-upstream-origin="https://upstream.example:3443"');
+    expect(out).not.toContain('data-upstream-origin=""');
+  });
+
   it("A7: does not mistake <header> for <head>", () => {
     const html = "<!DOCTYPE html><html><header><h1>App</h1></header><body></body></html>";
     const out = injectIntoHtml(html, "http://127.0.0.1:1/__ds-runtime.js", "http://127.0.0.1:1/proxy/http://x/");
@@ -501,7 +509,7 @@ describe("PreviewHostServer", () => {
       const page = await get(`${projectServer.origin}/project/index.html`);
       expect(page.status).toBe(200);
       expect(page.body).toContain("Project page");
-      expect(page.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer></script>');
+      expect(page.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer data-upstream-origin="');
       expect(page.body.match(/<script[^>]*src="\/__ds-runtime\.js"/g)).toHaveLength(1);
       expect(page.headers["content-type"]).toContain("text/html");
 

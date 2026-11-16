@@ -488,8 +488,11 @@ export class PreviewHostServer {
       let htmlContent = content.toString("utf8");
       // Single injection point for project pages: base + runtime + authored
       // <base> respect live in injectIntoHtml (P0-2 guard lives in the runtime).
+      // The upstream origin is the preview origin itself: all /project/ links
+      // are same-origin, dangerous schemes stay blocked.
       htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.projectBaseHrefFor(filePath), {
         respectAuthoredBase: true,
+        upstreamOrigin: this.origin,
       });
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(htmlContent);
