@@ -75,3 +75,56 @@ describe("contextToPrompt prompt-injection hardening (P1-5)", () => {
     expect(prompt).toContain("line1\\nline2");
   });
 });
+
+describe("contextToPrompt markdown structure", () => {
+  const baseCtx: ElementSelectionContext = {
+    selector: ".card",
+    tag: "div",
+    styles: { color: "red" },
+    components: [{ name: "Card", file: "src/ui/Card.tsx", line: 10 }],
+  };
+
+  it("keeps the untrusted page-data fenced by the START/END markers", () => {
+    const prompt = contextToPrompt(baseCtx, "make it blue", [], "en");
+    const start = prompt.indexOf("PAGE DATA — START");
+    const end = prompt.indexOf("PAGE DATA — END");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    // Everything page-derived (element, component, styles) sits inside the fence.
+    expect(prompt.slice(start, end)).toContain("Card");
+    expect(prompt.slice(start, end)).toContain("src/ui/Card.tsx");
+    // Wish and steps stay outside the fence.
+    expect(prompt.slice(end)).toContain("make it blue");
+  });
+
+  it("reports whether editor changes exist or only the user request", () => {
+    const withoutEdits = contextToPrompt(baseCtx, "make it blue", [], "en");
+    expect(withoutEdits).toContain("Editor edits: none");
+    const withEdits = contextToPrompt(
+      baseCtx,
+      "",
+      [{ kind: "style", selector: ".card", property: "color", before: "red", after: "blue" }],
+      "en"
+    );
+    expect(withEdits).toContain("Editor edits: 1 were made");
+    expect(withEdits).toContain("## Editor edits");
+  });
+
+  it("renders sections in a stable order and skips empty ones", () => {
+    const prompt = contextToPrompt(baseCtx, "make it blue", [], "ru");
+    const order = [
+      prompt.indexOf("# Инструкция для ИИ-кодового агента"),
+      prompt.indexOf("## Задача"),
+      prompt.indexOf("## Элемент"),
+      prompt.indexOf("## Компонент"),
+      prompt.indexOf("## Стили и CSS"),
+      prompt.indexOf("## Пожелание пользователя"),
+      prompt.indexOf("## Порядок действий"),
+    ];
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // No section for empty optional data.
+    expect(prompt).not.toContain("## Возможные исходные файлы");
+    expect(prompt).not.toContain("## Правки в редакторе");
+  });
+});

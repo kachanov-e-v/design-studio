@@ -32,6 +32,14 @@ source audit (see `docs/IMPLEMENTATION_PLAN.md`, phases 0–4).
   panel opens (demo, new project): the webview re-posts `ds:set-mode` until
   the runtime confirms with `ds:mode-changed`, so a set-mode lost during
   instant connect no longer leaves the preview in browse mode (WV-03).
+- "Copy instruction" prompt rebuilt as structured Markdown with logical
+  sections (task, fenced untrusted page data, element, component, styles,
+  source hints, editor edits, user request, numbered procedure). The prompt
+  now states up front whether editor edits exist or the task comes only from
+  the user request, omits empty sections (including empty computed styles),
+  and lists source files for the whole React owner chain, not just the first
+  component. Security invariants unchanged: `PAGE DATA — START/END` fencing
+  and `dataValue()` newline flattening for every page-derived string.
 - "Save styles": persistence requests are serialized with request-id
   correlation; a failed edit no longer discards the pending queue (P0-4).
 - Security: origin-checked `postMessage` between webview and runtime (P1-1);
