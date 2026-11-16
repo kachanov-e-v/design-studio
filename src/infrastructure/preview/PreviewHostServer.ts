@@ -58,6 +58,8 @@ interface JarCookie {
   value: string;
   /** Epoch ms, or null for session cookies. */
   expiresAt: number | null;
+  /** Upstream request path the cookie is scoped to (default "/"). */
+  path: string;
 }
 
 /** Scope upstream cookies to the local preview origin so app sessions survive navigation. */
@@ -164,6 +166,16 @@ export function parseByteRange(header: string, total: number): [number, number] 
   }
   if (start >= total || start < 0 || end < 0) return "invalid";
   return [start, end];
+}
+
+/** P2-15: hard cap on jar entries to bound host memory. */
+const MAX_JAR_ENTRIES = 512;
+
+/** RFC 6265 path-match between a stored cookie path and the upstream request path. */
+function cookiePathMatches(cookiePath: string, requestPath: string): boolean {
+  if (requestPath === cookiePath) return true;
+  const base = cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`;
+  return requestPath.startsWith(base);
 }
 
 export type ProjectPathResolution =
@@ -282,7 +294,9 @@ export class PreviewHostServer {
   }
 
   private devTarget: string | null = null;
-  /** Keys are `${upstreamOrigin}|${cookieName}`: cookies never leak across loopback origins/ports. */
+  // P2-15: keys are `${upstreamOrigin}|${path}|${name}` so same-name cookies
+  // with different Path attributes do not clobber each other, and the jar is
+  // LRU-capped so a runaway upstream cannot grow it without bound.
   private cookieJar = new Map<string, JarCookie>();
   /** Hijacked WebSocket sockets: closed() waits on them unless torn down. */
   private upgradedSockets = new Set<net.Socket>();
@@ -676,12 +690,12 @@ export class PreviewHostServer {
         // keep as-is
       }
     }
-    const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin);
+    const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin, target.pathname);
     if (jarCookieHeader) headers["cookie"] = jarCookieHeader;
     return headers;
   }
 
-  private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string): string | undefined {
+  private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string, requestPath: string): string | undefined {
     if (this.cookieJar.size === 0) return browserCookie;
     const prefix = `${upstreamOrigin}|`;
     const cookies = new Map<string, string>();
@@ -692,14 +706,30 @@ export class PreviewHostServer {
       if (name) cookies.set(name, pair.slice(eq + 1).trim());
     }
     const now = Date.now();
+    const touched: [string, JarCookie][] = [];
     for (const [key, entry] of this.cookieJar) {
       if (!key.startsWith(prefix)) continue;
-      const name = key.slice(prefix.length);
+      const rest = key.slice(prefix.length);
+      const sep = rest.lastIndexOf("|");
+      if (sep === -1) {
+        // Entry from an older jar format without the path component.
+        this.cookieJar.delete(key);
+        continue;
+      }
+      const name = rest.slice(sep + 1);
       if (entry.expiresAt !== null && entry.expiresAt <= now) {
         this.cookieJar.delete(key);
         continue;
       }
+      if (entry.path !== "/" && !cookiePathMatches(entry.path, requestPath)) continue;
       cookies.set(name, entry.value);
+      touched.push([key, entry]);
+    }
+    // LRU bookkeeping after the scan: re-inserting during iteration would
+    // revisit fresh entries.
+    for (const [key, entry] of touched) {
+      this.cookieJar.delete(key);
+      this.cookieJar.set(key, entry);
     }
     if (cookies.size === 0) return undefined;
     return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
@@ -711,10 +741,13 @@ export class PreviewHostServer {
     if (eq === -1) return;
     const name = rawCookie.slice(0, eq).trim();
     if (!name) return;
-    const key = `${upstreamOrigin}|${name}`;
     const valueEnd = semi === -1 ? rawCookie.length : semi;
     const value = rawCookie.slice(eq + 1, valueEnd).trim();
     const attributes = rawCookie.slice(valueEnd);
+    let cookiePath = "/";
+    const pathAttr = /path\s*=\s*([^;]+)/i.exec(attributes);
+    if (pathAttr && pathAttr[1].trim()) cookiePath = pathAttr[1].trim();
+    const key = `${upstreamOrigin}|${cookiePath}|${name}`;
     let expiresAt: number | null = null;
     const maxAge = /max-age\s*=\s*(-?\d+)/i.exec(attributes);
     if (maxAge) {
@@ -738,7 +771,18 @@ export class PreviewHostServer {
         }
       }
     }
-    this.cookieJar.set(key, { value, expiresAt });
+    this.touchJar(key, { value, expiresAt, path: cookiePath });
+  }
+
+  /** P2-15: refresh recency on write and evict the least recently used beyond the cap. */
+  private touchJar(key: string, entry: JarCookie): void {
+    this.cookieJar.delete(key);
+    this.cookieJar.set(key, entry);
+    while (this.cookieJar.size > MAX_JAR_ENTRIES) {
+      const oldest = this.cookieJar.keys().next().value;
+      if (oldest === undefined) break;
+      this.cookieJar.delete(oldest);
+    }
   }
 
   private rememberSetCookies(cookies: string[], upstreamOrigin: string): void {

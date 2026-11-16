@@ -79,6 +79,17 @@ beforeAll(async () => {
       res.setHeader("Set-Cookie", ["sid=abc; Max-Age=0"]);
       res.writeHead(200);
       res.end("bye");
+    } else if (p === "/path-cookie") {
+      res.setHeader("Set-Cookie", ["hop=a; Path=/a", "hop=b; Path=/b"]);
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    } else if (p === "/many-cookies") {
+      res.setHeader("Set-Cookie", Array.from({ length: 600 }, (_, i) => `c${i}=${i}; Path=/`));
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    } else if (p === "/a/echo-headers" || p === "/b/echo-headers") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ cookie: req.headers["cookie"] ?? null }));
     } else if (p === "/ext-redirect") {
       res.writeHead(302, { Location: "http://example.org/next" });
       res.end();
@@ -973,5 +984,42 @@ describe("P2-14: static project file serving (Range, MIME types)", () => {
     expect(res.status).toBe(200);
     expect(res.headers["accept-ranges"]).toBe("bytes");
     expect(res.headers["content-length"]).toBe(String(data.length));
+  });
+
+});
+
+describe("P2-15: cookie jar scoping/cap", () => {
+  let server: PreviewHostServer;
+  beforeAll(async () => {
+    server = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await server.start();
+  });
+  afterAll(async () => {
+    await server.stop();
+  });
+  // P2-15: jar entries are keyed by upstream path, so same-name cookies with
+  // different Path attributes no longer overwrite each other.
+  it("P2-15: keeps same-name cookies apart by upstream path", async () => {
+    await get(`${server.origin}/proxy/${stubOrigin}/path-cookie`);
+    const a = await request(`${server.origin}/proxy/${stubOrigin}/a/echo-headers`, { method: "GET" });
+    const b = await request(`${server.origin}/proxy/${stubOrigin}/b/echo-headers`, { method: "GET" });
+    const cookieA = JSON.parse(a.body).cookie as string | null;
+    const cookieB = JSON.parse(b.body).cookie as string | null;
+    expect(cookieA).toContain("hop=a");
+    expect(cookieA).not.toContain("hop=b");
+    expect(cookieB).toContain("hop=b");
+    expect(cookieB).not.toContain("hop=a");
+  });
+
+  // P2-15: the jar is LRU-capped so runaway upstreams cannot grow it forever.
+  it("P2-15: the jar is LRU-capped", async () => {
+    await get(`${server.origin}/proxy/${stubOrigin}/many-cookies`);
+    const echo = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, { method: "GET" });
+    const cookie = JSON.parse(echo.body).cookie as string | null;
+    expect(cookie).not.toBeNull();
+    const names = (cookie ?? "").split("; ").map((c) => c.split("=")[0]);
+    expect(names.length).toBeLessThanOrEqual(512);
+    expect(names).not.toContain("c0");
+    expect(names).toContain("c599");
   });
 });
