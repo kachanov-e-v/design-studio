@@ -17,6 +17,13 @@ export function isValidCssValue(value: string): boolean {
     !Array.from(value).some((ch) => ch.charCodeAt(0) < 0x20)
   );
 }
+const PSEUDO_ELEMENT_SINGLE = /(?<!:):(before|after|first-line|first-letter|placeholder|selection|marker|backdrop)(?![a-zA-Z-])/g;
+// Normalized form used only for comparisons: whitespace collapsed, legacy single-colon
+// pseudo-elements mapped to their double-colon names, identifier escapes stripped.
+export function normalizeCssSelector(selector: string): string {
+  const escaped = selector.trim().replace(/\\(\r?\n)/g, "").replace(/\\(.)/g, "$1");
+  return escaped.replace(/\s+/g, " ").replace(PSEUDO_ELEMENT_SINGLE, "::$1");
+}
 export function splitTopLevelSelectors(input: string): string[] {
   const result: string[] = [];
   let current = "";
@@ -69,7 +76,10 @@ export function splitTopLevelSelectors(input: string): string[] {
 }
 export function findCssRules(text: string, selector: string | string[]): CssRuleMatch[] {
   const candidates = Array.isArray(selector) ? selector : [selector];
-  const wanted = candidates.filter((s) => typeof s === "string" && s.length > 0).map((s) => s.trim().replace(/\s+/g, " "));
+  const wanted = candidates
+    .filter((s) => typeof s === "string" && s.length > 0)
+    .flatMap(splitTopLevelSelectors)
+    .map(normalizeCssSelector);
   const result: CssRuleMatch[] = [];
   const findMatchingBrace = (start: number): number => {
     let depth = 0;
@@ -147,7 +157,7 @@ export function findCssRules(text: string, selector: string | string[]): CssRule
       const close = findMatchingBrace(j);
       if (close === -1 || close > to) break;
       const selectors = splitTopLevelSelectors(selectorText);
-      if (selectors.length > 0 && selectors.some((s) => wanted.includes(s))) {
+      if (selectors.length > 0 && selectors.map(normalizeCssSelector).some((s) => wanted.includes(s))) {
         result.push({
           selectorText,
           selectors,
@@ -161,5 +171,146 @@ export function findCssRules(text: string, selector: string | string[]): CssRule
     }
   };
   parse(0, text.length);
+  return result;
+}
+
+export interface CssDeclarationSpan {
+  property: string;
+  start: number;
+  end: number;
+}
+// Top-level declarations of a rule body. Nested blocks, comments, quoted strings
+// and parenthesised values (url(...)) are skipped, so a property that only appears
+// inside them is never matched as a top-level declaration.
+export function findTopLevelDeclarations(body: string): CssDeclarationSpan[] {
+  const result: CssDeclarationSpan[] = [];
+  let depth = 0;
+  let parenDepth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let identStart = -1;
+  let i = 0;
+  const findDeclEnd = (from: number): number => {
+    let j = from;
+    let inS = false;
+    let inDq = false;
+    let parens = 0;
+    while (j < body.length) {
+      const ch = body[j];
+      if (inS) {
+        if (ch === "\\") j += 1;
+        else if (ch === "'") inS = false;
+        j += 1;
+        continue;
+      }
+      if (inDq) {
+        if (ch === "\\") j += 1;
+        else if (ch === '"') inDq = false;
+        j += 1;
+        continue;
+      }
+      if (ch === "'") {
+        inS = true;
+        j += 1;
+        continue;
+      }
+      if (ch === '"') {
+        inDq = true;
+        j += 1;
+        continue;
+      }
+      if (ch === "/" && body[j + 1] === "*") {
+        const end = body.indexOf("*/", j + 2);
+        j = end === -1 ? body.length : end + 2;
+        continue;
+      }
+      if (ch === "(") {
+        parens += 1;
+      } else if (ch === ")") {
+        if (parens > 0) parens -= 1;
+      } else if (ch === ";" && parens === 0) {
+        return j + 1;
+      }
+      j += 1;
+    }
+    return body.length;
+  };
+  while (i < body.length) {
+    const ch = body[i];
+    if (inSingle) {
+      if (ch === "\\") i += 1;
+      else if (ch === "'") inSingle = false;
+      i += 1;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\") i += 1;
+      else if (ch === '"') inDouble = false;
+      i += 1;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && body[i + 1] === "*") {
+      const end = body.indexOf("*/", i + 2);
+      i = end === -1 ? body.length : end + 2;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      identStart = -1;
+      i += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      identStart = -1;
+      i += 1;
+      continue;
+    }
+    if (depth > 0) {
+      i += 1;
+      continue;
+    }
+    if (ch === "(") {
+      parenDepth += 1;
+      identStart = -1;
+      i += 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (parenDepth > 0) parenDepth -= 1;
+      i += 1;
+      continue;
+    }
+    if (ch === ";") {
+      identStart = -1;
+      i += 1;
+      continue;
+    }
+    if (/[A-Za-z-]/.test(ch)) {
+      if (identStart === -1) identStart = i;
+      i += 1;
+      continue;
+    }
+    if (ch === ":" && identStart !== -1) {
+      const property = body.slice(identStart, i);
+      const end = findDeclEnd(i + 1);
+      result.push({ property, start: identStart, end });
+      i = end;
+      identStart = -1;
+      continue;
+    }
+    identStart = -1;
+    i += 1;
+  }
   return result;
 }

@@ -7,7 +7,9 @@ const publicDir = path.join(root, "webview", "public");
 
 const copies = [
   { from: "bundle.js", to: "runtime.js" },
-  { from: "protocol.js", to: "protocol.js" },
+  // P2-13: protocol.js was copied but never loaded anywhere — the protocol is
+  // bundled into runtime.js (IIFE) and into the webview by vite; dropped from
+  // the pipeline (docs/LEGACY_CLEANUP).
 ];
 
 for (const c of copies) {

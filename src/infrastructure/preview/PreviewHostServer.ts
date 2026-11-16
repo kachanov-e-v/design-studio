@@ -58,6 +58,8 @@ interface JarCookie {
   value: string;
   /** Epoch ms, or null for session cookies. */
   expiresAt: number | null;
+  /** Upstream request path the cookie is scoped to (default "/"). */
+  path: string;
 }
 
 /** Scope upstream cookies to the local preview origin so app sessions survive navigation. */
@@ -125,21 +127,58 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".map": "application/json",
+  ".avif": "image/avif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".otf": "font/otf",
+  ".eot": "application/vnd.ms-fontobject",
 };
 
-/** Replace or inject the Design Studio runtime script into project HTML. */
-export function injectRuntimeIntoHtml(html: string, runtimeSrc: string): string {
-  if (html.includes("/__ds-runtime.js")) return html;
-  const tag = `<script src="${runtimeSrc}"></script>`;
-  // `(?=[\s>])` keeps the match on the real <head>/<html> element —
-  // a <header> tag in headless HTML must not swallow the runtime script.
-  if (/<head(?=[\s>])[^>]*>/i.test(html)) {
-    return html.replace(/<head(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
+/**
+ * P2-14: parse a single-range `Range: bytes=...` header against a total size.
+ * Returns [start, end] (inclusive), "invalid" for unsatisfiable/unsupported
+ * ranges (e.g. start >= total, malformed units), or null when the header is
+ * absent or uses a multi-range form the server does not serve.
+ */
+export function parseByteRange(header: string, total: number): [number, number] | "invalid" | null {
+  if (!header.startsWith("bytes=")) return null;
+  const spec = header.slice("bytes=".length).trim();
+  if (spec.includes(",")) return null; // multi-range requests are not served
+  const match = /^(\d*)-(\d*)$/.exec(spec);
+  if (!match) return "invalid";
+  const [, startRaw, endRaw] = match;
+  if (startRaw === "" && endRaw === "") return "invalid";
+  let start: number;
+  let end: number;
+  if (startRaw === "") {
+    // suffix form: last N bytes
+    const suffix = Number(endRaw);
+    if (!Number.isInteger(suffix) || suffix === 0) return "invalid";
+    start = Math.max(0, total - suffix);
+    end = total - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw === "" ? total - 1 : Math.min(Number(endRaw), total - 1);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return "invalid";
+    if (start > end) return "invalid";
   }
-  if (/<html(?=[\s>])[^>]*>/i.test(html)) {
-    return html.replace(/<html(?=[\s>])[^>]*>/i, (m) => `${m}\n${tag}`);
-  }
-  return `${tag}\n${html}`;
+  if (start >= total || start < 0 || end < 0) return "invalid";
+  return [start, end];
+}
+
+/** P2-15: hard cap on jar entries to bound host memory. */
+const MAX_JAR_ENTRIES = 512;
+// P3-7: expired jar entries are pruned lazily as requests read them, plus a
+// periodic sweep so stale sessions do not linger on an idle host.
+const JAR_PURGE_INTERVAL_MS = 60_000;
+
+/** RFC 6265 path-match between a stored cookie path and the upstream request path. */
+function cookiePathMatches(cookiePath: string, requestPath: string): boolean {
+  if (requestPath === cookiePath) return true;
+  const base = cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`;
+  return requestPath.startsWith(base);
 }
 
 export type ProjectPathResolution =
@@ -152,6 +191,40 @@ export type ProjectPathResolution =
  * filesystem, so a symlink/junction inside the workspace cannot redirect the
  * read outside the jail.
  */
+// Never expose secrets or VCS/module metadata through /project/, even when a
+// project legitimately keeps them inside the served folder. P1-3: the check
+// runs on the canonical (realpath) location, so an in-root symlink to .git or
+// .env cannot launder a secret past segment checks.
+const FORBIDDEN_SEGMENTS = new Set([
+  ".git",
+  "node_modules",
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".npmrc",
+  ".yarnrc",
+  ".envrc",
+  ".htpasswd",
+]);
+
+function isForbiddenSegment(segment: string): boolean {
+  const s = segment.toLowerCase();
+  if (FORBIDDEN_SEGMENTS.has(s)) return true;
+  if (s === ".env" || /^\.env[.\-_]/.test(s)) return true;
+  if (/\.(?:pem|key|p12|pfx)$/.test(s)) return true;
+  if (/^id_rsa/.test(s)) return true;
+  if (/^credentials/.test(s)) return true;
+  return false;
+}
+
+function hasForbiddenSegment(relativePathLike: string): boolean {
+  return relativePathLike
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s.length > 0)
+    .some(isForbiddenSegment);
+}
+
 export function resolveProjectPath(projectRoot: string, relativePathRaw: string): ProjectPathResolution {
   let relativePath: string;
   try {
@@ -165,11 +238,7 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     return { ok: false, reason: "forbidden" };
   }
-  // Never expose secrets or VCS/module metadata through /project/, even when
-  // a project legitimately keeps them inside the served folder.
-  const segments = relativePath.split(/[\\/]+/).filter((s) => s.length > 0).map((s) => s.toLowerCase());
-  const base = segments[segments.length - 1] ?? "";
-  if (segments.includes(".git") || segments.includes("node_modules") || base === ".env" || /^\.env[.\-_]/.test(base)) {
+  if (hasForbiddenSegment(rel)) {
     return { ok: false, reason: "forbidden" };
   }
   let rootReal: string;
@@ -194,6 +263,11 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   const tail = path.relative(existing, resolved);
   const escapedReal = realRel !== "" && (path.isAbsolute(realRel) || realRel.replace(/\\/g, "/").startsWith("../"));
   if (escapedReal || (realRel === "" && !tail)) {
+    return { ok: false, reason: "forbidden" };
+  }
+  // P1-3: the symlink-resolved location may point at a forbidden file even
+  // though the requested path spelled innocent segment names.
+  if (hasForbiddenSegment(realRel) || hasForbiddenSegment(tail)) {
     return { ok: false, reason: "forbidden" };
   }
   // Everything between `existing` and `resolved` is plain path segments below
@@ -223,8 +297,11 @@ export class PreviewHostServer {
   }
 
   private devTarget: string | null = null;
-  /** Keys are `${upstreamOrigin}|${cookieName}`: cookies never leak across loopback origins/ports. */
+  // P2-15: keys are `${upstreamOrigin}|${path}|${name}` so same-name cookies
+  // with different Path attributes do not clobber each other, and the jar is
+  // LRU-capped so a runaway upstream cannot grow it without bound.
   private cookieJar = new Map<string, JarCookie>();
+  private jarPurgeTimer: ReturnType<typeof setInterval> | null = null;
   /** Hijacked WebSocket sockets: closed() waits on them unless torn down. */
   private upgradedSockets = new Set<net.Socket>();
   private acceptedSockets = new Set<net.Socket>();
@@ -288,6 +365,20 @@ export class PreviewHostServer {
     return host === `${this.host}:${this.port}` || host === `localhost:${this.port}` || host === `[::1]:${this.port}`;
   }
 
+  /**
+   * P1-4: an incoming request that carries an Origin must claim this preview
+   * origin (or the VS Code webview) — otherwise a hostile web page could drive
+   * the loopback host as a no-cors proxy. Navigations legitimately omit
+   * Origin, so an absent header is accepted.
+   */
+  private originAllowed(rawOrigin: string | undefined): boolean {
+    if (!rawOrigin) return true;
+    const origin = rawOrigin.toLowerCase().trim();
+    if (origin === "null") return false;
+    if (origin.startsWith("vscode-webview://")) return true;
+    return origin === this.origin.toLowerCase();
+  }
+
   async start(): Promise<number> {
     if (this.server) return this.port;
     const server = http.createServer((req, res) => {
@@ -318,11 +409,21 @@ export class PreviewHostServer {
     }
     this.port = address.port;
     this.server = server;
+    // P3-7: periodic sweep for expired jar entries.
+    this.jarPurgeTimer = setInterval(() => this.purgeExpiredCookies(Date.now()), JAR_PURGE_INTERVAL_MS);
+    this.jarPurgeTimer.unref?.();
     return this.port;
   }
 
   async stop(): Promise<void> {
     const server = this.server;
+    // P1-2: the host must not outlive the preview panel, and neither may the
+    // upstream application session it holds.
+    if (this.jarPurgeTimer) {
+      clearInterval(this.jarPurgeTimer);
+      this.jarPurgeTimer = null;
+    }
+    this.cookieJar.clear();
     if (!server) return;
     this.server = null;
     this.port = 0;
@@ -338,11 +439,11 @@ export class PreviewHostServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  private serveFile(res: http.ServerResponse, fileName: string, contentType: string): void {
+  private async serveFile(res: http.ServerResponse, fileName: string, contentType: string): Promise<void> {
     const filePath = path.join(this.webviewRoot, fileName);
     let content: Buffer;
     try {
-      content = fs.readFileSync(filePath);
+      content = await fs.promises.readFile(filePath);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Missing file: ${fileName}. Run npm run build.`);
@@ -359,6 +460,11 @@ export class PreviewHostServer {
     if (!this.hostAllowed(req.headers.host)) {
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Forbidden Host header");
+      return;
+    }
+    if (!this.originAllowed(req.headers.origin)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Forbidden Origin header");
       return;
     }
     const method = req.method ?? "GET";
@@ -409,11 +515,11 @@ export class PreviewHostServer {
     }
 
     if (urlPath === "/demo.html") {
-      this.serveFile(res, "demo.html", "text/html; charset=utf-8");
+      await this.serveFile(res, "demo.html", "text/html; charset=utf-8");
       return;
     }
     if (urlPath === "/__ds-runtime.js") {
-      this.serveFile(res, "runtime.js", "application/javascript; charset=utf-8");
+      await this.serveFile(res, "runtime.js", "application/javascript; charset=utf-8");
       return;
     }
     if (urlPath === "/__ds-sw.js") {
@@ -426,11 +532,11 @@ export class PreviewHostServer {
       return;
     }
     if (urlPath === "/project/" || urlPath === "/project") {
-      this.handleProjectFile(res, "");
+      await this.handleProjectFile(req, res, "");
       return;
     }
     if (urlPath.startsWith("/project/")) {
-      this.handleProjectFile(res, urlPath.slice("/project/".length));
+      await this.handleProjectFile(req, res, urlPath.slice("/project/".length));
       return;
     }
     // The project is hosted on bare paths so client-side routers see the real
@@ -445,7 +551,7 @@ export class PreviewHostServer {
     res.end("Not found");
   }
 
-  private handleProjectFile(res: http.ServerResponse, relativePathRaw: string): void {
+  private async handleProjectFile(req: http.IncomingMessage, res: http.ServerResponse, relativePathRaw: string): Promise<void> {
     if (!this.projectRoot) {
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("No project bound to preview host");
@@ -460,28 +566,40 @@ export class PreviewHostServer {
     const resolved = resolution.filePath;
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(resolved);
-      if (stat.isDirectory()) {
-        const index = path.join(resolved, "index.html");
-        if (fs.existsSync(index)) {
-          this.serveProjectPath(res, index);
-          return;
-        }
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Directory has no index.html");
-        return;
-      }
+      stat = await fs.promises.stat(resolved);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not found in project: ${relativePathRaw}`);
       return;
     }
-    this.serveProjectPath(res, resolved);
+    if (stat.isDirectory()) {
+      const index = path.join(resolved, "index.html");
+      try {
+        await fs.promises.access(index);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Directory has no index.html");
+        return;
+      }
+      await this.serveProjectPath(req, res, index);
+      return;
+    }
+    await this.serveProjectPath(req, res, resolved);
   }
-  private serveProjectPath(res: http.ServerResponse, filePath: string): void {
+  /** The document URL prefix for /project/ pages: origin + /project/ + page directory. */
+  private projectBaseHrefFor(filePath: string): string {
+    const rel = this.projectRoot ? path.relative(this.projectRoot, filePath) : path.basename(filePath);
+    const posixRel = rel.split(path.sep).join("/");
+    let dir = path.posix.dirname(posixRel);
+    if (dir === "." || dir === "/") dir = "";
+    const encoded = dir.split("/").filter((s) => s.length > 0).map(encodeURIComponent).join("/");
+    return `${this.origin}/project/${encoded ? `${encoded}/` : ""}`;
+  }
+
+  private async serveProjectPath(req: http.IncomingMessage, res: http.ServerResponse, filePath: string): Promise<void> {
     let content: Buffer;
     try {
-      content = fs.readFileSync(filePath);
+      content = await fs.promises.readFile(filePath);
     } catch {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not found in project: ${this.projectRoot ? path.relative(this.projectRoot, filePath) : filePath}`);
@@ -491,8 +609,15 @@ export class PreviewHostServer {
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     if (ext === ".html" && contentType.startsWith("text/html")) {
       let htmlContent = content.toString("utf8");
-      htmlContent = injectRuntimeIntoHtml(htmlContent, "/__ds-runtime.js");
-      htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.origin);
+      // Single injection point for project pages: base + runtime + authored
+      // <base> respect live in injectIntoHtml (P0-2 guard lives in the runtime).
+      // The upstream origin is the preview origin itself: all /project/ links
+      // are same-origin, dangerous schemes stay blocked.
+      htmlContent = injectIntoHtml(htmlContent, "/__ds-runtime.js", this.projectBaseHrefFor(filePath), {
+        respectAuthoredBase: true,
+        upstreamOrigin: this.origin,
+        parentOrigins: [this.origin],
+      });
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(htmlContent);
       return;
@@ -504,7 +629,29 @@ export class PreviewHostServer {
       res.end(rewritten);
       return;
     }
-    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+    // P2-14: byte ranges (video/audio seeking) for the remaining static files.
+    const rangeHeader = req.headers.range;
+    if (typeof rangeHeader === "string" && rangeHeader.startsWith("bytes=")) {
+      const servedRange = parseByteRange(rangeHeader, content.length);
+      if (servedRange === "invalid") {
+        res.writeHead(416, { "Content-Type": "text/plain; charset=utf-8", "Content-Range": `bytes */${content.length}` });
+        res.end("Requested range not satisfiable");
+        return;
+      }
+      if (servedRange) {
+        const [start, end] = servedRange;
+        res.writeHead(206, {
+          "Content-Type": contentType,
+          "Cache-Control": "no-store",
+          "Accept-Ranges": "bytes",
+          "Content-Range": `bytes ${start}-${end}/${content.length}`,
+          "Content-Length": String(end - start + 1),
+        });
+        res.end(content.subarray(start, end + 1));
+        return;
+      }
+    }
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store", "Accept-Ranges": "bytes", "Content-Length": String(content.length) });
     res.end(content);
   }
 
@@ -539,7 +686,13 @@ export class PreviewHostServer {
       headers[key] = Array.isArray(value) ? value.join(", ") : (value ?? "");
     }
     const upstreamOrigin = target.origin;
-    if (headers["origin"]) headers["origin"] = upstreamOrigin;
+    if (headers["origin"]) {
+      headers["origin"] = upstreamOrigin;
+      // P1-4: after the origin rewrite the request reads as same-origin to the
+      // upstream; a forwarded cross-site fetch-metadata would contradict it
+      // and make Next.js-style server actions reject the call.
+      headers["sec-fetch-site"] = "same-origin";
+    }
     if (headers["referer"]) {
       try {
         const ref = new URL(headers["referer"]);
@@ -548,12 +701,12 @@ export class PreviewHostServer {
         // keep as-is
       }
     }
-    const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin);
+    const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin, target.pathname);
     if (jarCookieHeader) headers["cookie"] = jarCookieHeader;
     return headers;
   }
 
-  private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string): string | undefined {
+  private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string, requestPath: string): string | undefined {
     if (this.cookieJar.size === 0) return browserCookie;
     const prefix = `${upstreamOrigin}|`;
     const cookies = new Map<string, string>();
@@ -564,14 +717,30 @@ export class PreviewHostServer {
       if (name) cookies.set(name, pair.slice(eq + 1).trim());
     }
     const now = Date.now();
+    const touched: [string, JarCookie][] = [];
     for (const [key, entry] of this.cookieJar) {
       if (!key.startsWith(prefix)) continue;
-      const name = key.slice(prefix.length);
+      const rest = key.slice(prefix.length);
+      const sep = rest.lastIndexOf("|");
+      if (sep === -1) {
+        // Entry from an older jar format without the path component.
+        this.cookieJar.delete(key);
+        continue;
+      }
+      const name = rest.slice(sep + 1);
       if (entry.expiresAt !== null && entry.expiresAt <= now) {
         this.cookieJar.delete(key);
         continue;
       }
+      if (entry.path !== "/" && !cookiePathMatches(entry.path, requestPath)) continue;
       cookies.set(name, entry.value);
+      touched.push([key, entry]);
+    }
+    // LRU bookkeeping after the scan: re-inserting during iteration would
+    // revisit fresh entries.
+    for (const [key, entry] of touched) {
+      this.cookieJar.delete(key);
+      this.cookieJar.set(key, entry);
     }
     if (cookies.size === 0) return undefined;
     return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
@@ -583,10 +752,13 @@ export class PreviewHostServer {
     if (eq === -1) return;
     const name = rawCookie.slice(0, eq).trim();
     if (!name) return;
-    const key = `${upstreamOrigin}|${name}`;
     const valueEnd = semi === -1 ? rawCookie.length : semi;
     const value = rawCookie.slice(eq + 1, valueEnd).trim();
     const attributes = rawCookie.slice(valueEnd);
+    let cookiePath = "/";
+    const pathAttr = /path\s*=\s*([^;]+)/i.exec(attributes);
+    if (pathAttr && pathAttr[1].trim()) cookiePath = pathAttr[1].trim();
+    const key = `${upstreamOrigin}|${cookiePath}|${name}`;
     let expiresAt: number | null = null;
     const maxAge = /max-age\s*=\s*(-?\d+)/i.exec(attributes);
     if (maxAge) {
@@ -610,7 +782,31 @@ export class PreviewHostServer {
         }
       }
     }
-    this.cookieJar.set(key, { value, expiresAt });
+    this.touchJar(key, { value, expiresAt, path: cookiePath });
+  }
+
+  /** P2-15: refresh recency on write and evict the least recently used beyond the cap. */
+  private touchJar(key: string, entry: JarCookie): void {
+    this.cookieJar.delete(key);
+    this.cookieJar.set(key, entry);
+    while (this.cookieJar.size > MAX_JAR_ENTRIES) {
+      const oldest = this.cookieJar.keys().next().value;
+      if (oldest === undefined) break;
+      this.cookieJar.delete(oldest);
+    }
+  }
+
+  /** P3-7: drop expired jar entries; invoked from the periodic timer in
+   * start(), public for deterministic testing. Returns the removed count. */
+  purgeExpiredCookies(now: number): number {
+    let removed = 0;
+    for (const [key, entry] of this.cookieJar) {
+      if (entry.expiresAt !== null && entry.expiresAt <= now) {
+        this.cookieJar.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   private rememberSetCookies(cookies: string[], upstreamOrigin: string): void {
@@ -740,7 +936,11 @@ export class PreviewHostServer {
       );
       return;
     }
-
+    // P3-7: tear the upstream down when the client goes away, in every branch.
+    // Buffering branches used to leave a hanging upstream connection behind
+    // (only the streaming branch aborted); registering once here covers 3xx,
+    // HTML, CSS and streaming alike.
+    res.on("close", () => abortUpstream());
     const headers: Record<string, string> = {};
     upstream.headers.forEach((value, key) => {
       if (!HEADERS_TO_STRIP.includes(key as (typeof HEADERS_TO_STRIP)[number])) {
@@ -835,7 +1035,6 @@ export class PreviewHostServer {
     }
     // Everything else streams through untouched, capped by bytes: SSE,
     // streaming SSR, long-poll and binaries stay live instead of buffering.
-    res.on("close", () => abortUpstream());
     const streamed = await this.streamUpstreamBody(upstream, res);
     if (!streamed) {
       this.trace(`[proxy] ${method} ${finalTarget} -> destroyed (byte cap exceeded or upstream stream error)`);
@@ -873,6 +1072,10 @@ export class PreviewHostServer {
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket): Promise<void> {
     if (!this.hostAllowed(req.headers.host)) {
+      socket.destroy();
+      return;
+    }
+    if (!this.originAllowed(req.headers.origin)) {
       socket.destroy();
       return;
     }
@@ -967,15 +1170,27 @@ export class PreviewHostServer {
   private writeUpgradeRequest(upstreamSocket: net.Socket, req: http.IncomingMessage, parsedTarget: URL): void {
     const headers = [`${req.method ?? "GET"} ${parsedTarget.pathname}${parsedTarget.search} HTTP/1.1`];
     for (const [key, value] of Object.entries(req.headers)) {
-      if (key === "host" || key === "origin") continue;
+      if (key === "host" || key === "origin" || key === "sec-fetch-site") continue;
+      // P3-7: the browser WebSocket handshake often carries no cookies in a
+      // cross-site iframe; skip the raw header here and forward the merged
+      // (browser + host jar) value below instead.
+      if (key === "cookie") continue;
       if (Array.isArray(value)) {
         for (const item of value) if (item) headers.push(`${key}: ${item}`);
       } else if (value) {
         headers.push(`${key}: ${value}`);
       }
     }
+    const jarCookieHeader = this.buildCookieHeader(
+      typeof req.headers.cookie === "string" ? req.headers.cookie : undefined,
+      parsedTarget.origin,
+      parsedTarget.pathname
+    );
+    if (jarCookieHeader) headers.push(`Cookie: ${jarCookieHeader}`);
     headers.push(`Host: ${parsedTarget.host}`);
     headers.push(`Origin: ${parsedTarget.origin}`);
+    // P1-4: the origin is rewritten above, so the fetch metadata must agree.
+    headers.push("Sec-Fetch-Site: same-origin");
     upstreamSocket.write(headers.join("\r\n") + "\r\n\r\n");
   }
 }

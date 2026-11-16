@@ -33,6 +33,8 @@ function decodeVlq(input: string, index: number): { value: number; index: number
   for (;;) {
     const digit = B64_ALPHABET.indexOf(input[cursor] ?? "");
     if (digit < 0) throw new Error("invalid VLQ character");
+    // A continuation longer than 6 digits overflows a 32-bit field — corrupt mappings.
+    if (shift > 30) throw new Error("VLQ sequence too long");
     result += (digit & 31) << shift;
     shift += 5;
     cursor += 1;

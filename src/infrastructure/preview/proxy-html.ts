@@ -62,11 +62,19 @@ export function candidateLoopbackTargets(target: string): string[] {
   const candidates = [target];
   try {
     const u = new URL(target);
-    const other =
-      u.hostname === "localhost" ? "127.0.0.1" : u.hostname === "127.0.0.1" ? "localhost" : null;
-    if (other) {
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]") {
+      // P3-7: loopback dev servers may bind only to IPv4, only to ::1, or to
+      // either of the name forms; try every equivalent before giving up.
+      const loopbacks =
+        u.hostname === "localhost"
+          ? ["127.0.0.1", "[::1]"]
+          : u.hostname === "127.0.0.1"
+            ? ["localhost", "[::1]"]
+            : ["127.0.0.1"];
       const port = u.port ? `:${u.port}` : "";
-      candidates.push(`${u.protocol}//${other}${port}${u.pathname}${u.search}`);
+      for (const loopback of loopbacks) {
+        candidates.push(`${u.protocol}//${loopback}${port}${u.pathname}${u.search}`);
+      }
     }
   } catch {
     // ignore
@@ -74,12 +82,46 @@ export function candidateLoopbackTargets(target: string): string[] {
   return candidates;
 }
 
-export function buildInjectedHead(runtimeUrl: string, baseHref: string): string {
-  return `<base href="${baseHref}">` + `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}></script>`;
+const AUTHORED_BASE_RE = /<base\s[^>]*href=/i;
+
+export interface InjectOptions {
+  /**
+   * When the document already defines its own <base href>, keep it and only
+   * inject the runtime script: an injected base placed before the authored
+   * one silently overrides it.
+   */
+  respectAuthoredBase?: boolean;
+  /**
+   * Origin the runtime anchors its browse-mode link policy to. Without it the
+   * anchor handler exits early and every link (including external and
+   * javascript: ones) navigates the preview frame natively.
+   */
+  upstreamOrigin?: string;
+  /** Extra parent origins the runtime may accept in the handshake (P1-1). */
+  parentOrigins?: string[];
 }
 
-export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string): string {
-  const injection = buildInjectedHead(runtimeUrl, baseHref);
+function escapeAttrValue(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function runtimeScriptTag(runtimeUrl: string, options?: InjectOptions): string {
+  const origin = options?.upstreamOrigin ? ` data-upstream-origin="${escapeAttrValue(options.upstreamOrigin)}"` : "";
+  const parents = options?.parentOrigins?.length
+    ? ` data-parent-origins="${escapeAttrValue(options.parentOrigins.join(","))}"`
+    : "";
+  return `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}${origin}${parents}></script>`;
+}
+
+export function buildInjectedHead(runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
+  return `<base href="${baseHref}">` + runtimeScriptTag(runtimeUrl, options);
+}
+
+export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
+  const injection =
+    options?.respectAuthoredBase && AUTHORED_BASE_RE.test(html)
+      ? runtimeScriptTag(runtimeUrl, options)
+      : buildInjectedHead(runtimeUrl, baseHref, options);
   // `(?=[\s>])` keeps the match on the real <head>/<body> element — a bare
   // <header>/<bodyart> tag in headless HTML must not swallow the injection.
   const headMatch = /<head(?=[\s>])[^>]*>/i.exec(html);
@@ -114,8 +156,10 @@ export function prependProxyOriginToPathUrls(content: string, proxyPrefix: strin
 export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string): string {
   const prefix = targetOriginPrefix(finalTargetUrl);
   const target = new URL(finalTargetUrl);
-  let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}${target.pathname}${target.search}${target.hash}`);
-  // Root-absolute attributes stay untouched so Next.js sees the same route
+  let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}${target.pathname}${target.search}${target.hash}`, {
+    upstreamOrigin: target.origin,
+    parentOrigins: [proxyOrigin],
+  });  // Root-absolute attributes stay untouched so Next.js sees the same route
   // during hydration. The preview host proxies app routes through its sticky
   // dev-server target; CSS URLs use explicit proxy routes below.
   const styleBlock = /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi;

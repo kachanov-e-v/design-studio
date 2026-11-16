@@ -50,7 +50,7 @@ describe("static-site integration fixture", () => {
     const res = await get(`${server.origin}/project/`);
     expect(res.status).toBe(200);
     expect(res.body).toContain("Static fixture home");
-    expect(res.body).toContain('<script src="/__ds-runtime.js"></script>');
+    expect(res.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer data-upstream-origin="');
     expect(res.body).toContain("<base");
   });
 
@@ -60,7 +60,7 @@ describe("static-site integration fixture", () => {
     const about = await get(`${server.origin}/project/about.html`);
     expect(about.status).toBe(200);
     expect(about.body).toContain("About this fixture");
-    expect(about.body).toContain('<script src="/__ds-runtime.js"></script>');
+    expect(about.body).toContain('<script src="/__ds-runtime.js" data-design-studio="1" defer data-upstream-origin="');
   });
 
   it("rewrites root-absolute css urls to the /project/ prefix", async () => {
@@ -75,5 +75,47 @@ describe("static-site integration fixture", () => {
     const svg = await get(`${server.origin}/project/images/logo.svg`);
     expect(svg.status).toBe(200);
     expect(svg.headers["content-type"]).toContain("svg");
+  });
+
+  // P0-1: the injected <base> must point into /project/ (and the page's
+  // directory) so relative href/src resolve like a real browser would.
+  it("injects a /project/ base href so relative URLs resolve", async () => {
+    const home = await get(`${server.origin}/project/`);
+    const base = /<base\s[^>]*href="([^"]*)"/.exec(home.body)?.[1] ?? "";
+    expect(base).toBe(`${server.origin}/project/`);
+    // Resolve relative references exactly as the browser would.
+    expect((await get(`${base}styles.css`)).status).toBe(200);
+    expect((await get(`${base}images/logo.svg`)).status).toBe(200);
+    expect((await get(`${base}about.html`)).status).toBe(200);
+
+    const about = await get(`${server.origin}/project/about.html`);
+    const aboutBase = /<base\s[^>]*href="([^"]*)"/.exec(about.body)?.[1] ?? "";
+    expect(aboutBase).toBe(`${server.origin}/project/`);
+  });
+
+  it("respects an authored <base> and never overrides it", async () => {
+    const res = await get(`${server.origin}/project/authored-base.html`);
+    expect(res.status).toBe(200);
+    const bases = res.body.match(/<base\s[^>]*href=/g) ?? [];
+    expect(bases).toHaveLength(1);
+    expect(res.body).toContain('href="https://example.com/assets/"');
+    expect(res.body).toContain("/__ds-runtime.js");
+  });
+
+  // P0-2: exactly one runtime script per served project page — two tags mean
+  // two runtime instances (duplicated listeners/overlays/history patches).
+  it("injects exactly one runtime script tag into project pages", async () => {
+    for (const page of ["/", "/about.html", "/authored-base.html"]) {
+      const res = await get(`${server.origin}/project${page}`);
+      const tags = res.body.match(/<script[^>]*src="\/__ds-runtime\.js"[^>]*><\/script>/g) ?? [];
+      expect(tags, `page ${page}`).toHaveLength(1);
+    }
+  });
+
+  // P0-3: project pages also carry the upstream origin (the preview origin
+  // itself), so dangerous schemes are blocked and same-origin links resolve.
+  it("stamps data-upstream-origin on project runtime scripts", async () => {
+    const res = await get(`${server.origin}/project/`);
+    expect(res.body).toContain(`data-upstream-origin="${server.origin}"`);
   });
 });

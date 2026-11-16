@@ -1,1 +1,1 @@
-export * from "../../packages/preview-runtime/src/protocol";
+export * from "@design-studio/preview-runtime/protocol";

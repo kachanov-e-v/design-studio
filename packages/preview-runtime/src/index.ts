@@ -18,6 +18,13 @@ import { debugPerfEnabled, formatPerfSummary, PerfCollector } from "./perf.js";
 export { PROTOCOL_VERSION } from "./protocol.js";
 export type { ElementPayload, ElementOp } from "./protocol.js";
 export { collectReactComponents, findFiber, parseOwnerStack } from "./fiber.js";
+
+declare global {
+  interface Window {
+    /** Re-injection guard (see initDesignStudioRuntime). */
+    __dsRuntimeInitialized?: boolean;
+  }
+}
 /** DOM properties mirrored when the matching attribute is edited (`set-attribute`). */
 const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   checked: "checked",
@@ -28,14 +35,14 @@ const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   value: "value",
 };
 
-export function getSelector(el: Element): string {  if (el.id) {
+export function getSelector(el: Element): string {
+  if (el.id) {
     const idSelector = `#${CSS.escape(el.id)}`;
     if (idSelector.length <= 500) return idSelector;
   }
   const parts: string[] = [];
   let current: Element | null = el;
-  let depth = 0;
-  while (current && current.nodeType === 1 && depth < 6) {
+  while (current && current.nodeType === 1) {
     let part = current.tagName.toLowerCase();
     if (current.classList.length) {
       part += "." + Array.from(current.classList).slice(0, 2).map(CSS.escape).join(".");
@@ -49,7 +56,6 @@ export function getSelector(el: Element): string {  if (el.id) {
     }
     parts.unshift(part);
     current = parentEl;
-    depth++;
     if (current === document.body || current === null) break;
   }
   while (parts.length > 1 && parts.join(" > ").length > 500) parts.shift();
@@ -92,13 +98,143 @@ export function getSelectorCandidates(el: Element): string[] {
   return result;
 }
 
+/**
+ * P2-13 producers: the runtime previously declared `ds:runtime-ready` and
+ * `ds:runtime-error` without ever sending them, so the webview handshake
+ * depended on ping timeouts. The announcement carries no page data and is only
+ * sent with a concrete target origin (never "*"): when Chromium exposes the
+ * immediate parent origin via `location.ancestorOrigins` (real VS Code
+ * webviews) the webview learns about the runtime immediately; otherwise the
+ * ping/pong handshake stays as fallback.
+ */
+export function postRuntimeAnnouncement(
+  kind: "ready" | "error",
+  errorMessage?: string,
+  via: { targetOrigin?: string | null } = {}
+): void {
+  if (typeof window === "undefined") return;
+  let targetOrigin = via.targetOrigin;
+  if (targetOrigin === undefined) {
+    try {
+      const origins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
+      targetOrigin = origins && origins.length > 0 ? String(origins[origins.length - 1]) : null;
+    } catch {
+      targetOrigin = null;
+    }
+  }
+  // Top-level page (no embedder): nothing meaningful to announce to.
+  if (via.targetOrigin === undefined && window.parent === window) return;
+  if (!targetOrigin || targetOrigin === "*") return;
+  try {
+    window.parent.postMessage(
+      kind === "ready"
+        ? { type: "ds:runtime-ready", version: PROTOCOL_VERSION }
+        : { type: "ds:runtime-error", version: PROTOCOL_VERSION, message: (errorMessage ?? "Runtime crashed").slice(0, 500) },
+      targetOrigin
+    );
+  } catch {
+    // Handshake falls back to ping/pong.
+  }
+}
+
+/**
+ * Matched source rules from the given stylesheets, walking grouping rules
+ * (@media/@supports/@layer/@container) recursively. Shared export so the
+ * walker is unit-testable without a live document.
+ */
+const MAX_RULES = 8;
+const MAX_SCANNED = 1500;
+const MAX_CSS_TEXT = 2000;
+type WalkableSheet = { href?: string | null; cssRules?: { length?: number } };
+
+function isStyleRuleLike(rule: unknown): rule is { selectorText: string; cssText: string } {
+  if (typeof rule !== "object" || rule === null) return false;
+  const r = rule as { selectorText?: unknown; cssText?: unknown };
+  return typeof r.selectorText === "string" && typeof r.cssText === "string";
+}
+
+function hasChildRules(rule: unknown): rule is { cssRules: CSSRuleList } {
+  if (typeof rule !== "object" || rule === null) return false;
+  const r = rule as { cssRules?: unknown };
+  return typeof r.cssRules === "object" && r.cssRules !== null && typeof (r.cssRules as { length?: unknown }).length === "number";
+}
+
+export function collectSourceRulesFromStylesheets(
+  sheets: Iterable<WalkableSheet>,
+  el: Element,
+  opts: { maxRules?: number; maxScanned?: number } = {}
+): SourceRule[] | undefined {
+  const maxRules = opts.maxRules ?? MAX_RULES;
+  const maxScanned = opts.maxScanned ?? MAX_SCANNED;
+  const result: SourceRule[] = [];
+  const seen = new Set<string>();
+  let scanned = 0;
+
+  for (const sheet of sheets) {
+    const sheetHref = sheet.href;
+    if (!sheetHref) continue;
+    const rules: CSSRuleList | undefined = sheet.cssRules as CSSRuleList | undefined;
+    if (!rules) continue;
+    const walk = (list: CSSRuleList): void => {
+      for (const rule of Array.from(list)) {
+        if (scanned >= maxScanned) return;
+        scanned++;
+        if (hasChildRules(rule)) {
+          walk(rule.cssRules);
+          if (scanned >= maxScanned) return;
+          continue;
+        }
+        if (!isStyleRuleLike(rule)) continue;
+        const selectorText = rule.selectorText;
+        let matches = false;
+        try {
+          matches = el.matches(selectorText);
+        } catch {
+          continue;
+        }
+        if (!matches) continue;
+        const key = sheet.href + "\u0000" + selectorText + "\u0000" + rule.cssText;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({ href: sheetHref, selectorText, cssText: rule.cssText.slice(0, MAX_CSS_TEXT) });
+        if (result.length >= maxRules) return;
+      }
+    };
+    walk(rules);
+    if (result.length >= maxRules) break;
+  }
+  return result.length > 0 ? result : undefined;
+}
+
+/** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
+function collectSourceRules(el: Element): SourceRule[] | undefined {
+  const sheets: WalkableSheet[] = [];
+  for (const sheet of document.styleSheets) {
+    if (!sheet.href) continue;
+    try {
+      void sheet.cssRules;
+    } catch {
+      continue;
+    }
+    sheets.push(sheet);
+  }
+  return collectSourceRulesFromStylesheets(sheets, el);
+}
+
 export function initDesignStudioRuntime(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
+  // Re-injection guard: a duplicated runtime script (double legacy injection,
+  // HMR, future injection paths) must never create a second runtime instance
+  // with duplicated listeners, outlines and history patches.
+  if (window.__dsRuntimeInitialized) return;
+  window.__dsRuntimeInitialized = true;
 
   let editMode = false;
   let selectedElement: Element | null = null;
   let hoveredElement: Element | null = null;
-  let parentOrigin = "*";
+  // Trusted parent origin, captured from the first accepted ds:ping. Null
+  // until then: no session means nothing to report, and nothing may be sent.
+  let parentOrigin: string | null = null;
   let activeSessionId = "";
   let hoverOutline: HTMLDivElement | null = null;
   let selectionOutline: HTMLDivElement | null = null;
@@ -108,14 +244,51 @@ export function initDesignStudioRuntime(): void {
   // Opt-in diagnostics for the select pipeline; see docs/IMPLEMENTATION_PLAN.md (EPIC E/H4).
   perfEnabled = debugPerfEnabled(window.location.search);
   const upstreamOrigin = (() => {
+    // Explicit injection attribute is the primary source (proxied and project
+    // pages); fall back to the document base/own origin so the browse-mode
+    // link policy stays alive when an app embeds the runtime itself.
     const raw = runtimeScript?.dataset.upstreamOrigin;
-    if (!raw) return null;
+    if (raw) {
+      try {
+        return new URL(raw).origin;
+      } catch {
+        // fall through
+      }
+    }
+    const base = document.querySelector("base[href]");
+    if (base) {
+      try {
+        const origin = new URL(base.getAttribute("href")!, window.location.href).origin;
+        if (origin && origin !== "null") return origin;
+      } catch {
+        // fall through
+      }
+    }
     try {
-      return new URL(raw).origin;
+      return window.location.origin && window.location.origin !== "null" ? window.location.origin : null;
     } catch {
       return null;
     }
   })();
+
+  const parentOriginsAllowlist: string[] = (() => {
+    const raw = runtimeScript?.dataset.parentOrigins;
+    if (!raw) return [];
+    return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  })();
+
+  const isTrustedParentOrigin = (origin: string): boolean => {
+    // VS Code webview parents carry a vscode-webview://<id> origin.
+    if (/^vscode-webview(?::|$)/.test(origin)) return true;
+    // Explicit allowlist passed at injection time.
+    if (parentOriginsAllowlist.includes(origin)) return true;
+    // Same-origin embedding (runtime embedded by the page itself).
+    try {
+      return origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  };
 
   const isDesignStudioElement = (el: Element | null): boolean => {
     if (!el) return false;
@@ -184,6 +357,15 @@ export function initDesignStudioRuntime(): void {
       if (!editMode) return;
       ensureOutlines();
       positionOutlinesNow();
+      // P2-6: keep the webview popup anchored — repaint the fresh rect on scroll/resize.
+      if (selectedElement) {
+        const rect = selectedElement.getBoundingClientRect();
+        postToParent({
+          type: "ds:rect",
+          version: PROTOCOL_VERSION,
+          rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+        });
+      }
     });
   }
 
@@ -205,41 +387,6 @@ export function initDesignStudioRuntime(): void {
     outlineFrame = 0;
     if (hoverOutline) hoverOutline.style.display = "none";
     if (selectionOutline) selectionOutline.style.display = "none";
-  }
-
-  /** Matched rules from linked stylesheets (skips <style> blocks and CORS-blocked sheets). */
-  function collectSourceRules(el: Element): SourceRule[] | undefined {
-    const result: SourceRule[] = [];
-    const seen = new Set<string>();
-    let scanned = 0;
-    for (const sheet of document.styleSheets) {
-      if (!sheet.href) continue;
-      let rules: CSSRuleList;
-      try {
-        rules = sheet.cssRules;
-      } catch {
-        continue;
-      }
-      for (const rule of rules) {
-        if (scanned++ >= 1500) return result.length > 0 ? result : undefined;
-        if (!(rule instanceof CSSStyleRule)) continue;
-        const selectorText = rule.selectorText;
-        if (!selectorText) continue;
-        let matches = false;
-        try {
-          matches = el.matches(selectorText);
-        } catch {
-          continue;
-        }
-        if (!matches) continue;
-        const key = `${sheet.href}\u0000${selectorText}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push({ href: sheet.href, selectorText, cssText: rule.cssText.slice(0, 2000) });
-        if (result.length >= 8) return result;
-      }
-    }
-    return result.length > 0 ? result : undefined;
   }
 
   /** Tailwind usage flag for the current document, cached per load. */
@@ -324,11 +471,14 @@ export function initDesignStudioRuntime(): void {
   }
 
   function postToParent(msg: RuntimeMessage): void {
+    // Without a trusted parent origin (no accepted ping yet) nothing is sent:
+    // replying to "*" would leak element/page data to any surrounding page.
+    if (!parentOrigin) return;
     try {
       const out = activeSessionId && !(msg as { sessionId?: unknown }).sessionId
         ? { ...msg, sessionId: activeSessionId }
         : msg;
-      window.parent.postMessage(out, parentOrigin || "*");
+      window.parent.postMessage(out, parentOrigin);
     } catch {
       // ignore
     }
@@ -436,6 +586,8 @@ export function initDesignStudioRuntime(): void {
         case "duplicate": {
           const clone = selectedElement.cloneNode(true) as HTMLElement;
           if (clone.id) clone.removeAttribute("id");
+          // Descendant ids must not be duplicated in the DOM.
+          for (const child of clone.querySelectorAll("[id]")) child.removeAttribute("id");
           clone.setAttribute("data-ds-clone", Date.now().toString(36));
           selectedElement.after(clone);
           selectedElement = clone;
@@ -516,13 +668,17 @@ export function initDesignStudioRuntime(): void {
 
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
-    if (parentOrigin !== "*" && event.origin && event.origin !== "null" && event.origin !== parentOrigin && !parentOrigin.includes("vscode-webview")) return;
+    // P1-1: strict origin gate. Pings and control messages are accepted only
+    // from trusted parents (VS Code webview, injected allowlist, same-origin);
+    // "null"/sandboxed and foreign origins can never start a session.
+    if (!event.origin || event.origin === "null" || !isTrustedParentOrigin(event.origin)) return;
     const data = event.data;
 
     if (data && typeof data === "object" && (data as { type?: unknown }).type === "ds:ping") {
       const ping = data as { nonce?: unknown; sessionId?: unknown; version?: unknown };
       if (typeof ping.nonce !== "string" || ping.nonce.length === 0 || ping.nonce.length > 128) return;
-      if (event.origin && event.origin !== "null") parentOrigin = event.origin;
+      // Reply goes to the ping's exact origin — never "*".
+      parentOrigin = event.origin;
       activeSessionId = typeof ping.sessionId === "string" && ping.sessionId.length > 0 ? ping.sessionId : ping.nonce;
       postToParent({
         type: "ds:pong",
@@ -724,5 +880,14 @@ export function initDesignStudioRuntime(): void {
 }
 
 if (typeof window !== "undefined") {
-  initDesignStudioRuntime();
+  try {
+    initDesignStudioRuntime();
+    postRuntimeAnnouncement("ready");
+  } catch (err) {
+    try {
+      postRuntimeAnnouncement("error", err instanceof Error ? err.message : String(err));
+    } catch {
+      // Final fallback: nothing else can be done.
+    }
+  }
 }

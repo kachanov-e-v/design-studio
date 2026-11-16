@@ -10,7 +10,7 @@
 - работа с маршрутами приложения, навигацией назад/вперёд, перезагрузкой и формами авторизации;
 - подсветка элементов при наведении и выбор кликом;
 - редактирование текста, классов, CSS-свойств и порядка/наличия элемента в живом DOM;
-- список изменений со значениями до и после;
+- счётчик применённых правок в сессии и значения до/после в экспортируемой инструкции;
 - инструкция для ИИ с выбранным элементом, цепочкой React-компонентов, подсказками исходных файлов и перечнем правок;
 - копирование исходного файла выбранного компонента в чат как отдельного контекста;
 - сохранение CSS-правки прямо в проект, если исходное правило найдено однозначно;
@@ -44,14 +44,14 @@ npm run lint
 npm run build
 ```
 
-Загрузите папку расширения в VS Code и нажмите F5, чтобы открыть Extension Development Host. Подробности настройки, сборки и диагностики см. в [руководстве разработчика](docs/DEVELOPMENT_GUIDE.md) и [руководстве по проблемам](docs/TROUBLESHOOTING.md).
+Загрузите папку расширения в VS Code и нажмите F5, чтобы открыть Extension Development Host. Подробности настройки, сборки и диагностики см. в [руководстве разработчика](https://github.com/kachanov-e-v/design-studio/blob/master/docs/DEVELOPMENT_GUIDE.md) и [руководстве по проблемам](https://github.com/kachanov-e-v/design-studio/blob/master/docs/TROUBLESHOOTING.md).
 
 ## Документация
 
-- [Архитектура и поток данных](docs/ARCHITECTURE.md)
-- [Разработка и отладка](docs/DEVELOPMENT_GUIDE.md)
-- [Диагностика известных проблем](docs/TROUBLESHOOTING.md)
-- [Безопасность и обработка данных](docs/SECURITY.md)
+- [Архитектура и поток данных](https://github.com/kachanov-e-v/design-studio/blob/master/docs/ARCHITECTURE.md)
+- [Разработка и отладка](https://github.com/kachanov-e-v/design-studio/blob/master/docs/DEVELOPMENT_GUIDE.md)
+- [Диагностика известных проблем](https://github.com/kachanov-e-v/design-studio/blob/master/docs/TROUBLESHOOTING.md)
+- [Безопасность и обработка данных](https://github.com/kachanov-e-v/design-studio/blob/master/docs/SECURITY.md)
 
 ## Лицензия
 

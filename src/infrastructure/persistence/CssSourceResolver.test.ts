@@ -79,6 +79,10 @@ describe("decodeSourceMapMappings / originalPositionFor", () => {
     const lines = decodeSourceMapMappings("");
     expect(originalPositionFor(lines, 5, 0)).toBe(null);
   });
+
+  it("P2-21: rejects overlong VLQ sequences instead of looping on broken source maps", () => {
+    expect(() => decodeSourceMapMappings("AAAAgggggggggggggggg")).toThrow();
+  });
 });
 
 describe("extractSelectorAt", () => {

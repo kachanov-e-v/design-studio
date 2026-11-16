@@ -88,6 +88,9 @@ export function Toolbar({
             aria-label={t("toolbar.projectPage")}
           >
             {showDevServer && <option value="__devserver">{devServerValue || "Next.js"}</option>}
+            {!showDevServer && !projectEntry && (
+              <option value="" disabled>{t("toolbar.noEntry")}</option>
+            )}
             <option value="__demo">{t("toolbar.demo")}</option>
             {suggested && !showDevServer && <option value={`__suggest:${suggested.url}`}>{suggestLabel(suggested)}</option>}
             {(projectEntries ?? []).map((entry) => <option key={entry} value={entry}>{entry}</option>)}
@@ -113,7 +116,8 @@ export function Toolbar({
       </div>
       <nav className={styles.actions} aria-label={t("toolbar.aria")}>
         <button className={editMode ? styles.active : styles.quiet} type="button" onClick={onInspect} aria-pressed={editMode}>
-          {editMode ? t("toolbar.editOn") : t("toolbar.edit")}
+          {/* P2-11: the label is the target mode (the action), not the current state. */}
+          {editMode ? t("toolbar.toBrowse") : t("toolbar.toEdit")}
         </button>
         <button className={styles.quiet} type="button" onClick={onSave} disabled={!canSave}>{t("toolbar.save")}</button>
         <div className={styles.language} role="group" aria-label={t("toolbar.language")}>

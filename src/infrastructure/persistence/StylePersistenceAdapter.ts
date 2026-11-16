@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { CssSourceResolver, type SourceRule } from "./CssSourceResolver";
-import { findCssRules, isValidCssProperty, isValidCssValue, type CssRuleMatch } from "./cssText";
+import { findCssRules, findTopLevelDeclarations, isValidCssProperty, isValidCssValue, type CssRuleMatch } from "./cssText";
 
 /** Cap on scanned CSS files; a full hit means the candidate list is truncated. */
 const CSS_SEARCH_LIMIT = 200;
@@ -128,29 +128,27 @@ export class StylePersistenceAdapter {
     note: string
   ): Promise<PersistenceResult> {
     const body = text.slice(rule.bodyStart, rule.bodyEnd);
-    const propEsc = change.property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // A declaration value may contain semicolons inside url(data:...;base64,...)
-    // — parenthesised runs and quoted strings must survive the match instead of
-    // being split at the first ';'.
-    const valueChunk = `(?:[(][^()]*[)]|"[^"]*"|'[^']*'|[^;{])*`;
-    const declRegex = new RegExp(`(^|[;{])\\s*${propEsc}\\s*:${valueChunk};?`, "m");
+    // P2-7: only top-level declarations of the body are matched, so nested rule
+    // blocks, comments and parenthesised values never collide with the edit.
+    const decls = findTopLevelDeclarations(body);
+    const decl = decls.find((d) => d.property.toLowerCase() === change.property.toLowerCase());
 
     let newBody: string;
     if (change.value === "") {
-      if (!declRegex.test(body)) {
+      if (!decl) {
         return { success: true, message: "Property is already absent", file: uri.fsPath };
       }
-      newBody = body.replace(declRegex, (match) => match.match(/^([;{])/)?.[1] ?? "");
-    } else if (declRegex.test(body)) {
-      newBody = body.replace(declRegex, (match, delim: string) => {
-        // Keep an existing !important flag unless the new value already carries one.
-        const hadImportant = /!\s*important/i.test(match);
-        const important = hadImportant && !/!\s*important/i.test(change.value) ? " !important" : "";
-        return `${delim} ${change.property}: ${change.value}${important};`;
-      });
-      if (newBody === body) {
+      newBody = body.slice(0, decl.start) + body.slice(decl.end);
+    } else if (decl) {
+      const raw = body.slice(decl.start, decl.end);
+      const valueText = raw.slice(raw.indexOf(":") + 1).replace(/;\s*$/, "").trim();
+      const hadImportant = /!\s*important/i.test(valueText);
+      const baseValue = valueText.replace(/!\s*important$/i, "").trim();
+      if (baseValue === change.value || valueText === change.value) {
         return { success: false, message: "Property already has this value" };
       }
+      const important = hadImportant && !/!\s*important/i.test(change.value) ? " !important" : "";
+      newBody = body.slice(0, decl.start) + `${change.property}: ${change.value}${important};` + body.slice(decl.end);
     } else {
       const trimmed = body.trimEnd();
       const sep = trimmed === "" || trimmed.endsWith(";") || trimmed.endsWith("{") ? " " : "; ";
@@ -162,10 +160,14 @@ export class StylePersistenceAdapter {
     edit.replace(uri, new vscode.Range(doc.positionAt(rule.bodyStart), doc.positionAt(rule.bodyEnd)), newBody);
     const ok = await vscode.workspace.applyEdit(edit);
     if (ok) {
+      // P2-7: doc.save() would also commit the user's own unsaved changes;
+      // for a dirty document the applied edit stays in the editor buffer only.
+      if (doc.isDirty) {
+        return { success: true, message: `Applied in editor (document has unsaved changes, not saved)${note}`, file: uri.fsPath };
+      }
       await doc.save();
       return { success: true, message: `Saved to source${note}`, file: uri.fsPath };
     }
     return { success: false, message: "Failed to apply edit" };
   }
 }
-

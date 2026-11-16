@@ -1,28 +1,13 @@
-export interface SourceRule {
-  href: string;
-  selectorText: string;
-  cssText?: string;
-}
-
-export interface ElementPayload {
-  selector: string;
-  selectors?: string[];
-  tag: string;
-  rect: { top: number; left: number; width: number; height: number };
-  styles: Record<string, string>;
-  classes?: string[];
-  attributes?: Record<string, string>;
-  /** true when the page was detected to use Tailwind CSS. */
-  tailwind?: boolean;
-  text?: string;
-  rules?: SourceRule[];
-  /** React owner component chain (dev mode only), nearest owner first. */
-  component?: { name?: string; file?: string; line?: number }[];
-}
-
-export type EditableAttribute = "placeholder" | "title" | "aria-label" | "alt" | "href" | "src" | "name" | "type";
-
-export type ElementOp = "set-text" | "delete" | "duplicate" | "move-up" | "move-down" | "set-classes" | "set-attribute";
+// P2-1: protocol-shape types live in @design-studio/preview-runtime/protocol
+// and are re-exported here so webview code can keep importing from ./types
+// without drifting from the protocol (this file previously copied
+// EditableAttribute/ElementPayload/ElementOp/SourceRule by hand).
+export type {
+  EditableAttribute,
+  ElementOp,
+  ElementPayload,
+  SourceRule,
+} from "@design-studio/preview-runtime/protocol";
 
 export type DevServerKind = "vite" | "next" | "astro" | "webpack" | "static-http" | "unknown";
 

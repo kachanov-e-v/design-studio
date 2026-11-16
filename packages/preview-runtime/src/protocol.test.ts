@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isRuntimeMessage, isValidClassListValue, PROTOCOL_VERSION } from "./protocol";
+import { isRuntimeMessage, isElementPayload, isValidClassListValue, PROTOCOL_VERSION } from "./protocol";
 
 describe("isRuntimeMessage", () => {
   it("accepts valid runtime-ready", () => {
@@ -88,5 +88,130 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ name: "LoginForm" }, {}] } })).toBe(false);
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: [{ name: "LoginForm", line: -1 }] } })).toBe(false);
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, component: Array(7).fill({ name: "X" }) } })).toBe(false);
+  });
+});
+
+describe("ds:rect validation (P2-6)", () => {
+  it("accepts a finite rect", () => {
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: 1, left: 2, width: 3, height: 4 } })).toBe(true);
+  });
+
+  it("rejects missing or non-finite rect", () => {
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: NaN, left: 2, width: 3, height: 4 } })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:rect", version: PROTOCOL_VERSION, rect: { top: 1, left: 2, width: 3 } })).toBe(false);
+  });
+});
+
+describe("message validator edge cases (P3-6 coverage)", () => {
+  const base = { version: PROTOCOL_VERSION } as Record<string, unknown>;
+  const longSession = "s".repeat(129);
+
+  it("set-mode / mode-changed require a boolean enabled and reject bad sessionId", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:set-mode", enabled: true })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:set-mode", enabled: "yes" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:mode-changed", enabled: false, sessionId: longSession })).toBe(false);
+  });
+
+  it("runtime-ready / runtime-error session and message bounds", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:runtime-ready", sessionId: longSession })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:runtime-error", message: "boom" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:runtime-error" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:runtime-error", message: "x".repeat(501) })).toBe(false);
+  });
+
+  it("ping / pong bound nonce and sessionId lengths", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:ping", nonce: "" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:ping", nonce: "n".repeat(129) })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:ping", nonce: "n", sessionId: longSession })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:pong", nonce: "n", sessionId: 42 })).toBe(false);
+  });
+
+  it("style-applied validates property/value/success/reason/payload", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:style-applied", property: "color", value: "red", success: true })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:style-applied", property: 1, value: "red", success: true })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:style-applied", property: "color", value: "red", success: "yes" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:style-applied", property: "color", value: "red", success: true, reason: "x".repeat(501) })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:style-applied", property: "color", value: "red", success: true, requestId: longSession })).toBe(false);
+  });
+
+  it("apply-style rejects bad selectors", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-style", property: "color", value: "red", selectors: [".a"] })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-style", property: "color", value: "red", selectors: [".a", ""] })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-style", property: "color", value: "red", selectors: Array(21).fill(".a") })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-style", property: "color", value: "red", requestId: "" })).toBe(false);
+  });
+
+  it("apply-op validates selectors and attribute pairing in both directions", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-op", op: "set-attribute", attribute: "href", value: "/x" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-op", op: "set-attribute", value: "/x" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-op", op: "set-text", value: "t", attribute: "href" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-op", op: "delete", selectors: [".a"] })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:apply-op", op: "delete", value: "x".repeat(5001) })).toBe(false);
+  });
+
+  it("op-applied validates op/success/payload", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:op-applied", op: "duplicate", success: true, payload: null })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:op-applied", op: "explode", success: true })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:op-applied", op: "delete", success: true, payload: { nope: true } })).toBe(false);
+  });
+
+  it("navigate / navigate-history / reload bounds", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:navigate", path: "/page" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:navigate", path: "http://x/y" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:navigate", path: `/${"x".repeat(4000)}` })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:navigate-history", direction: "back" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:navigate-history", direction: "sideways" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:reload", sessionId: "s" })).toBe(true);
+  });
+});
+
+describe("isElementPayload edge cases (P3-6 coverage)", () => {
+  const validPayload = {
+    selector: "h1",
+    tag: "h1",
+    rect: { top: 0, left: 0, width: 1, height: 1 },
+    styles: { color: "red" },
+  };
+  const payload = (extra: Record<string, unknown>) => ({ ...validPayload, ...extra });
+  const elementPayload = (v: unknown) => (isElementPayload as unknown as (x: unknown) => boolean)(v);
+
+  it("rejects structurally broken payloads", () => {
+    expect(elementPayload(null)).toBe(false);
+    expect(elementPayload([validPayload])).toBe(false);
+    expect(elementPayload({ ...validPayload, selector: "" })).toBe(false);
+    expect(elementPayload({ ...validPayload, tag: "x".repeat(65) })).toBe(false);
+    expect(elementPayload({ ...validPayload, rect: { ...validPayload.rect, width: -1 } })).toBe(false);
+    expect(elementPayload({ ...validPayload, styles: { color: 5 } })).toBe(false);
+  });
+
+  it("bounds selectors, text and classes", () => {
+    expect(elementPayload(payload({ selectors: [".a", ".b"] }))).toBe(true);
+    expect(elementPayload(payload({ selectors: [".a", ""] }))).toBe(false);
+    expect(elementPayload(payload({ text: "x".repeat(2001) }))).toBe(false);
+    expect(elementPayload(payload({ classes: ["a", "b c"] }))).toBe(false);
+    expect(elementPayload(payload({ classes: ["a"] }))).toBe(true);
+  });
+
+  it("bounds attributes against EDITABLE_ATTRIBUTES", () => {
+    expect(elementPayload(payload({ attributes: { href: "/x" } }))).toBe(true);
+    expect(elementPayload(payload({ attributes: { script: "/x" } }))).toBe(false);
+  });
+
+  it("bounds tailwind flag and component chain entries", () => {
+    expect(elementPayload(payload({ tailwind: true }))).toBe(true);
+    expect(elementPayload(payload({ tailwind: "yes" }))).toBe(false);
+    expect(elementPayload(payload({ component: [{ name: "A" }] }))).toBe(true);
+    expect(elementPayload(payload({ component: [{ name: "" }] }))).toBe(false);
+    expect(elementPayload(payload({ component: [{ file: "" }] }))).toBe(false);
+    expect(elementPayload(payload({ component: [{ name: "A", line: -1 }] }))).toBe(false);
+    expect(elementPayload(payload({ component: [{}] }))).toBe(false);
+  });
+
+  it("bounds sourceRules entries", () => {
+    expect(elementPayload(payload({ rules: [{ href: "/a.css", selectorText: ".a" }] }))).toBe(true);
+    expect(elementPayload(payload({ rules: [{ selectorText: ".a" }] }))).toBe(false);
+    expect(elementPayload(payload({ rules: [{ href: "/a.css", selectorText: "" }] }))).toBe(false);
+    expect(elementPayload(payload({ rules: [{ href: "/a.css", selectorText: ".a", cssText: "x".repeat(3001) }] }))).toBe(false);
   });
 });

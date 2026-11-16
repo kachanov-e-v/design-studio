@@ -50,6 +50,34 @@ describe("devServerCandidatesFromPackageJson", () => {
     ]);
   });
 
+  it("P2-16: vite preview defaults to port 4173", () => {
+    expect(urls(devServerCandidatesFromPackageJson(pkg({ preview: "vite preview" })))).toEqual([
+      "http://localhost:4173",
+    ]);
+  });
+
+  it("P2-16: parses the merged -p4000 flag form", () => {
+    expect(urls(devServerCandidatesFromPackageJson(pkg({ dev: "next dev -p4000" })))).toEqual([
+      "http://localhost:4000",
+    ]);
+  });
+
+  it("P2-16: parses a PORT= assignment in the script", () => {
+    expect(urls(devServerCandidatesFromPackageJson(pkg({ dev: "PORT=4000 node server.js" })))).toEqual([
+      "http://localhost:4000",
+    ]);
+  });
+
+  it("P2-16: flag port beats a PORT= assignment in the same script", () => {
+    expect(urls(devServerCandidatesFromPackageJson(pkg({ dev: "PORT=4100 next dev -p 4110" })))).toEqual([
+      "http://localhost:4110",
+    ]);
+  });
+
+  it("P2-16: build-only scripts produce no candidates", () => {
+    expect(devServerCandidatesFromPackageJson(pkg({ build: "vite build", lint: "eslint ." }))).toEqual([]);
+  });
+
   it("explicit port takes precedence over the framework default", () => {
     const candidates = devServerCandidatesFromPackageJson(pkg({ dev: "next dev --port 5000" }));
     expect(candidates[0]?.script).toBe("dev");
@@ -161,6 +189,17 @@ describe("probePort", () => {
 
   it("reports a closed port as not running", async () => {
     expect(await probePort(closedPort)).toBe(false);
+  });
+
+  it("P2-16: probePort reaches IPv6-only listeners (::1)", async () => {
+    const v6 = http.createServer((_q, r) => r.end("ok"));
+    await new Promise<void>((resolve) => v6.listen(0, "::1", resolve));
+    const port6 = (v6.address() as { port: number }).port;
+    try {
+      expect(await probePort(port6)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => v6.close(() => resolve()));
+    }
   });
 });
 

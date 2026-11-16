@@ -5,10 +5,6 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild ./src/index.ts --bundle --platform=browser --target=es2020 --outfile=./dist/bundle.js --format=iife --global-name=DesignStudioRuntime --define:process.env.NODE_ENV='\"production\"'",
-    "build:types": "tsc -p tsconfig.json"
-  },
-  "devDependencies": {
-    "esbuild": "^0.21.0"
+    "build": "tsc -p tsconfig.json && esbuild ./src/index.ts --bundle --platform=browser --target=es2020 --outfile=./dist/bundle.js --format=iife --global-name=DesignStudioRuntime --define:process.env.NODE_ENV='\"production\"'"
   }
 }

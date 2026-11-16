@@ -1,7 +1,7 @@
 import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
-import { PROTOCOL_VERSION, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
+import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import { SelectionPopup, type SelectionPopupTarget } from "./SelectionPopup";
 
@@ -16,15 +16,7 @@ export interface PreviewContainerHandle {
   applyOp: (op: ElementOp, value?: string, attribute?: EditableAttribute) => { requestId: string; sessionId: string } | null;
 }
 
-type RuntimeStatus =
-  | "idle"
-  | "iframe-loading"
-  | "connecting"
-  | "ready"
-  | "missing"
-  | "protocol-mismatch"
-  | "blocked-or-load-error"
-  | "error";
+type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "protocol-mismatch" | "error";
 
 export interface OpAppliedInfo {
   op: ElementOp;
@@ -108,6 +100,18 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const missingTimerRef = useRef<number | null>(null);
   const MAX_RETRIES = 5;
 
+  // P1-1: exact origin of the preview document; all postMessage traffic both
+  // ways is pinned to it ("*" would leak the session to any surrounding page).
+  const previewOrigin = (() => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return "";
+    }
+  })();
+  const previewOriginRef = useRef(previewOrigin);
+  previewOriginRef.current = previewOrigin;
+
   useEffect(() => {
     onSelectRef.current = onSelect;
     onStyleAppliedRef.current = onStyleApplied;
@@ -148,7 +152,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (!nonce) return;
     iframe.contentWindow.postMessage(
       { type: "ds:ping", version: PROTOCOL_VERSION, nonce, sessionId: nonce },
-      "*"
+      previewOriginRef.current
     );
   };
 
@@ -182,7 +186,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-style", version: PROTOCOL_VERSION, property, value, requestId, sessionId: sessionIdRef.current },
-        "*"
+        previewOriginRef.current
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -192,7 +196,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const requestId = makeRequestId();
       iframe.contentWindow.postMessage(
         { type: "ds:apply-op", version: PROTOCOL_VERSION, op, value, attribute, requestId, sessionId: sessionIdRef.current },
-        "*"
+        previewOriginRef.current
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
@@ -220,6 +224,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       const iframe = iframeRef.current;
       if (!iframe || !iframe.contentWindow) return;
       if (event.source !== iframe.contentWindow) return;
+      // P1-1: accept runtime messages only from the preview origin — a foreign
+      // origin (iframe left the preview during navigation) is never trusted.
+      if (!previewOriginRef.current || event.origin !== previewOriginRef.current) return;
       const raw = event.data as { type?: unknown; version?: unknown; nonce?: unknown; sessionId?: unknown };
 
       if (raw?.type === "ds:pong" || raw?.type === "ds:runtime-ready") {
@@ -234,7 +241,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
         const sid = typeof raw.sessionId === "string" ? raw.sessionId : undefined;
         if (nonce && nonce !== sessionIdRef.current) return;
-        if (!nonce) return;
+        // P2-13: ds:runtime-ready is sent at runtime init, before the webview
+        // pinged — it carries no nonce. It must still pass the origin filter
+        // above; its trust is the preview origin + matching session id.
+        if (raw.type === "ds:pong" && !nonce) return;
+        if (sid && sid !== sessionIdRef.current) return;
         if (sid && sid !== sessionIdRef.current) return;
         clearTimers();
         resolvedRef.current = true;
@@ -242,7 +253,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         setDiagnostic("");
         iframe.contentWindow?.postMessage(
           { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editModeRef.current, sessionId: sessionIdRef.current },
-          "*"
+          previewOriginRef.current
         );
         return;
       }
@@ -268,6 +279,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         );
         return;
       }
+      if (data.type === "ds:rect") {
+        // P2-6: the popup follows the selected element on scroll/resize.
+        setPopupTarget((current) => (current ? { ...current, rect: data.rect } : current));
+        return;
+      }
       if (data.type === "ds:style-applied") {
         onStyleAppliedRef.current?.({
           success: data.success,
@@ -284,7 +300,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         onOpAppliedRef.current?.({
           op: data.op as ElementOp,
           value: data.value,
-          attribute: data.attribute as EditableAttribute | undefined,
+          attribute: isEditableAttribute(data.attribute) ? data.attribute : undefined,
           success: data.success,
           reason: data.reason,
           payload: data.payload ?? null,
@@ -320,15 +336,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (runtimeStatus !== "ready") return;
     iframe.contentWindow.postMessage(
       { type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: editMode, sessionId: sessionIdRef.current },
-      "*"
+      previewOriginRef.current
     );
   }, [editMode, runtimeStatus, url]);
 
   const runtimeLabel =
     runtimeStatus === "idle"
       ? translate(language, "preview.idle")
-      : runtimeStatus === "iframe-loading"
-      ? translate(language, "preview.iframeLoading")
       : runtimeStatus === "connecting"
       ? translate(language, "preview.connecting")
       : runtimeStatus === "ready"
@@ -337,8 +351,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       ? translate(language, "preview.missing")
       : runtimeStatus === "protocol-mismatch"
       ? translate(language, "preview.protocolMismatch")
-      : runtimeStatus === "blocked-or-load-error"
-      ? translate(language, "preview.blocked")
       : translate(language, "preview.error");
 
   const statusText =
@@ -378,7 +390,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       version: PROTOCOL_VERSION,
       direction,
       sessionId: sessionIdRef.current,
-    }, "*");
+    }, previewOriginRef.current);
   };
 
   const reloadPreview = () => {
@@ -388,7 +400,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         type: "ds:reload",
         version: PROTOCOL_VERSION,
         sessionId: sessionIdRef.current,
-      }, "*");
+      }, previewOriginRef.current);
     } else {
       setRefreshKey((key) => key + 1);
     }
@@ -437,10 +449,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
               onLoad={() => {
                 if (url) startHandshake();
               }}
-              onError={() => {
-                setRuntimeStatus("blocked-or-load-error");
-                setDiagnostic("iframe failed to load.");
-              }}
             />
             {runtimeStatus === "missing" && (
               <div className={styles.overlay} role="status">
@@ -458,11 +466,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 Runtime protocol mismatch. {diagnostic}
               </div>
             )}
-            {runtimeStatus === "blocked-or-load-error" && (
-              <div className={styles.overlay} role="status">
-                Unable to connect to preview. {diagnostic}
-              </div>
-            )}
             {runtimeStatus === "connecting" && (
               <div className={styles.overlay} role="status">
                 {translate(language, "preview.connecting")}
@@ -474,11 +477,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 language={language}
                 onReveal={(components) => onRevealSource?.(components)}
                 onCopyInstruction={(instruction) => onCopyInstruction?.(instruction)}
+                onClose={() => setPopupTarget(null)}
               />
             )}
           </>
         ) : (
-          <span>{translate(language, "preview.iframeLoading")}</span>
+          <span>{translate(language, "preview.idle")}</span>
         )}
       </div>
     </section>

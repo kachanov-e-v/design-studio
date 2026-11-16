@@ -7,10 +7,13 @@ const messages = {
   "toolbar.server": { ru: "Сервер", en: "Server" },
   "toolbar.useServer": { ru: "Открыть", en: "Open" },
   "toolbar.files": { ru: "Файлы", en: "Files" },
-  "toolbar.serverPlaceholder": { ru: "http://localhost:3000 или путь страницы", en: "http://localhost:3000 or a page path" },
+  "toolbar.serverPlaceholder": { ru: "http://localhost:3000", en: "http://localhost:3000" }, // P2-19: only full dev-server URLs are accepted
+  "toolbar.noEntry": { ru: "Выберите страницу", en: "Select a page" }, // P2-19
   "toolbar.projectMissing": { ru: "Откройте папку проекта", en: "Open a project folder" },
-  "toolbar.edit": { ru: "Просмотр", en: "Browse" },
-  "toolbar.editOn": { ru: "Редактировать", en: "Edit" },
+  // P2-11: mode toggle labels are actions (the mode you switch INTO), matching
+  // the README flow "click Edit to start editing".
+  "toolbar.toEdit": { ru: "Редактировать", en: "Edit" },
+  "toolbar.toBrowse": { ru: "Просмотр", en: "Browse" },
   "toolbar.save": { ru: "Сохранить стили", en: "Save styles" },
   "toolbar.language": { ru: "Язык", en: "Language" },
   "toolbar.aria": { ru: "Панель Design Studio", en: "Design Studio toolbar" },
@@ -20,17 +23,15 @@ const messages = {
   "toolbar.detectedServer": { ru: "Обнаружен сервер разработки", en: "Development server detected" },
   "toolbar.serverOther": { ru: "Порт занят другим приложением", en: "Port is used by another app" },
   "toolbar.serverUnknown": { ru: "Сервер не проверен", en: "Server not verified" },
-  "toolbar.serverDown": { ru: "Сервер обнаружен", en: "Server detected" },
+  "toolbar.serverDown": { ru: "Сервер не запущен", en: "Server not running" },
   "preview.status": { ru: "Состояние", en: "Status" },
   "preview.connected": { ru: "Редактор подключён", en: "Editor connected" },
   "preview.editEnabled": { ru: "Кликните по элементу. Действия страницы отключены.", en: "Click an element. Page actions are disabled." },
   "preview.editDisabled": { ru: "Просмотр: приложение работает штатно.", en: "Browse: the app behaves normally." },
   "preview.idle": { ru: "Предпросмотр не загружен", en: "Preview not loaded" },
-  "preview.iframeLoading": { ru: "Загрузка предпросмотра…", en: "Loading preview…" },
   "preview.connecting": { ru: "Подключение редактора…", en: "Connecting editor…" },
   "preview.missing": { ru: "Редактор не найден", en: "Editor not detected" },
   "preview.protocolMismatch": { ru: "Версии протокола не совпадают", en: "Protocol version mismatch" },
-  "preview.blocked": { ru: "Не удалось загрузить предпросмотр", en: "Preview failed to load" },
   "preview.error": { ru: "Не удалось подключиться к предпросмотру", en: "Unable to connect to preview" },
   "preview.refresh": { ru: "Обновить", en: "Refresh" },
   "preview.back": { ru: "Назад", en: "Back" },
@@ -84,6 +85,7 @@ const messages = {
   "popup.placeholder": { ru: "Что изменить в этом элементе", en: "What to change in this element" },
   "popup.copyForAi": { ru: "Скопировать для ИИ", en: "Copy for AI" },
   "popup.unnamedElement": { ru: "Безымянный элемент", en: "Unnamed element" },
+  "popup.close": { ru: "Закрыть", en: "Close" }, // P2-6
   "status.sourceTooLarge": { ru: "Файл компонента слишком большой для буфера обмена", en: "Component file is too large for the clipboard" },
   "status.styleApplied": { ru: "Стиль применён к предпросмотру", en: "Style applied to preview" },
   "status.styleSaved": { ru: "Стили сохранены: {file}", en: "Styles saved: {file}" },
@@ -100,10 +102,21 @@ const messages = {
   "status.styleTimeout": { ru: "Превышено время ожидания стиля", en: "Style update timed out" },
   "status.operationFailed": { ru: "Не удалось изменить элемент", en: "Could not update element" },
   "status.previewError": { ru: "Ошибка предпросмотра", en: "Preview error" },
+  "app.errorTitle": { ru: "Интерфейс упал", en: "The UI crashed" }, // P2-20
+  "app.reload": { ru: "Перезагрузить", en: "Reload" }, // P2-20
+  // P2-22: extension-side strings moved out of inline ternaries.
+  "panel.title": { ru: "Дизайн-студия", en: "Design Studio" },
+  "panel.serverDown": { ru: "Не удалось запустить локальный сервер предпросмотра. Подробности — в канале «Design Studio Preview».", en: "Failed to start the local preview host server. See the \"Design Studio Preview\" output channel for details." },
+  "error.invalidEntry": { ru: "Некорректный путь проекта", en: "Invalid project entry" },
+  "error.devServerLocalOnly": { ru: "Разрешены только локальные серверы разработки проекта", en: "Only localhost dev servers are allowed" },
+  "error.navigateLocalOnly": { ru: "Разрешены только локальные адреса проекта", en: "Only local project URLs are allowed" },
+  "error.unknown": { ru: "Неизвестная ошибка", en: "Unknown error" },
   "status.extensionError": { ru: "Ошибка расширения: {error}", en: "Extension error: {error}" },
 } as const;
 
 export type MessageKey = keyof typeof messages;
+/** Exposed for tests: the full RU/EN string table. */
+export const I18N_STRINGS = messages;
 
 export function translate(language: Language, key: MessageKey, values?: Record<string, string | number>): string {
   let value: string = messages[key][language];

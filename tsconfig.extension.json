@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // P3-3: the extension host runs on Node — no DOM lib in scope.
+    "lib": ["ES2022"],
+    "types": ["node", "vitest/globals"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@design-studio/preview-runtime/*": ["./packages/preview-runtime/src/*"],
+      "@design-studio/shared/*": ["./src/shared/*"]
+    }
+  },
+  "include": [
+    "src",
+    "vite.config.ts",
+    "vitest.config.ts"
+  ]
+}

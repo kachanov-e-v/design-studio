@@ -1,11 +1,22 @@
+# Packaging manifest (P3-5): the VSIX ships only the runtime surface.
+# Source and dev tooling stay out of the extension bundle.
 src/**
 webview/**
 packages/**
+fixtures/**
+scripts/**
 docs/**
+.github/**
 .vscode/**
 node_modules/**
 *.ts
-tsconfig.json
+tsconfig*.json
 vite.config.ts
 vitest.config.ts
-.eslintrc.cjs
+eslint.config.mjs
+package-lock.json
+.gitignore
+.editorconfig
+dependabot.yml
+coverage
+tmp

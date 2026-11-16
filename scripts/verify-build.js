@@ -4,7 +4,7 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const webviewDist = path.join(root, "dist", "webview");
 const extensionPath = path.join(root, "dist", "extension.js");
-const required = ["index.html", "demo.html", "runtime.js", "protocol.js"];
+const required = ["index.html", "demo.html", "runtime.js"]; // P2-13: protocol.js dropped (never loaded)
 
 if (!fs.existsSync(extensionPath) || !fs.statSync(extensionPath).isFile() || fs.statSync(extensionPath).size === 0) {
   console.error("Missing or empty build artifact:", extensionPath);

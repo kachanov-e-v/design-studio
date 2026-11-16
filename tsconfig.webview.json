@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // P3-3: the webview and the page runtime run in a browser frame — no
+    // Node types in scope beyond what vitest tests need.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vitest/globals"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@design-studio/preview-runtime/*": ["./packages/preview-runtime/src/*"],
+      "@design-studio/shared/*": ["./src/shared/*"]
+    }
+  },
+  "include": [
+    "webview",
+    "packages/preview-runtime/src"
+  ]
+}

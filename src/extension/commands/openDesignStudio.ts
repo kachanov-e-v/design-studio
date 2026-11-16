@@ -7,6 +7,7 @@ import { PromptExportService } from "../../infrastructure/ai/PromptExportService
 import { StylePersistenceAdapter } from "../../infrastructure/persistence/StylePersistenceAdapter";
 import { PreviewHostServer } from "../../infrastructure/preview/PreviewHostServer";
 import { detectDevServers, type DevServerCandidate } from "../../infrastructure/preview/DevServerDetector";
+import { findProjectEntries } from "../../infrastructure/preview/projectEntryScanner";
 import type { DesignEdit } from "../../domain/entities/DesignEdit";
 
 const PROJECT_ENTRY_KEY = "designStudio.projectEntry.v3";
@@ -17,6 +18,9 @@ const DEMO_KEY = "designStudio.demoPreview.v1";
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
 let activePanel: vscode.WebviewPanel | null = null;
+// P1-2: exactly one live host-dispose subscription at a time; recreated hosts
+// replace the previous subscription instead of accumulating dead ones.
+let hostServerSubscription: vscode.Disposable | null = null;
 
 function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
   if (!sharedTraceChannel) {
@@ -40,12 +44,64 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
     });
     await server.start();
     sharedHostServer = server;
-    context.subscriptions.push({ dispose: () => void server.stop() });
+    // P1-2: dispose the previous subscription (its server is already stopped)
+    // before registering the new one, so reopen cycles don't pile up entries.
+    if (hostServerSubscription) {
+      hostServerSubscription.dispose();
+      hostServerSubscription = null;
+    }
+    hostServerSubscription = { dispose: () => void server.stop() };
+    context.subscriptions.push(hostServerSubscription);
     return server;
   } catch (err) {
     console.error("Design Studio: failed to start preview host server:", err);
     return null;
   }
+}
+
+// P1-5: edits enter the exported instruction verbatim; webview payloads are
+// not fully trusted, so each field is re-validated and truncated here before
+// reaching the prompt.
+const EDIT_KINDS = new Set(["style", "text", "classes", "attribute", "structure"]);
+
+function boundedString(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return value.slice(0, max);
+}
+
+function sanitizeDesignEdits(raw: unknown): DesignEdit[] {
+  if (!Array.isArray(raw)) return [];
+  const edits: DesignEdit[] = [];
+  for (const entry of raw.slice(0, 200)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    if (typeof item.kind !== "string" || !EDIT_KINDS.has(item.kind)) continue;
+    const selector = boundedString(item.selector, 500);
+    if (!selector) continue;
+    const componentRaw = item.component;
+    const component =
+      componentRaw && typeof componentRaw === "object" && !Array.isArray(componentRaw)
+        ? {
+            name: boundedString((componentRaw as Record<string, unknown>).name, 500),
+            file: boundedString((componentRaw as Record<string, unknown>).file, 500),
+            line:
+              typeof (componentRaw as Record<string, unknown>).line === "number" &&
+              Number.isFinite((componentRaw as Record<string, unknown>).line)
+                ? Math.floor((componentRaw as Record<string, unknown>).line as number)
+                : undefined,
+          }
+        : undefined;
+    edits.push({
+      kind: item.kind as DesignEdit["kind"],
+      selector,
+      property: boundedString(item.property, 200),
+      before: boundedString(item.before, 4000),
+      after: boundedString(item.after, 4000),
+      operation: boundedString(item.operation, 100),
+      component: component?.name || component?.file || component?.line ? component : undefined,
+    });
+  }
+  return edits;
 }
 
 function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
@@ -65,7 +121,6 @@ function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
 }
 
 /** Entry-point discovery lives in preview/projectEntryScanner; re-exported for existing callers. */
-import { findProjectEntries } from "../../infrastructure/preview/projectEntryScanner";
 export { findProjectEntries };
 
 export async function openDesignStudio(context: vscode.ExtensionContext): Promise<void> {
@@ -80,16 +135,13 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
   const host = await ensureHostServer(context, root);
 
   if (!host) {
-    const message = language === "ru"
-      ? "Не удалось запустить локальный сервер предпросмотра. Подробности — в канале «Design Studio Preview»."
-      : "Failed to start the local preview host server. See the \"Design Studio Preview\" output channel for details.";
-    void vscode.window.showErrorMessage(message);
+    void vscode.window.showErrorMessage(translate(language, "panel.serverDown"));
     return;
   }
 
   const panel = vscode.window.createWebviewPanel(
     "designStudio",
-    language === "ru" ? "Дизайн-студия" : "Design Studio",
+    translate(language, "panel.title"),
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
@@ -100,6 +152,14 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
   activePanel = panel;
   panel.onDidDispose(() => {
     activePanel = null;
+    // P1-2: the preview host (and its cookie jar with the application
+    // session) must not outlive the panel. stop() also wipes the jar, so the
+    // next open starts a fresh session on a fresh port.
+    sharedHostServer = null;
+    if (hostServerSubscription) {
+      hostServerSubscription.dispose();
+      hostServerSubscription = null;
+    }
   }, undefined, context.subscriptions);
 
   panel.webview.html = getWebviewHtml(panel.webview, context.extensionUri);
@@ -107,20 +167,40 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
   const persistence = new StylePersistenceAdapter();
   const promptExport = new PromptExportService(root);
 
+  // P0-4: style persists touch project files by offset, so they must run one
+  // at a time. Chain them; a rejected task never poisons the queue.
+  let persistQueue: Promise<void> = Promise.resolve();
+  const enqueuePersist = (task: () => Promise<void>): Promise<void> => {
+    const run = persistQueue.then(task, task);
+    persistQueue = run.catch(() => {});
+    return run;
+  };
+
   const projectUrl = (): string | null => {
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
-    return host && entry ? `${host.origin}/project/${entry}` : null;
+    if (!host || !entry) return null;
+    // P2-9: every entry segment is percent-encoded, so spaces, '#' and '?'
+    // in file names stay part of one path instead of breaking the URL.
+    const encoded = entry.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/");
+    return `${host.origin}/project/${encoded}`;
+  };
+
+  // P2-22: entry discovery and dev-server detection are expensive workspace
+  // scans; cache them and invalidate via preview:refresh / mode switches.
+  let cachedEntries: string[] | null = null;
+  let cachedDevServerSuggestions: DevServerCandidate[] | null = null;
+  const invalidateDiscoveryCache = () => {
+    cachedEntries = null;
+    cachedDevServerSuggestions = null;
   };
 
   const postState = async () => {
     const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
     const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
     const demo = context.workspaceState.get<boolean>(DEMO_KEY, false);
-    const demoUrl = demo
-      ? host
-        ? `${host.origin}/demo.html?lang=${language}`
-        : `${panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "demo.html"))}?lang=${language}`
-      : "";
+    // P2-13: the asWebviewUri demo fallback below was unreachable (the panel
+    // only renders after ensureHostServer succeeded, so a host always exists).
+    const demoUrl = demo && host ? `${host.origin}/demo.html?lang=${language}` : "";
     let devUrl: URL | null = null;
     try {
       if (devServer) devUrl = new URL(devServer);
@@ -132,16 +212,21 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
       : projectUrl() ?? (devUrl && host ? `${host.origin}${devUrl.pathname}${devUrl.search}${devUrl.hash}` : "");
     // Keep the host's sticky dev target in sync (see PreviewHostServer.setDevTarget).
     host?.setDevTarget(entry ? null : devServer || null);
-    const entries = root ? await findProjectEntries(root) : [];
-    const devServerSuggestions = entry || devServer
-      ? [] as DevServerCandidate[]
-      : root
-        ? await detectDevServers(root, entries)
-        : [] as DevServerCandidate[];
+    if (cachedEntries === null) cachedEntries = root ? await findProjectEntries(root) : [];
+    const entries = cachedEntries;
+    if (entry || devServer) {
+      cachedDevServerSuggestions = [] as DevServerCandidate[];
+    } else if (cachedDevServerSuggestions === null) {
+      cachedDevServerSuggestions = root ? await detectDevServers(root, entries) : [] as DevServerCandidate[];
+    }
+    const devServerSuggestions = cachedDevServerSuggestions;
     panel.webview.postMessage({
       type: "preview:state",
       url,
-      status: demo && url ? "demo" : url ? (url.includes("/project/") ? "project" : "devserver") : "idle",
+      // P2-10: the mode follows the selected source (demo / project entry /
+      // dev server), not a substring of the URL — a dev route like /project/x
+      // must not be classified as the project viewer.
+      status: demo && url ? "demo" : entry && projectUrl() ? "project" : url ? "devserver" : "idle",
       projectRoot: root,
       projectEntry: entry,
       projectEntries: entries,
@@ -163,11 +248,12 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
       if (msg.type === "ui:setLanguage") {
         language = msg.language === "en" ? "en" : "ru";
         await context.globalState.update(LANGUAGE_KEY, language);
-        panel.title = language === "ru" ? "Дизайн-студия" : "Design Studio";
+        panel.title = translate(language, "panel.title");
         await postState();
         return;
       }
       if (msg.type === "preview:demo") {
+        invalidateDiscoveryCache();
         await context.workspaceState.update(PROJECT_ENTRY_KEY, "");
         await context.workspaceState.update(DEV_SERVER_KEY, "");
         await context.workspaceState.update(DEMO_KEY, true);
@@ -175,9 +261,10 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "project:setEntry") {
+        invalidateDiscoveryCache();
         const entry = typeof msg.path === "string" ? msg.path.replace(/\\/g, "/").replace(/^\//, "") : "";
         if (!entry || entry.includes("..")) {
-          panel.webview.postMessage({ type: "preview:error", message: language === "ru" ? "Некорректный путь проекта" : "Invalid project entry" });
+          panel.webview.postMessage({ type: "preview:error", message: translate(language, "error.invalidEntry") });
           return;
         }
         await context.workspaceState.update(PROJECT_ENTRY_KEY, entry);
@@ -187,11 +274,12 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "project:setDevServer") {
+        invalidateDiscoveryCache();
         const url = typeof msg.url === "string" ? msg.url.trim() : "";
         if (url && !isLocalhostUrl(url)) {
           panel.webview.postMessage({
             type: "preview:error",
-            message: language === "ru" ? "Разрешены только локальные серверы разработки проекта" : "Only localhost dev servers are allowed",
+            message: translate(language, "error.devServerLocalOnly"),
           });
           return;
         }
@@ -203,11 +291,12 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "project:navigate") {
+        invalidateDiscoveryCache();
         const rawUrl = typeof msg.url === "string" ? msg.url.trim() : "";
         if (!isLocalhostUrl(rawUrl)) {
           panel.webview.postMessage({
             type: "preview:error",
-            message: language === "ru" ? "Разрешены только локальные адреса проекта" : "Only local project URLs are allowed",
+            message: translate(language, "error.navigateLocalOnly"),
           });
           return;
         }
@@ -235,12 +324,14 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "preview:refresh") {
+        invalidateDiscoveryCache();
         await postState();
         return;
       }
       if (msg.type === "style:persist") {
+        const requestId = typeof msg.requestId === "string" && msg.requestId.length <= 128 ? msg.requestId : undefined;
         if (!root) {
-          panel.webview.postMessage({ type: "persist:result", success: false, message: translate(language, "status.noProject") });
+          panel.webview.postMessage({ type: "persist:result", success: false, message: translate(language, "status.noProject"), requestId });
           return;
         }
         const change = {
@@ -262,21 +353,28 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
                 })
             : undefined,
         };
-        const result = await persistence.apply(change);
-        if (result.success) {
-          panel.webview.postMessage({
-            type: "persist:result",
-            success: true,
-            message: translate(language, "status.styleSaved", { file: result.file ?? "" }),
-            file: result.file,
-          });
-        } else {
-          panel.webview.postMessage({
-            type: "persist:result",
-            success: false,
-            message: translate(language, "status.saveFailed", { error: result.message }),
-          });
-        }
+        // P0-4: style edits are offset-based against the current document
+        // text; two parallel applies would race (stale offsets, clobbered
+        // edits). Strictly serialize them and correlate results via requestId.
+        await enqueuePersist(async () => {
+          const result = await persistence.apply(change);
+          if (result.success) {
+            panel.webview.postMessage({
+              type: "persist:result",
+              success: true,
+              message: translate(language, "status.styleSaved", { file: result.file ?? "" }),
+              file: result.file,
+              requestId,
+            });
+          } else {
+            panel.webview.postMessage({
+              type: "persist:result",
+              success: false,
+              message: translate(language, "status.saveFailed", { error: result.message }),
+              requestId,
+            });
+          }
+        });
         return;
       }
       if (msg.type === "ai:copyInstruction") {
@@ -286,7 +384,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         }
         const payload = msg.payload;
         const instruction = typeof msg.instruction === "string" ? msg.instruction : "";
-        const edits = Array.isArray(msg.edits) ? msg.edits.slice(0, 200) as DesignEdit[] : [];
+        const edits = sanitizeDesignEdits(msg.edits);
         if (payload !== undefined && payload !== null && (typeof payload !== "object" || typeof payload.selector !== "string")) {
           panel.webview.postMessage({ type: "ai:result", success: false, message: translate(language, "status.noSelection") });
           return;
@@ -338,7 +436,7 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : language === "ru" ? "Неизвестная ошибка" : "Unknown error";
+      const message = err instanceof Error ? err.message : translate(language, "error.unknown");
       panel.webview.postMessage({ type: "error", message });
     }
   });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import styles from "./Inspector.module.css";
 import { EDITABLE_ATTRIBUTES } from "@design-studio/preview-runtime/protocol";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
@@ -50,6 +50,19 @@ export function Inspector({
     return next;
   });
   const setStyleDraft = (key: string, value: string) => setStyleDrafts((p) => ({ ...p, [key]: value }));
+
+  // P2-5: slider/color controls apply continuously while dragged. A debounce
+  // (~100 ms) collapses the gesture into one live apply; the final commit
+  // happens on release (pointerUp / blur), and the journal merges the rest.
+  const previewTimers = useRef<Record<string, number>>({});
+  const preview = (key: string, value: string) => {
+    setStyleDraft(key, value);
+    window.clearTimeout(previewTimers.current[key]);
+    previewTimers.current[key] = window.setTimeout(() => {
+      delete previewTimers.current[key];
+      onApplyStyle(key, value);
+    }, 100);
+  };
   const clearStyleDraft = (key: string) => setStyleDrafts((p) => {
     const next = { ...p };
     delete next[key];
@@ -66,6 +79,8 @@ export function Inspector({
   };
 
   useEffect(() => {
+    for (const timer of Object.values(previewTimers.current)) window.clearTimeout(timer);
+    previewTimers.current = {};
     setTextDraft(null);
     setClassDraft(null);
     setStyleDrafts({});
@@ -206,14 +221,23 @@ export function Inspector({
         <label key={def.key}>
           <span>{def.key}</span>
           <span className={styles.colorField}>
-            {hex && <input type="color" value={hex} onChange={(event) => apply(event.target.value)} aria-label={def.key} />}
+            {hex && (
+              <input
+                type="color"
+                value={hex}
+                onChange={(event) => preview(def.key, event.target.value)}
+                onBlur={commit}
+                aria-label={def.key}
+              />
+            )}
             {textInput}
           </span>
         </label>
       );
     }
     if (def.editor === "slider") {
-      const numeric = Number.parseFloat(current);
+      const shown = draft ?? current;
+      const numeric = Number.parseFloat(shown);
       return (
         <label key={def.key}>
           <span>{def.key}</span>
@@ -224,7 +248,9 @@ export function Inspector({
               max={def.max}
               step={def.step}
               value={Number.isFinite(numeric) ? numeric : 0}
-              onChange={(event) => apply(event.target.value)}
+              onChange={(event) => preview(def.key, event.target.value)}
+              onPointerUp={commit}
+              onKeyUp={commit}
               aria-label={def.key}
             />
             {textInput}
@@ -292,7 +318,7 @@ export function Inspector({
   const attributeDefs = selected ? attributeDefinitionsForTag(selected.tag) : [];
   const coveredAttributes = new Set(attributeDefs.map((def) => def.name));
   const extraAttributeNames = selected
-    ? (EDITABLE_ATTRIBUTES as readonly string[]).filter((name) => !coveredAttributes.has(name) && name in (selected.attributes ?? {}))
+    ? EDITABLE_ATTRIBUTES.filter((name) => !coveredAttributes.has(name) && name in (selected.attributes ?? {}))
     : [];
 
   return (
@@ -332,6 +358,13 @@ export function Inspector({
                 value={textDraft ?? selected.text ?? ""}
                 placeholder={t("inspector.noText")}
                 onChange={(event) => setTextDraft(event.target.value)}
+                onBlur={() => {
+                  // P2-18: the text field commits on blur, as the README promises.
+                  if (textDraft !== null && textDraft !== (selected.text ?? "")) {
+                    onEditText(textDraft);
+                    setTextDraft(null);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && textDraft !== null && textDraft !== (selected.text ?? "")) {
                     onEditText(textDraft);
@@ -379,8 +412,8 @@ export function Inspector({
           <section className={styles.section}>
             <h3>{t("inspector.attributes")}</h3>
             <div className={styles.editor}>
-              {attributeDefs.map((def) => renderAttributeEditor(def.name as EditableAttribute, def))}
-              {extraAttributeNames.map((name) => renderAttributeEditor(name as EditableAttribute, undefined))}
+              {attributeDefs.map((def) => renderAttributeEditor(def.name, def))}
+              {extraAttributeNames.map((name) => renderAttributeEditor(name, undefined))}
             </div>
           </section>
 
