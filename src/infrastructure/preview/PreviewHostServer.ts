@@ -126,6 +126,13 @@ export function resolveProjectPath(projectRoot: string, relativePathRaw: string)
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     return { ok: false, reason: "forbidden" };
   }
+  // Never expose secrets or VCS/module metadata through /project/, even when
+  // a project legitimately keeps them inside the served folder.
+  const segments = relativePath.split(/[\\/]+/).filter((s) => s.length > 0).map((s) => s.toLowerCase());
+  const base = segments[segments.length - 1] ?? "";
+  if (segments.includes(".git") || segments.includes("node_modules") || base === ".env" || /^\.env[.\-_]/.test(base)) {
+    return { ok: false, reason: "forbidden" };
+  }
   let rootReal: string;
   try {
     rootReal = fs.realpathSync(rootResolved);
@@ -175,6 +182,7 @@ export class PreviewHostServer {
   }
 
   private devTarget: string | null = null;
+  /** Keys are `${upstreamOrigin}|${cookieName}`: cookies never leak across loopback origins/ports. */
   private cookieJar = new Map<string, JarCookie>();
 
   /** Sticky dev-server target lets app routes stay at the preview origin's root. */
@@ -222,6 +230,18 @@ export class PreviewHostServer {
 
   get running(): boolean {
     return this.server !== null;
+  }
+
+  /**
+   * The only allowed Host is this server's own loopback origin. Anything else
+   * (a rebound domain resolving to 127.0.0.1, another loopback service's name)
+   * is refused, so the preview host cannot be abused as an open proxy for
+   * cross-origin request forgery or DNS rebinding.
+   */
+  private hostAllowed(rawHost: string | undefined): boolean {
+    if (!rawHost) return false;
+    const host = rawHost.toLowerCase().trim();
+    return host === `${this.host}:${this.port}` || host === `localhost:${this.port}` || host === `[::1]:${this.port}`;
   }
 
   async start(): Promise<number> {
@@ -276,6 +296,11 @@ export class PreviewHostServer {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.hostAllowed(req.headers.host)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Forbidden Host header");
+      return;
+    }
     const method = req.method ?? "GET";
     const allowed = method === "GET" || method === "HEAD" || method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE" || method === "OPTIONS";
     if (!allowed) {
@@ -463,13 +488,14 @@ export class PreviewHostServer {
         // keep as-is
       }
     }
-    const jarCookieHeader = this.buildCookieHeader(headers["cookie"]);
+    const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin);
     if (jarCookieHeader) headers["cookie"] = jarCookieHeader;
     return headers;
   }
 
-  private buildCookieHeader(browserCookie: string | undefined): string | undefined {
+  private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string): string | undefined {
     if (this.cookieJar.size === 0) return browserCookie;
+    const prefix = `${upstreamOrigin}|`;
     const cookies = new Map<string, string>();
     for (const pair of (browserCookie ?? "").split(";")) {
       const eq = pair.indexOf("=");
@@ -478,9 +504,11 @@ export class PreviewHostServer {
       if (name) cookies.set(name, pair.slice(eq + 1).trim());
     }
     const now = Date.now();
-    for (const [name, entry] of this.cookieJar) {
+    for (const [key, entry] of this.cookieJar) {
+      if (!key.startsWith(prefix)) continue;
+      const name = key.slice(prefix.length);
       if (entry.expiresAt !== null && entry.expiresAt <= now) {
-        this.cookieJar.delete(name);
+        this.cookieJar.delete(key);
         continue;
       }
       cookies.set(name, entry.value);
@@ -489,12 +517,13 @@ export class PreviewHostServer {
     return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
   }
 
-  private rememberSetCookie(rawCookie: string): void {
+  private rememberSetCookie(rawCookie: string, upstreamOrigin: string): void {
     const eq = rawCookie.indexOf("=");
     const semi = rawCookie.indexOf(";");
     if (eq === -1) return;
     const name = rawCookie.slice(0, eq).trim();
     if (!name) return;
+    const key = `${upstreamOrigin}|${name}`;
     const valueEnd = semi === -1 ? rawCookie.length : semi;
     const value = rawCookie.slice(eq + 1, valueEnd).trim();
     const attributes = rawCookie.slice(valueEnd);
@@ -503,7 +532,7 @@ export class PreviewHostServer {
     if (maxAge) {
       const seconds = Number(maxAge[1]);
       if (seconds <= 0) {
-        this.cookieJar.delete(name);
+        this.cookieJar.delete(key);
         return;
       }
       expiresAt = Date.now() + seconds * 1000;
@@ -514,18 +543,18 @@ export class PreviewHostServer {
         if (Number.isNaN(parsed)) {
           expiresAt = null;
         } else if (parsed <= Date.now()) {
-          this.cookieJar.delete(name);
+          this.cookieJar.delete(key);
           return;
         } else {
           expiresAt = parsed;
         }
       }
     }
-    this.cookieJar.set(name, { value, expiresAt });
+    this.cookieJar.set(key, { value, expiresAt });
   }
 
-  private rememberSetCookies(cookies: string[]): void {
-    for (const cookie of cookies) this.rememberSetCookie(cookie);
+  private rememberSetCookies(cookies: string[], upstreamOrigin: string): void {
+    for (const cookie of cookies) this.rememberSetCookie(cookie, upstreamOrigin);
   }
 
   private async fetchWithFallbacks(
@@ -659,7 +688,7 @@ export class PreviewHostServer {
         : upstream.headers.get("set-cookie")
           ? [upstream.headers.get("set-cookie")!]
           : [];
-    this.rememberSetCookies(upstreamCookies);
+    this.rememberSetCookies(upstreamCookies, parsedTarget.origin);
     const setCookies = upstreamCookies.map(rewriteSetCookieForPreview);
     delete headers["set-cookie"];
 
@@ -733,6 +762,10 @@ export class PreviewHostServer {
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket): Promise<void> {
+    if (!this.hostAllowed(req.headers.host)) {
+      socket.destroy();
+      return;
+    }
     const raw = req.url ?? "";
     const target = this.barePathTarget(req, raw);
     if (!target) {

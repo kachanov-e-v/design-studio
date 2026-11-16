@@ -497,6 +497,43 @@ describe("PreviewHostServer", () => {
     expect(resolveProjectPath(projectRoot, "a%ZZb")).toMatchObject({ ok: false, reason: "encoding" });
   });
 
+  it("resolveProjectPath denies env, git and node_modules files", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-secret-"));
+    expect(resolveProjectPath(projectRoot, ".env")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".env.local")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "config/.env.production")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".git/config")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "node_modules/pkg/index.js")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "src/styles/site.css")).toMatchObject({ ok: true });
+  });
+
+  it("rejects requests whose Host header is not the preview origin", async () => {
+    const hijack = await request(`${server.origin}/demo.html`, { headers: { Host: "evil.example" } });
+    expect(hijack.status).toBe(403);
+    const proper = await request(`${server.origin}/demo.html`, { headers: { Host: new URL(server.origin).host } });
+    expect(proper.status).toBe(200);
+  });
+
+  it("keeps the cookie jar scoped per upstream origin", async () => {
+    const isolateServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await isolateServer.start();
+    try {
+      const localOrigin = stubOrigin.replace("127.0.0.1", "localhost");
+      await request(`${isolateServer.origin}/proxy/${stubOrigin}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: isolateServer.origin },
+        body: JSON.stringify({ user: "u", pass: "p" }),
+      });
+      const same = await request(`${isolateServer.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(same.body) as { cookie: string | null }).cookie).toContain("sid=abc");
+      // Cookie app sessions must not leak to another loopback origin/port.
+      const other = await request(`${isolateServer.origin}/proxy/${localOrigin}/echo-headers`, { headers: {} });
+      expect((JSON.parse(other.body) as { cookie: string | null }).cookie).toBeNull();
+    } finally {
+      await isolateServer.stop();
+    }
+  });
+
   it("rewrites the Origin header of WebSocket upgrades to the upstream origin", async () => {
     const stubPort = new URL(stubOrigin).port;
     let upstreamEcho: Duplex | null = null;

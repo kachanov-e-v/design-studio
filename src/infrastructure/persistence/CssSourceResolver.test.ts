@@ -192,4 +192,51 @@ describe("CssSourceResolver", () => {
     const resolver = new CssSourceResolver();
     expect(await resolver.resolve({ href: "https://evil.example/styles.css", selectorText: ".Home_title__AbC" })).toBe(null);
   });
+
+  it("ignores a sourceMappingURL on a non-loopback host (SSRF gate)", async () => {
+    routes.set("/gated.css", {
+      body: `${TRANSFORMED_CSS}/*# sourceMappingURL=https://evil.example/app.css.map */\n`,
+      type: "text/css",
+    });
+    const resolver = new CssSourceResolver();
+    const resolved = await resolver.resolve({ href: `${origin}/gated.css`, selectorText: ".Home_title__AbC" });
+    expect(resolved?.via).toBe("heuristic");
+  });
+
+  it("does not follow redirects when fetching an external source map", async () => {
+    let redirectHits = 0;
+    const mini = http.createServer((req, res) => {
+      const p = (req.url ?? "/").split("?")[0];
+      if (p === "/styles.css") {
+        res.writeHead(200, { "Content-Type": "text/css" });
+        res.end(`${TRANSFORMED_CSS}/*# sourceMappingURL=${`${miniOrigin}`}/hop.map */\n`);
+        return;
+      }
+      if (p === "/hop.map") {
+        redirectHits += 1;
+        res.writeHead(302, { Location: `${miniOrigin}/real.map` });
+        res.end();
+        return;
+      }
+      if (p === "/real.map") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(mapJson(`${encodeSegments([[[0, 0, 0, 0]]])};${encodeSegments([[[0, 0, 3, 0]]])}`, ["webpack://app/./styles/Home.module.css"]));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => mini.listen(0, "127.0.0.1", r));
+    const miniOrigin = `http://127.0.0.1:${(mini.address() as { port: number }).port}`;
+    try {
+      const resolver = new CssSourceResolver();
+      const resolved = await resolver.resolve({ href: `${miniOrigin}/styles.css`, selectorText: ".Home_title__AbC" });
+      // The loopback map ref is fetched, but the redirect must not be followed.
+      expect(redirectHits).toBe(1);
+      expect(resolved?.via).toBe("heuristic");
+    } finally {
+      mini.closeAllConnections();
+      await new Promise<void>((r) => mini.close(() => r()));
+    }
+  });
 });

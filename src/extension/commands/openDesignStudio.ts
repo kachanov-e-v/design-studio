@@ -330,7 +330,10 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   html = html.replace(/(src|href)="\/([^"]+)"/g, (_m, attr, p) => `${attr}="${baseUri}/${p}"`);
   html = html.replace(/(src|href)="\.\/([^"]+)"/g, (_m, attr, p) => `${attr}="${baseUri}/${p}"`);
 
-  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} http: https: data:;" />`;
+  // Only the preview host origins are frameable; wide http:/https: frame-src
+  // would turn the webview into an embed surface for arbitrary sites.
+  const previewOrigins = "http://127.0.0.1:* http://localhost:* http://[::1]:*";
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} ${previewOrigins} data:; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; frame-src ${webview.cspSource} ${previewOrigins} data:;" />`;
   if (!html.includes("Content-Security-Policy")) {
     html = html.replace("<head>", `<head>${csp}`);
   }

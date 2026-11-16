@@ -157,17 +157,17 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 ## B. Расхождения документации и кода
 
 - [ ] **B1.** Строка `preview.selectHint` всё ещё говорит «Alt+клик», хотя Alt-режим удалён. Строка `preview.runtimeMissing` предлагает добавить `@design-studio/preview-runtime` в приложение, хотя runtime внедряет прокси.
-- [ ] **B2.** `docs/SECURITY.md` обещает, что все upstream проходят SSRF-гейт, но `sourceMappingURL` в CssSourceResolver скачивается без проверки на loopback, и fetch по умолчанию идёт по редиректам.
+- [x] **B2.** `docs/SECURITY.md` обещает, что все upstream проходят SSRF-гейт, но `sourceMappingURL` в CssSourceResolver скачивается без проверки на loopback, и fetch по умолчанию идёт по редиректам.
 - [ ] **B3.** `AI_HANDOFF.md` указывает 141 тест (фактически растёт), ссылается на коммит `f700758` и файл `DESIGN_STUDIO_AI_AGENT_INSTRUCTIONS.md`, которых в репозитории нет. Обновлять счётчики на каждом изменении или убрать конкретные числа.
 - [ ] **B4.** В `AI_HANDOFF.md` и `IMPLEMENTATION_PLAN.md` остались рабочие заметки агента: пути `%TEMP%`, названия чужих проектов («ProTree», «Beam 1.0»). Для публичного репозитория это лишнее — почистить.
 
 ## C. Безопасность
 
-- [ ] **C1. Авторизация preview-хоста.** Нет проверки заголовка Host и токена. Случайный порт на 127.0.0.1 — фактически открытый прокси ко всем loopback-сервисам, возможен DNS rebinding. Добавить случайный токен (в путь или cookie) и проверку Host (`127.0.0.1:port`).
-- [ ] **C2. Маршрут `/project/`.** Отдаёт любой файл workspace, включая `.env` и `.git/`. Исключить `.env*`, `.git`, `node_modules`.
-- [ ] **C3. Cookie jar.** Ключуется только по имени и общий для всех loopback-origin'ов, Path и Secure не учитываются. Cookie приложения могут уйти на другой локальный порт через `/proxy/` — разнести по origin.
-- [ ] **C4. CSP webview.** Разрешены `frame-src http: https:` и `img-src https:`; достаточно `http://127.0.0.1:*`.
-- [ ] **C5. Инъекция контента страницы в промпт ИИ.** Текст, классы, атрибуты и сниппеты вставляются без ограждения (`Text: ${ctx.text}`). Контент приложения может содержать инструкции для агента с правом записи; переводы строк дают фальшивые строки вида «User request: …». Огородить блоком данных и убрать переводы строк.
+- [x] **C1. Авторизация preview-хоста.** Нет проверки заголовка Host и токена. Случайный порт на 127.0.0.1 — фактически открытый прокси ко всем loopback-сервисам, возможен DNS rebinding. Добавить случайный токен (в путь или cookie) и проверку Host (`127.0.0.1:port`).
+- [x] **C2. Маршрут `/project/`.** Отдаёт любой файл workspace, включая `.env` и `.git/`. Исключить `.env*`, `.git`, `node_modules`.
+- [x] **C3. Cookie jar.** Ключуется только по имени и общий для всех loopback-origin'ов, Path и Secure не учитываются. Cookie приложения могут уйти на другой локальный порт через `/proxy/` — разнести по origin.
+- [x] **C4. CSP webview.** Разрешены `frame-src http: https:` и `img-src https:`; достаточно `http://127.0.0.1:*`.
+- [x] **C5. Инъекция контента страницы в промпт ИИ.** Текст, классы, атрибуты и сниппеты вставляются без ограждения (`Text: ${ctx.text}`). Контент приложения может содержать инструкции для агента с правом записи; переводы строк дают фальшивые строки вида «User request: …». Огородить блоком данных и убрать переводы строк.
 - [ ] **C6. Origin-проверки runtime.** Защита sessionId/nonce не защищает от JS самой страницы (значения ей известны): `style:persist`, `source:reveal`, `ai:copyComponent` управляются недоверенными данными. Проверка CSS-свойств/значений и realpath-проверка пути сделаны хорошо и остаются. Но `postMessage(..., "*")` и условие `!parentOrigin.includes("vscode-webview")` — слабая проверка origin, заменить на точную.
 - [ ] **C7. Зависимости.** `npm audit`: 11 уязвимостей (2 critical, 1 high, 8 moderate) в dev-зависимостях (vitest/tinypool, esbuild ≤0.24). В пакет расширения не попадают, но обновить vitest/vite/esbuild.
 
@@ -190,3 +190,5 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 6. **Тесты:** интеграционный тест «webview → extension» с замоканным vscode; юнит-тесты логики runtime/index.ts в jsdom; регрессионные тесты на A4 и A5; пункты D5.
 
 > Выполнено (приоритет 1, PR #2): A1 — поле переименовано в sourceRules через webview/persistContract.ts + контрей-тест и интеграционный тест обработчика; A2 — исключения .next/dist/build/out/coverage/.git, лимит 200 с трактовкой переполнения как неоднозначности; A3 — поиск по всем кандидатам с basename, выбор по sourcePath из source map, неоднозначность => ошибка; A4 — Set-Cookie до writeHead в CSS-ветке + регрессионный тест.
+
+> Выполнено (приоритет 2, PR #2): C1 — проверка Host (incl. WS-upgrade); токен сознательно не вводился (SameSite ломает доставку cookie кросс-сайтовому iframe, Host-pроверка закрывает rebinding; обоснование в SECURITY.md). C2 — /project/ запрещает .env*, .git, node_modules. B2 — sourceMappingURL только loopback + redirect: "error". C4 — frame-src/img-src ограничены loopback-origin'ами. C3 — cookie jar ключуется upstream-origin|name. C5 — page-контент экранируется (dataValue) и огражден маркерами PAGE DATA START/END.

@@ -237,7 +237,9 @@ async function fetchText(url: string, timeoutMs: number): Promise<string | null>
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    // Same SSRF policy as the preview host: no redirects, loopback-only
+    // callers checked upstream of this helper.
+    const response = await fetch(url, { signal: controller.signal, redirect: "error" });
     if (!response.ok) return null;
     return await response.text();
   } catch {
@@ -278,7 +280,8 @@ export class CssSourceResolver {
     const entry: CacheEntry = { fetchedAt: Date.now(), css, map: null };
     const mapRef = parseSourceMapRef(css, rule.href);
     let raw = mapRef?.inline ?? null;
-    if (raw === null && mapRef?.url) {
+    // sourceMappingURL may point anywhere: only loopback URLs pass the gate.
+    if (raw === null && mapRef?.url && isLocalhostUrl(mapRef.url)) {
       raw = await fetchText(mapRef.url, 2500);
     }
     if (raw) {
