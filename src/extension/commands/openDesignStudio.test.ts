@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   handler: null as ((msg: any) => Promise<void>) | null,
   disposeCb: null as (() => void) | null,
   copyInstruction: vi.fn(async () => ({ success: true, message: "copied" })),
+  findProjectEntries: vi.fn(async () => ["index.html", "my page#1.html"]),
+  detectDevServers: vi.fn(async () => []),
 }));
 
 vi.mock("vscode", () => {
@@ -83,6 +85,14 @@ vi.mock("../../infrastructure/ai/PromptExportService", () => ({
       return { success: true, message: "" };
     }
   },
+}));
+
+vi.mock("../../infrastructure/preview/projectEntryScanner", () => ({
+  findProjectEntries: mocks.findProjectEntries,
+}));
+
+vi.mock("../../infrastructure/preview/DevServerDetector", () => ({
+  detectDevServers: mocks.detectDevServers,
 }));
 
 // Store result returns the webview-built message verbatim.
@@ -277,6 +287,54 @@ describe("style:persist extension handler (webview -> extension integration)", (
     expect(edits[1].component).toEqual({ name: "App", file: "f.tsx", line: 3 });
     expect(lastMessage().type).toBe("ai:result");
     expect(lastMessage().success).toBe(true);
+  });
+});
+
+describe("postState state contract (P2-9/P2-10/P2-22)", () => {
+  beforeEach(() => {
+    mocks.findProjectEntries.mockClear();
+    mocks.detectDevServers.mockClear();
+    mocks.postMessage.mockClear();
+    mocks.disposeCb?.();
+    mocks.disposeCb = null;
+    mocks.handler = null;
+  });
+
+  it("P2-9: encodes project entry path segments into the /project/ URL", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({ type: "project:setEntry", path: "my page#1.html" });
+    const state = lastMessage();
+    expect(state.type).toBe("preview:state");
+    expect(state.url).toContain("/project/my%20page%231.html");
+    expect(state.status).toBe("project");
+  });
+
+  it("P2-10: a dev-server route path /project/x is classed as devserver, not project", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({ type: "project:navigate", url: "http://localhost:3000/project/x" });
+    const state = lastMessage();
+    expect(state.status).toBe("devserver");
+    expect(state.projectEntry).toBe("");
+  });
+
+  it("P2-10: demo and idle modes are reported explicitly", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({ type: "preview:demo" });
+    expect(lastMessage().status).toBe("demo");
+    await mocks.handler!({ type: "project:setDevServer", url: "" });
+    expect(lastMessage().status).toBe("idle");
+  });
+
+  it("P2-22: entry discovery is cached across postState calls and refreshed explicitly", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({ type: "preview:ready" });
+    expect(mocks.findProjectEntries).toHaveBeenCalledTimes(1);
+    await mocks.handler!({ type: "ui:setLanguage", language: "en" });
+    // Re-post without a refresh reuses the discovery results.
+    expect(mocks.findProjectEntries).toHaveBeenCalledTimes(1);
+    await mocks.handler!({ type: "preview:refresh" });
+    // An explicit refresh invalidates the cache.
+    expect(mocks.findProjectEntries).toHaveBeenCalledTimes(2);
   });
 });
 

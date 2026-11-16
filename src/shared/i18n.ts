@@ -102,6 +102,13 @@ const messages = {
   "status.previewError": { ru: "Ошибка предпросмотра", en: "Preview error" },
   "app.errorTitle": { ru: "Интерфейс упал", en: "The UI crashed" }, // P2-20
   "app.reload": { ru: "Перезагрузить", en: "Reload" }, // P2-20
+  // P2-22: extension-side strings moved out of inline ternaries.
+  "panel.title": { ru: "Дизайн-студия", en: "Design Studio" },
+  "panel.serverDown": { ru: "Не удалось запустить локальный сервер предпросмотра. Подробности — в канале «Design Studio Preview».", en: "Failed to start the local preview host server. See the \"Design Studio Preview\" output channel for details." },
+  "error.invalidEntry": { ru: "Некорректный путь проекта", en: "Invalid project entry" },
+  "error.devServerLocalOnly": { ru: "Разрешены только локальные серверы разработки проекта", en: "Only localhost dev servers are allowed" },
+  "error.navigateLocalOnly": { ru: "Разрешены только локальные адреса проекта", en: "Only local project URLs are allowed" },
+  "error.unknown": { ru: "Неизвестная ошибка", en: "Unknown error" },
   "status.extensionError": { ru: "Ошибка расширения: {error}", en: "Extension error: {error}" },
 } as const;
 
