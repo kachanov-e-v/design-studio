@@ -93,6 +93,11 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const [popupTarget, setPopupTarget] = useState<SelectionPopupTarget | null>(null);
   const languageRef = useRef(language);
   languageRef.current = language;
+  // devServer is read from a ref inside the message handler: the effect's
+  // deps are [url], so a closed-over devServer would go stale after a server
+  // switch that keeps the same preview url (WV-02).
+  const devServerRef = useRef(devServer);
+  devServerRef.current = devServer;
 
   const sessionIdRef = useRef("");
   const resolvedRef = useRef(false);
@@ -246,7 +251,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         // above; its trust is the preview origin + matching session id.
         if (raw.type === "ds:pong" && !nonce) return;
         if (sid && sid !== sessionIdRef.current) return;
-        if (sid && sid !== sessionIdRef.current) return;
         clearTimers();
         resolvedRef.current = true;
         setRuntimeStatus("ready");
@@ -309,7 +313,8 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       }
       if (data.type === "ds:navigate") {
         try {
-          if (devServer) setAddress(`${new URL(devServer).origin}${data.path}`);
+          const currentDevServer = devServerRef.current;
+          if (currentDevServer) setAddress(`${new URL(currentDevServer).origin}${data.path}`);
         } catch {
           // Ignore navigation addresses when the project has no server URL.
         }
