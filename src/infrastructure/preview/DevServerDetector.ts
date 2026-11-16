@@ -22,6 +22,9 @@ export interface DevServerCandidate {
 /** [pattern, default port] pairs; first match wins per script. */
 const SCRIPT_PATTERNS: Array<[RegExp, number]> = [
   [/\bnext(?:\s|$)/, 3000],
+  // P2-16: `vite preview` serves the production build on 4173, not the dev
+  // port 5173; the more specific pattern must come first.
+  [/\bvite\s+preview\b/, 4173],
   [/\bvite(?:\s|$)/, 5173],
   [/\breact-scripts(?:\s|$)/, 3000],
   [/\bastro(?:\s|$)/, 4321],
@@ -33,16 +36,29 @@ const SCRIPT_PATTERNS: Array<[RegExp, number]> = [
 ];
 
 const NPM_RUN_PREFIX = /^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)/;
+// P2-16: `vite build` and friends compile artifacts; they never listen on a
+// port and must not turn into dev-server candidates.
+const NON_DEV_COMMAND = /(?:^|\s)(?:build|eject|lint|test|check|typecheck)(?:\s|$|:)/;
 const DEV_SCRIPT_NAME = /^(?:dev|serve|start)$/;
 const SCRIPT_REF = /^[A-Za-z0-9:._-]+$/;
 const FALLBACK_PORTS = [3000, 5173, 8080];
 
-/** Pull an explicit port out of a dev script: "-p 4000", "--port=4173", "-- -p 4000". */
+const PORT_ENV_PATTERN = /(?:^|[\s;])(?:PORT|port)=(\d{1,5})/.source;
+
+/** Pull an explicit port out of a dev script: "-p 4000", "-p4000", "--port=4173". */
 function explicitPort(script: string): number | null {
-  const flag = /(?:^|\s)(?:-{1,2}p|--port)(?:=|\s+)(\d{1,5})/.exec(script);
-  if (!flag) return null;
-  const port = Number(flag[1]);
-  return port >= 1 && port <= 65535 ? port : null;
+  const flag = /(?:^|\s)(?:-{1,2}p|--port)[=\s]?(\d{1,5})/.exec(script);
+  if (flag) {
+    const port = Number(flag[1]);
+    if (port >= 1 && port <= 65535) return port;
+  }
+  // P2-16: allow a PORT= assignment prefix, e.g. "PORT=4000 node server.js".
+  const env = new RegExp(PORT_ENV_PATTERN).exec(script);
+  if (env) {
+    const port = Number(env[1]);
+    if (port >= 1 && port <= 65535) return port;
+  }
+  return null;
 }
 
 function freshCandidate(url: string, script: string): DevServerCandidate {
@@ -65,9 +81,12 @@ export function devServerCandidatesFromPackageJson(content: string): DevServerCa
 
   for (const [name, raw] of Object.entries(scripts)) {
     if (typeof raw !== "string") continue;
-    const nameIsDev = DEV_SCRIPT_NAME.test(name);
+    const nameIsDev = DEV_SCRIPT_NAME.test(name) && !NON_DEV_COMMAND.test(name);
+
     const script = resolveScriptValue(raw, scripts, 0);
     if (script === null) continue;
+    // P2-16: build/lint/test-style commands do not serve anything.
+    if (NON_DEV_COMMAND.test(script)) continue;
     const matched = SCRIPT_PATTERNS.find(([re]) => re.test(script));
     const port = explicitPort(script) ?? matched?.[1] ?? null;
     if (port === null || (!nameIsDev && !matched) || seenPorts.has(port)) {
@@ -127,8 +146,17 @@ function readPackageJson(root: string): string | null {
 }
 
 export function probePort(port: number, timeoutMs = 300): Promise<boolean> {
+  // P2-16: dev servers may bind only to ::1 (IPv6 loopback); probe both
+  // stacks so those are found too.
+  return Promise.all([
+    probeLoopback(port, timeoutMs, "127.0.0.1"),
+    probeLoopback(port, timeoutMs, "::1"),
+  ]).then(([v4, v6]) => v4 || v6);
+}
+
+function probeLoopback(port: number, timeoutMs: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const socket = net.createConnection({ host, port });
     const done = (result: boolean) => {
       socket.destroy();
       resolve(result);
