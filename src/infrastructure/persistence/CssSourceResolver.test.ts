@@ -148,6 +148,7 @@ describe("CssSourceResolver", () => {
     expect(resolved).toEqual({
       selectors: [".card:hover"],
       sourceFile: "Home.module.css",
+      sourcePath: "app/styles/Home.module.css",
       via: "sourcemap",
     });
   });

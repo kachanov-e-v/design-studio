@@ -11,6 +11,9 @@ export interface ResolvedSource {
   selectors: string[];
   /** Workspace-relative file name to edit, e.g. "Home.module.css" */
   sourceFile: string;
+  /** Relative source path from the source map, e.g. "src/app/Home.module.css".
+   * Absent for the heuristic (name-pattern) mapping. */
+  sourcePath?: string;
   /** How the mapping was made, for diagnostics and journal notes. */
   via: "sourcemap" | "heuristic";
 }
@@ -205,6 +208,14 @@ function parseSourceMapRef(css: string, cssUrl: string): { inline?: string; url?
 }
 
 function basenameFromSource(source: string): string | null {
+  const cleaned = relativeSourcePath(source) ?? source;
+  const cut = Math.max(cleaned.lastIndexOf("/"), cleaned.lastIndexOf("\\"));
+  const name = cut >= 0 ? cleaned.slice(cut + 1) : cleaned;
+  return /^[\w.-]+\.module\.css$/i.test(name) ? name : null;
+}
+
+/** Normalized slash-separated relative path of a raw source-map source entry. */
+function relativeSourcePath(source: string): string | null {
   let cleaned = source;
   try {
     cleaned = decodeURIComponent(source);
@@ -212,11 +223,14 @@ function basenameFromSource(source: string): string | null {
     // keep raw
   }
   cleaned = cleaned.replace(/^webpack:\/\//, "");
-  const cut = Math.max(cleaned.lastIndexOf("/"), cleaned.lastIndexOf("\\"));
-  let name = cut >= 0 ? cleaned.slice(cut + 1) : cleaned;
-  const query = name.indexOf("?");
-  if (query >= 0) name = name.slice(0, query);
-  return /^[\w.-]+\.module\.css$/i.test(name) ? name : null;
+  const query = cleaned.indexOf("?");
+  if (query >= 0) cleaned = cleaned.slice(0, query);
+  const cleanedPath = cleaned
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".")
+    .join("/");
+  return /\.module\.css$/i.test(cleanedPath) ? cleanedPath : null;
 }
 
 async function fetchText(url: string, timeoutMs: number): Promise<string | null> {
@@ -321,7 +335,7 @@ export class CssSourceResolver {
     if (content === null || content === undefined) return null;
     const selector = extractSelectorAt(content, position.origLine, position.origCol);
     if (!selector) return null;
-    return { selectors: [selector], sourceFile, via: "sourcemap" };
+    return { selectors: [selector], sourceFile, sourcePath: relativeSourcePath(source) ?? undefined, via: "sourcemap" };
   }
 }
 

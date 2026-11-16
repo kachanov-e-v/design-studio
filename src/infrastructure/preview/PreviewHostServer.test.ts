@@ -35,6 +35,10 @@ beforeAll(async () => {
     } else if (p === "/style.css") {
       res.writeHead(200, { "Content-Type": "text/css" });
       res.end(stubCss);
+    } else if (p === "/style-cookie.css") {
+      res.setHeader("Set-Cookie", ["csssession=7; Path=/"]);
+      res.writeHead(200, { "Content-Type": "text/css" });
+      res.end(stubCss);
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
@@ -319,6 +323,19 @@ describe("PreviewHostServer", () => {
     const echo = JSON.parse(res.body) as { cookie: string | null };
     expect(echo.cookie).toContain("sid=abc");
     expect(echo.cookie).toContain("other=1");
+  });
+
+  it("serves CSS responses that set cookies without header errors", async () => {
+    const res = await request(`${server.origin}/proxy/${stubOrigin}/style-cookie.css`, {
+      headers: { Accept: "text/css" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/css");
+    // The body must be the proxied CSS, not an ERR_HTTP_HEADERS_SENT trace.
+    expect(res.body).toContain("background");
+    expect(res.headers["set-cookie"]).toEqual(["csssession=7; Path=/"]);
+    const echo = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, { headers: {} });
+    expect((JSON.parse(echo.body) as { cookie: string | null }).cookie).toContain("csssession=7");
   });
 
   it("deletes expired cookies from the jar", async () => {

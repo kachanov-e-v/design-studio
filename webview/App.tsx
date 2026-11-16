@@ -4,9 +4,10 @@ import { PreviewContainer, type PreviewContainerHandle, type OpAppliedInfo } fro
 import { Inspector } from "./components/Inspector";
 import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
+import { buildStylePersistMessage, type StylePersistEdit } from "./persistContract";
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
 import { translate, type Language } from "@design-studio/shared/i18n";
-import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage, SourceRule } from "./types";
+import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage } from "./types";
 import type { DesignEdit } from "../src/domain/entities/DesignEdit";
 import styles from "./App.module.css";
 
@@ -20,18 +21,10 @@ interface PendingStyleRequest {
   timeoutId: number;
 }
 
-interface PendingStyleEdit {
-  selector: string;
-  selectors?: string[];
-  property: string;
-  value: string;
-  rules?: SourceRule[];
-}
-
 export function App(): React.ReactElement {
   const [state, setState] = useState<Partial<PreviewStateMessage>>({ url: "", status: "idle", language: "ru" });
   const [selected, setSelected] = useState<ElementPayload | null>(null);
-  const [pendingStyles, setPendingStyles] = useState<PendingStyleEdit[]>([]);
+  const [pendingStyles, setPendingStyles] = useState<StylePersistEdit[]>([]);
   const [edits, setEdits] = useState<DesignEdit[]>([]);
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
@@ -180,7 +173,7 @@ export function App(): React.ReactElement {
         });
         setPendingStyles((previous) => [
           ...previous.filter((item) => !(item.selector === payload.selector && item.property === info.property)),
-          { selector: payload.selector, selectors: payload.selectors, property: info.property, value: info.value, rules: payload.rules },
+          { selector: payload.selector, selectors: payload.selectors, property: info.property, value: info.value, sourceRules: payload.rules },
         ]);
         setOperationStatus(translate(language, "status.styleApplied"));
       }
@@ -241,7 +234,7 @@ export function App(): React.ReactElement {
       setOperationStatus(translate(language, "status.noEdits"));
       return;
     }
-    for (const edit of pendingStyles) postToExtension({ type: "style:persist", ...edit });
+    for (const edit of pendingStyles) postToExtension(buildStylePersistMessage(edit));
     setOperationStatus(translate(language, "status.saving"));
   };
 

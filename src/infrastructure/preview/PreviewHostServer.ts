@@ -710,8 +710,10 @@ export class PreviewHostServer {
       const buf = Buffer.from(await upstream.arrayBuffer());
       const css = buf.subarray(0, MAX_RESPONSE_BYTES).toString("utf8");
       headers["cache-control"] = "no-store";
-      res.writeHead(status, headers);
+      // Set-Cookie must be registered before writeHead; after it Node throws
+      // ERR_HTTP_HEADERS_SENT and the outer catch would append an error body.
       if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);
+      res.writeHead(status, headers);
       res.end(rewriteProxiedCss(css, finalTarget));
       return;
     }

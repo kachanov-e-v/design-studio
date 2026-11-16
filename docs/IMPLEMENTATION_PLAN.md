@@ -134,10 +134,10 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 
 ## A. Функциональные баги
 
-- [ ] **A1. Сохранение CSS Modules из dev-сервера не работает.** Webview отправляет в `style:persist` поле `rules` (App.tsx:183, handleSave), а расширение читает `msg.sourceRules` (openDesignStudio.ts:252). Поле всегда `undefined`, весь код с source map и эвристикой CssSourceResolver недостижим из UI. Тесты не ловят, потому что проверяют компоненты по отдельности.
-- [ ] **A2. Лимит в 50 CSS-файлов.** `findFiles("**/*.css", "**/node_modules/**", 50)` обрезает список молча. Папки `.next`, `dist`, `build` не исключены. Правка может уйти не в тот файл, который кажется «единственным совпадением».
-- [ ] **A3. Файл ищется только по имени.** При маппинге выбирается первый файл с подходящим basename (`Button.module.css`). При одинаковых именах в разных папках правка уйдёт в первый найденный — сверять путь, а не только basename.
-- [ ] **A4. Порядок вызовов для CSS-ответов.** В ветке text/css сначала идёт `res.writeHead`, потом `res.setHeader("Set-Cookie")` — при постановке cookie Node бросит `ERR_HTTP_HEADERS_SENT`, внешний catch допишет в тело текст ошибки.
+- [x] **A1. Сохранение CSS Modules из dev-сервера не работает.** Webview отправляет в `style:persist` поле `rules` (App.tsx:183, handleSave), а расширение читает `msg.sourceRules` (openDesignStudio.ts:252). Поле всегда `undefined`, весь код с source map и эвристикой CssSourceResolver недостижим из UI. Тесты не ловят, потому что проверяют компоненты по отдельности.
+- [x] **A2. Лимит в 50 CSS-файлов.** `findFiles("**/*.css", "**/node_modules/**", 50)` обрезает список молча. Папки `.next`, `dist`, `build` не исключены. Правка может уйти не в тот файл, который кажется «единственным совпадением».
+- [x] **A3. Файл ищется только по имени.** При маппинге выбирается первый файл с подходящим basename (`Button.module.css`). При одинаковых именах в разных папках правка уйдёт в первый найденный — сверять путь, а не только basename.
+- [x] **A4. Порядок вызовов для CSS-ответов.** В ветке text/css сначала идёт `res.writeHead`, потом `res.setHeader("Set-Cookie")` — при постановке cookie Node бросит `ERR_HTTP_HEADERS_SENT`, внешний catch допишет в тело текст ошибки.
 - [ ] **A5. Стриминг ломается.** Ответ целиком читается через `arrayBuffer()`, `AbortSignal.timeout(30s)` действует и на чтение тела: SSE, streaming SSR и long-poll обрываются, память не ограничена. Лимит 20 МБ для HTML/CSS молча обрезает ответ (subarray), для остальных типов проверяется после полного чтения.
 - [ ] **A6. WebSocket-прокси сделан грубо:**
   - [ ] для https идёт обычный `net.connect`, порт по умолчанию 80 (нужен wss/TLS);
@@ -188,3 +188,5 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 4. **Расширение:** A8 (одна панель на workspace с reveal, onDidDispose, явная ошибка при падении хоста, multi-root), A9, A7, A10.
 5. **Публикация:** D1, D2, D3, D4, C7, B1–B4.
 6. **Тесты:** интеграционный тест «webview → extension» с замоканным vscode; юнит-тесты логики runtime/index.ts в jsdom; регрессионные тесты на A4 и A5; пункты D5.
+
+> Выполнено (приоритет 1, PR #2): A1 — поле переименовано в sourceRules через webview/persistContract.ts + контрей-тест и интеграционный тест обработчика; A2 — исключения .next/dist/build/out/coverage/.git, лимит 200 с трактовкой переполнения как неоднозначности; A3 — поиск по всем кандидатам с basename, выбор по sourcePath из source map, неоднозначность => ошибка; A4 — Set-Cookie до writeHead в CSS-ветке + регрессионный тест.
