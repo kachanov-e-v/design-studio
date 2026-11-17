@@ -33,6 +33,6 @@ if (closeIdx === -1) {
 }
 
 const inlined =
-  demo.slice(0, closeIdx) + START + "\n<script>\n" + runtime + "\n</script>\n" + END + "\n" + demo.slice(closeIdx);
+  demo.slice(0, closeIdx) + START + '\n<script data-design-studio="1">\n' + runtime + "\n</script>\n" + END + "\n" + demo.slice(closeIdx);
 fs.writeFileSync(distDemoPath, inlined, "utf8");
 console.log("demo.html inlined with runtime bundle");

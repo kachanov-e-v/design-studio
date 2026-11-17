@@ -161,6 +161,10 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       window.clearTimeout(modeResyncTimerRef.current);
       modeResyncTimerRef.current = null;
     }
+    // FIX-03: the resync budget is per handshake phase. Reset it here (not only
+    // on a matching echo) so a slow first load cannot exhaust the budget before
+    // onLoad and leave later set-mode pushes single-shot.
+    modeResyncPostsRef.current = 0;
   };
 
   const stopModeResync = () => {
@@ -289,6 +293,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         resolvedRef.current = true;
         setRuntimeStatus("ready");
         setDiagnostic("");
+        // FIX-02: the nonce-less runtime-ready announcement arrives at parse
+        // time, before onLoad. Ping immediately so the runtime captures
+        // parentOrigin/activeSessionId now; otherwise its ds:mode-changed echo is
+        // suppressed (postToParent needs parentOrigin) and the WV-03 resync gets
+        // no ack until the next navigation.
+        if (raw.type === "ds:runtime-ready") sendPing();
         postSetModeWithResync();
         return;
       }

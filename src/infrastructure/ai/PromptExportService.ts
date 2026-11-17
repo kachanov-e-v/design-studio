@@ -132,7 +132,17 @@ export class PromptExportService {
     if (!sourceFile) {
       return { success: false, message: translate(language, "status.sourceMissing") };
     }
-    const filePath = this.resolveSourcePath(sourceFile);
+    let filePath = this.resolveSourcePath(sourceFile);
+    // FIX-07: a present-but-unresolvable bundler file must still fall back to the
+    // name-based definition scan (previously only name-only components did).
+    if (!filePath && component.name) {
+      try {
+        const byName = await findComponentDefinition(this.workspaceRoot, component.name);
+        if (byName) filePath = this.resolveSourcePath(byName.file);
+      } catch {
+        // Fall through to the missing-source result below.
+      }
+    }
     if (!filePath) {
       return { success: false, message: translate(language, "status.sourceMissing") };
     }

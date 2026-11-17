@@ -181,7 +181,9 @@ export async function findComponentDefinition(
           const match = pattern.exec(content);
           if (!match) continue;
           const rel = path.relative(root, full).replace(/\\/g, "/");
-          if (!rel || rel.startsWith("..")) return undefined;
+          // D-01: a file outside the workspace root invalidates only this file,
+          // not the entire scan — skip it and keep walking.
+          if (!rel || rel.startsWith("..")) break;
           return { file: rel, line: lineAt(content, match.index) };
         }
       } catch {

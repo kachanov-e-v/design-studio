@@ -323,8 +323,26 @@ export function initDesignStudioRuntime(): void {
   const canSelect = (el: Element | null): el is Element =>
     Boolean(el) && !isDesignStudioElement(el) && el !== document.body && el !== document.documentElement;
 
+  // Sibling lookups for move ops skip the studio's own overlay divs so they never
+  // appear as (or become) move targets inside the user document.
+  const nextEditableSibling = (el: Element): Element | null => {
+    let next = el.nextElementSibling;
+    while (next && isDesignStudioElement(next)) next = next.nextElementSibling;
+    return next;
+  };
+
+  const previousEditableSibling = (el: Element): Element | null => {
+    let prev = el.previousElementSibling;
+    while (prev && isDesignStudioElement(prev)) prev = prev.previousElementSibling;
+    return prev;
+  };
+
   function ensureOutlines(): void {
-    if (!document.body || (hoverOutline && selectionOutline)) return;
+    if (!document.body) return;
+    // FIX-01: framework re-renders (React hydration/recovery) can detach the
+    // overlay divs while the cached refs stay non-null. Re-create any outline
+    // that is no longer connected so hover/selection never goes permanently blind.
+    if (hoverOutline?.isConnected && selectionOutline?.isConnected) return;
     const makeOutline = (color: string, fill: string): HTMLDivElement => {
       const outline = document.createElement("div");
       outline.setAttribute("data-design-studio", "1");
@@ -343,8 +361,14 @@ export function initDesignStudioRuntime(): void {
       document.body.appendChild(outline);
       return outline;
     };
-    hoverOutline = makeOutline("rgba(90, 157, 255, .95)", "rgba(90, 157, 255, .18)");
-    selectionOutline = makeOutline("rgba(255, 170, 70, 1)", "rgba(255, 170, 70, .12)");
+    if (!hoverOutline?.isConnected) {
+      hoverOutline?.remove();
+      hoverOutline = makeOutline("rgba(90, 157, 255, .95)", "rgba(90, 157, 255, .18)");
+    }
+    if (!selectionOutline?.isConnected) {
+      selectionOutline?.remove();
+      selectionOutline = makeOutline("rgba(255, 170, 70, 1)", "rgba(255, 170, 70, .12)");
+    }
   }
 
   function positionOutline(outline: HTMLDivElement | null, el: Element | null): void {
@@ -441,7 +465,10 @@ export function initDesignStudioRuntime(): void {
     const rect = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
     const styles: Record<string, string> = {};
-    for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim();
+    // FIX-06: cap computed values to the protocol limit (500). Without this,
+    // long background-image/font-family/box-shadow values make isElementPayload
+    // reject the whole ds:select payload and the click silently selects nothing.
+    for (const p of STYLE_PROPS) styles[p] = cs.getPropertyValue(p).trim().slice(0, 500);
     const identity = stage("selectors", () => ({ selector: getSelector(el), selectors: getSelectorCandidates(el) }));
     const payload: ElementPayload = {
       selector: identity.selector,
@@ -610,7 +637,7 @@ export function initDesignStudioRuntime(): void {
           return;
         }
         case "move-up": {
-          const prev = selectedElement.previousElementSibling;
+          const prev = previousEditableSibling(selectedElement);
           if (!prev) {
             postOpApplied(op, undefined, false, "No previous sibling", payload, requestId);
             return;
@@ -621,7 +648,7 @@ export function initDesignStudioRuntime(): void {
           return;
         }
         case "move-down": {
-          const next = selectedElement.nextElementSibling;
+          const next = nextEditableSibling(selectedElement);
           if (!next) {
             postOpApplied(op, undefined, false, "No next sibling", payload, requestId);
             return;
@@ -833,6 +860,16 @@ export function initDesignStudioRuntime(): void {
 
   window.addEventListener("resize", scheduleOutlineUpdate);
   window.addEventListener("scroll", scheduleOutlineUpdate, true);
+
+  // FIX-04: re-assert edit-mode visuals when the document is shown again or
+  // restored from bfcache; outlines may have been detached while hidden.
+  const reassertOutlines = (): void => {
+    if (!editMode) return;
+    ensureOutlines();
+    positionOutlinesNow();
+  };
+  window.addEventListener("pageshow", reassertOutlines);
+  document.addEventListener("visibilitychange", reassertOutlines);
 
   document.addEventListener("pointermove", (event) => {
     if (!editMode) return;
