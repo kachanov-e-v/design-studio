@@ -59,6 +59,15 @@ describe("isRuntimeMessage", () => {
     expect(isRuntimeMessage({ ...base, op: "delete", attribute: "href" })).toBe(false);
     expect(isRuntimeMessage({ type: "ds:op-applied", version: PROTOCOL_VERSION, op: "set-attribute", attribute: "title", value: "Tip", success: true, payload: null })).toBe(true);
   });
+  it("validates undo / undone messages", () => {
+    expect(isRuntimeMessage({ type: "ds:undo", version: PROTOCOL_VERSION, requestId: "r1" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:undo", version: PROTOCOL_VERSION, requestId: "" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:undo", version: PROTOCOL_VERSION })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:undone", version: PROTOCOL_VERSION, requestId: "r1", success: true, payload: null })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:undone", version: PROTOCOL_VERSION, requestId: "r1", success: false, reason: "Unknown requestId" })).toBe(true);
+    expect(isRuntimeMessage({ type: "ds:undone", version: PROTOCOL_VERSION, requestId: "r1" })).toBe(false);
+    expect(isRuntimeMessage({ type: "ds:undone", version: PROTOCOL_VERSION, requestId: "r1", success: true, payload: { nope: true } })).toBe(false);
+  });
   it("validates element payload classes and tailwind flag", () => {
     const base = { selector: "h1", tag: "h1", rect: { top: 0, left: 0, width: 1, height: 1 }, styles: {} };
     expect(isRuntimeMessage({ type: "ds:select", version: PROTOCOL_VERSION, payload: { ...base, classes: ["p-4", "bg-white"], tailwind: true } })).toBe(true);

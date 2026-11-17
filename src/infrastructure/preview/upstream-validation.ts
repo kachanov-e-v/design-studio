@@ -1,3 +1,5 @@
+import * as dns from "node:dns";
+import * as net from "node:net";
 import { isLoopbackHostname } from "../../shared/url";
 
 export type UpstreamRejection = "scheme" | "credentials" | "non-loopback" | "unparsable";
@@ -24,4 +26,26 @@ export function validateUpstreamTarget(target: string | URL): UpstreamValidation
   if (u.username || u.password) return { ok: false, reason: "credentials" };
   if (!isLoopbackHostname(u.hostname)) return { ok: false, reason: "non-loopback" };
   return { ok: true };
+}
+
+/**
+ * Resolve-then-connect gate: a name like `evil.localhost` passes the lexical
+ * loopback check but may resolve to an external IP. Every resolved address
+ * must be loopback before a socket is opened. Explicit IP literals skip DNS.
+ */
+export async function validateUpstreamResolved(target: string | URL): Promise<UpstreamValidation> {
+  const basic = validateUpstreamTarget(target);
+  if (!basic.ok) return basic;
+  const u = target instanceof URL ? target : new URL(target);
+  const hostname = u.hostname.replace(/^\[/, "").replace(/\]$/, "");
+  if (net.isIP(hostname) !== 0) return basic;
+  try {
+    const addresses = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+    if (addresses.length === 0 || addresses.some((entry) => !isLoopbackHostname(entry.address))) {
+      return { ok: false, reason: "non-loopback" };
+    }
+  } catch {
+    return { ok: false, reason: "non-loopback" };
+  }
+  return basic;
 }

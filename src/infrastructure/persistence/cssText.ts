@@ -14,8 +14,19 @@ export function isValidCssValue(value: string): boolean {
     typeof value === "string" &&
     value.length <= 500 &&
     !/[{};]/.test(value) &&
+    !hasUnclosedComment(value) &&
     !Array.from(value).some((ch) => ch.charCodeAt(0) < 0x20)
   );
+}
+// An unclosed "/*" would comment out the rest of the stylesheet once written.
+function hasUnclosedComment(value: string): boolean {
+  let i = value.indexOf("/*");
+  while (i !== -1) {
+    const end = value.indexOf("*/", i + 2);
+    if (end === -1) return true;
+    i = value.indexOf("/*", end + 2);
+  }
+  return false;
 }
 const PSEUDO_ELEMENT_SINGLE = /(?<!:):(before|after|first-line|first-letter|placeholder|selection|marker|backdrop)(?![a-zA-Z-])/g;
 // Normalized form used only for comparisons: whitespace collapsed, legacy single-colon

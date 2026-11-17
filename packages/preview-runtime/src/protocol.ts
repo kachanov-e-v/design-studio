@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = "6";
+export const PROTOCOL_VERSION = "8";
 
 /** A CSS rule from a real stylesheet the element matches. */
 export interface SourceRule {
@@ -102,6 +102,33 @@ export interface ReloadMessage {
   sessionId?: string;
 }
 
+/** Marks an element as having pending edits/comment (visual badge in edit mode). */
+export interface MarkMessage {
+  type: "ds:mark";
+  version: string;
+  selector: string;
+  marked: boolean;
+  sessionId?: string;
+}
+
+/** Restores the DOM snapshot taken before the structure op with this requestId. */
+export interface UndoMessage {
+  type: "ds:undo";
+  version: string;
+  requestId: string;
+  sessionId?: string;
+}
+
+export interface UndoneMessage {
+  type: "ds:undone";
+  version: string;
+  requestId: string;
+  success: boolean;
+  reason?: string;
+  payload?: ElementPayload | null;
+  sessionId?: string;
+}
+
 /** Fresh viewport rect of the selected element (P2-6: popup follows scroll/resize). */
 export interface RectMessage {
   type: "ds:rect";
@@ -196,6 +223,9 @@ export type RuntimeMessage =
   | NavigateHistoryMessage
   | NavigateBlockedMessage
   | ReloadMessage
+  | MarkMessage
+  | UndoMessage
+  | UndoneMessage
   | RectMessage
   | RuntimeErrorMessage;
 
@@ -214,6 +244,9 @@ const RUNTIME_TYPES = new Set([
   "ds:navigate-history",
   "ds:navigate-blocked",
   "ds:reload",
+  "ds:mark",
+  "ds:undo",
+  "ds:undone",
   "ds:rect",
   "ds:runtime-error",
 ]);
@@ -319,6 +352,22 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     case "ds:reload":
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:mark":
+      if (typeof v.selector !== "string" || v.selector.length === 0 || v.selector.length > 500) return false;
+      if (typeof v.marked !== "boolean") return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:undo":
+      if (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:undone":
+      if (typeof v.requestId !== "string" || v.requestId.length === 0 || v.requestId.length > 128) return false;
+      if (typeof v.success !== "boolean") return false;
+      if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
+      if (v.payload !== undefined && v.payload !== null && !isElementPayload(v.payload)) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     default:

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import styles from "./Inspector.module.css";
 import { EDITABLE_ATTRIBUTES } from "@design-studio/preview-runtime/protocol";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
+import type { DesignEdit } from "../../src/domain/entities/DesignEdit";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import {
   PROPERTY_DEFINITIONS,
@@ -28,6 +29,11 @@ export function Inspector({
   onCopyComponent,
   language,
   error,
+  instruction,
+  onInstructionChange,
+  edits,
+  onCopyInstruction,
+  onUndoStructure,
 }: {
   selected: ElementPayload | null;
   onApplyStyle: (property: string, value: string) => void;
@@ -36,11 +42,23 @@ export function Inspector({
   onCopyComponent: (component: { name?: string; file?: string; line?: number }) => void;
   language: Language;
   error?: string;
+  instruction: string;
+  onInstructionChange: (value: string) => void;
+  edits: DesignEdit[];
+  onCopyInstruction: (instruction: string) => void;
+  onUndoStructure?: (requestId: string) => void;
 }): React.ReactElement {
   const [textDraft, setTextDraft] = useState<string | null>(null);
   const [classDraft, setClassDraft] = useState<string | null>(null);
   const [styleDrafts, setStyleDrafts] = useState<Record<string, string>>({});
   const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ instruction: true });
+  const toggleSection = (id: string) => setOpenSections((previous) => ({ ...previous, [id]: !previous[id] }));
+  const autoSizeTextarea = (node: HTMLTextAreaElement | null) => {
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(160, Math.max(26, node.scrollHeight))}px`;
+  };
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   const classes = selected?.classes ?? [];
   const setAttributeDraft = (name: string, value: string) => setAttributeDrafts((p) => ({ ...p, [name]: value }));
@@ -55,14 +73,23 @@ export function Inspector({
   // (~100 ms) collapses the gesture into one live apply; the final commit
   // happens on release (pointerUp / blur), and the journal merges the rest.
   const previewTimers = useRef<Record<string, number>>({});
+  const selectorRef = useRef(selected?.selector);
+  selectorRef.current = selected?.selector;
   const preview = (key: string, value: string) => {
     setStyleDraft(key, value);
+    const selector = selectorRef.current;
     window.clearTimeout(previewTimers.current[key]);
     previewTimers.current[key] = window.setTimeout(() => {
       delete previewTimers.current[key];
+      // A stale debounce must never apply to a different selected element.
+      if (selectorRef.current !== selector) return;
       onApplyStyle(key, value);
     }, 100);
   };
+  useEffect(() => () => {
+    for (const timer of Object.values(previewTimers.current)) window.clearTimeout(timer);
+    previewTimers.current = {};
+  }, []);
   const clearStyleDraft = (key: string) => setStyleDrafts((p) => {
     const next = { ...p };
     delete next[key];
@@ -117,8 +144,8 @@ export function Inspector({
       }
       return (
         <label key={name} className={styles.toggleRow}>
+          <span title={name}>{name}</span>
           <input type="checkbox" checked={present} onChange={(event) => apply(event.target.checked ? "true" : "")} />
-          <span>{name}</span>
         </label>
       );
     }
@@ -156,9 +183,10 @@ export function Inspector({
         <label key={name} className={styles.wideField}>
           <span>{name}</span>
           <textarea
-            rows={2}
+            rows={1}
+            ref={autoSizeTextarea}
             value={draft ?? current}
-            onChange={(event) => setAttributeDraft(name, event.target.value)}
+            onChange={(event) => { setAttributeDraft(name, event.target.value); autoSizeTextarea(event.currentTarget); }}
             onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); commit(); } if (event.key === "Escape") clearAttributeDraft(name); }}
             onBlur={commit}
           />
@@ -263,9 +291,10 @@ export function Inspector({
         <label key={def.key} className={styles.wideField}>
           <span>{def.key}</span>
           <textarea
-            rows={2}
+            rows={1}
+            ref={autoSizeTextarea}
             value={draft ?? current}
-            onChange={(event) => setStyleDraft(def.key, event.target.value)}
+            onChange={(event) => { setStyleDraft(def.key, event.target.value); autoSizeTextarea(event.currentTarget); }}
             onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); commit(); } if (event.key === "Escape") clearStyleDraft(def.key); }}
             onBlur={commit}
           />
@@ -314,6 +343,42 @@ export function Inspector({
     );
   };
 
+  const canCopyInstruction = Boolean(selected || instruction.trim() || edits.length > 0);
+  const describeEdit = (edit: DesignEdit): string => {
+    const pair = (before?: string, after?: string) => `${before || "—"} → ${after || "—"}`;
+    if (edit.kind === "comment") return `${t("edits.comment")}: ${edit.after ?? ""}`;
+    if (edit.kind === "style") return `${edit.property ?? ""}: ${pair(edit.before, edit.after)}`;
+    if (edit.kind === "text") return `${t("inspector.text")}: ${pair(edit.before, edit.after)}`;
+    if (edit.kind === "classes") return `${t("inspector.classes")}: ${pair(edit.before, edit.after)}`;
+    if (edit.kind === "attribute") {
+      return edit.after
+        ? `${t("edits.attribute")} ${edit.property ?? ""}: ${pair(edit.before, edit.after)}`
+        : `${t("edits.attribute")} ${edit.property ?? ""}: ${t("edits.removed")}`;
+    }
+    return `${t("inspector.structure")}: ${edit.operation ?? ""}`;
+  };
+  const editGroups: { selector: string; name?: string; items: DesignEdit[] }[] = [];
+  for (const edit of edits) {
+    const group = editGroups.find((candidate) => candidate.selector === edit.selector);
+    if (group) group.items.push(edit);
+    else editGroups.push({ selector: edit.selector, name: edit.component?.name, items: [edit] });
+  }
+  // Plain render helper (NOT a nested component): keeps the DOM stable so
+  // inputs inside sections do not remount/lose focus on every render.
+  const renderSection = (id: string, title: string, content: React.ReactNode, badge?: React.ReactNode) => {
+    const open = Boolean(openSections[id]);
+    return (
+      <section className={styles.section} key={id}>
+        <button type="button" className={styles.sectionHeader} aria-expanded={open} onClick={() => toggleSection(id)}>
+          <span className={`${styles.chevron} ${open ? styles.chevronOpen : ""}`} aria-hidden="true">▸</span>
+          <span className={styles.sectionTitle}>{title}</span>
+          {badge}
+        </button>
+        {open && <div className={styles.sectionBody}>{content}</div>}
+      </section>
+    );
+  };
+
   const styleGroups = Object.keys(PROPERTY_GROUP_LABEL_KEYS) as (keyof typeof PROPERTY_GROUP_LABEL_KEYS)[];
   const attributeDefs = selected ? attributeDefinitionsForTag(selected.tag) : [];
   const coveredAttributes = new Set(attributeDefs.map((def) => def.name));
@@ -325,125 +390,185 @@ export function Inspector({
     <aside className={styles.inspector} aria-label={t("inspector.title")}>
       <div className={styles.heading}>{t("inspector.title")}</div>
       {error && <div className={styles.error}>{error}</div>}
-      {selected ? (
-        <div className={styles.body}>
-          <div className={styles.identity}>
-            <div><span>{t("inspector.tag")}</span><b>{selected.tag}</b></div>
-            <div title={selected.selector}><span>{t("inspector.selector")}</span><code>{selected.selector}</code></div>
-          </div>
-
-          {selected.component?.length ? (
-            <section className={styles.section}>
-              <h3>{t("inspector.component")}</h3>
-              <div className={styles.componentList}>
-                {selected.component.map((component, index) => (
-                  <div className={styles.component} key={`${component.name ?? "component"}-${component.file ?? index}-${index}`}>
-                    <div className={styles.componentInfo}>
-                      <strong>{component.name ?? (language === "ru" ? "Компонент React" : "React component")}</strong>
-                      <code title={component.file}>{component.file ? `${component.file}${component.line ? `:${component.line}` : ""}` : t("inspector.noSource")}</code>
-                    </div>
-                    <button type="button" disabled={!component.file} onClick={() => onCopyComponent(component)} title={t("inspector.copySource")}>
-                      {t("inspector.copySource")}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          <section className={styles.section}>
-            <h3>{t("inspector.text")}</h3>
-            <div className={styles.row}>
-              <input
-                value={textDraft ?? selected.text ?? ""}
-                placeholder={t("inspector.noText")}
-                onChange={(event) => setTextDraft(event.target.value)}
-                onBlur={() => {
-                  // P2-18: the text field commits on blur, as the README promises.
-                  if (textDraft !== null && textDraft !== (selected.text ?? "")) {
-                    onEditText(textDraft);
-                    setTextDraft(null);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && textDraft !== null && textDraft !== (selected.text ?? "")) {
-                    onEditText(textDraft);
-                    setTextDraft(null);
-                  }
-                  if (event.key === "Escape") setTextDraft(null);
-                }}
-              />
-              <button type="button" disabled={textDraft === null || textDraft === (selected.text ?? "")} onClick={() => {
-                if (textDraft !== null) onEditText(textDraft);
-                setTextDraft(null);
-              }}>{t("inspector.apply")}</button>
-            </div>
-          </section>
-
-          <section className={styles.section}>
-            <h3>{t("inspector.classes")}</h3>
-            {classes.length > 0 && (
-              <div className={styles.classChips}>
-                {classes.map((name, index) => (
-                  <span key={`${name}-${index}`} className={styles.classChip}>
-                    <code>{name}</code>
-                    <button type="button" title={t("inspector.removeClass")} onClick={() => removeClass(index)}>x</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <input
-              className={styles.classInput}
-              value={classDraft ?? ""}
-              placeholder={t("inspector.classesPlaceholder")}
-              onChange={(event) => setClassDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && classDraft !== null) { addClass(classDraft); setClassDraft(null); }
-                if (event.key === "Escape") setClassDraft(null);
-              }}
+      <div className={styles.body}>
+        {renderSection(
+          "instruction",
+          t("inspector.instruction"),
+          <>
+            <textarea
+              className={styles.instructionInput}
+              rows={2}
+              ref={autoSizeTextarea}
+              value={instruction}
+              placeholder={t("floating.instruction")}
+              onChange={(event) => { onInstructionChange(event.target.value); autoSizeTextarea(event.currentTarget); }}
+              onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && canCopyInstruction) onCopyInstruction(instruction); }}
             />
-            <button className={styles.inlineAction} type="button" disabled={classDraft === null || !classDraft.trim()} onClick={() => {
-              if (classDraft !== null) addClass(classDraft);
-              setClassDraft(null);
-            }}>{t("inspector.addClass")}</button>
-            {selected.tailwind && <p className={styles.note}>{t("inspector.tailwind")}</p>}
-          </section>
-
-          <section className={styles.section}>
-            <h3>{t("inspector.attributes")}</h3>
-            <div className={styles.editor}>
-              {attributeDefs.map((def) => renderAttributeEditor(def.name, def))}
-              {extraAttributeNames.map((name) => renderAttributeEditor(name, undefined))}
-            </div>
-          </section>
-
-          <section className={styles.section}>
-            <h3>{t("inspector.structure")}</h3>
-            <div className={styles.actions}>
-              {BLOCK_OPS.map(({ op, key }) => <button key={op} type="button" onClick={() => onApplyOp(op)}>{t(key)}</button>)}
-            </div>
-          </section>
-
-          <section className={styles.section}>
-            <h3>{t("inspector.styles")}</h3>
-            {styleGroups.map((group) => {
-              const defs = PROPERTY_DEFINITIONS.filter((def) => def.group === group);
-              if (defs.length === 0) return null;
-              return (
-                <div key={group} className={styles.styleGroup}>
-                  <h4>{t(PROPERTY_GROUP_LABEL_KEYS[group])}</h4>
-                  <div className={styles.editor}>
-                    {defs.map(renderStyleControl)}
+            {editGroups.length > 0 ? (
+              <div className={styles.editGroups}>
+                {editGroups.map((group) => (
+                  <div key={group.selector} className={styles.editGroup}>
+                    <div className={styles.editGroupTitle} title={group.selector}>{group.name ?? group.selector}</div>
+                    <ul className={styles.editList}>
+                      {group.items.map((edit, index) => {
+                        const description = describeEdit(edit);
+                        const undoRequestId = edit.kind === "structure" ? edit.requestId : undefined;
+                        return (
+                          <li key={index} title={description}>
+                            {description}
+                            {undoRequestId && onUndoStructure && (
+                              <button
+                                type="button"
+                                className={styles.undoEdit}
+                                title={t("inspector.undoStructure")}
+                                aria-label={t("inspector.undoStructure")}
+                                onClick={() => onUndoStructure(undoRequestId)}
+                              >
+                                ↩
+                              </button>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
                   </div>
+                ))}
+              </div>
+            ) : (
+              <p className={styles.note}>{t("inspector.editsNone")}</p>
+            )}
+            <button
+              type="button"
+              className={styles.copyInstruction}
+              disabled={!canCopyInstruction}
+              onClick={() => onCopyInstruction(instruction)}
+            >
+              {t("floating.copyInstruction")}
+            </button>
+          </>,
+          edits.length > 0 ? <span className={styles.sectionBadge}>{edits.length}</span> : undefined
+        )}
+        {selected ? (
+          <>
+            <div className={styles.identity}>
+              <div><span>{t("inspector.tag")}</span><b>{selected.tag}</b></div>
+              <div title={selected.selector}><span>{t("inspector.selector")}</span><code>{selected.selector}</code></div>
+            </div>
+
+            {selected.component?.length
+              ? renderSection("component", t("inspector.component"), (
+                  <div className={styles.componentList}>
+                    {selected.component.map((component, index) => (
+                      <div className={styles.component} key={`${component.name ?? "component"}-${component.file ?? index}-${index}`}>
+                        <div className={styles.componentInfo}>
+                          <strong>{component.name ?? (language === "ru" ? "Компонент React" : "React component")}</strong>
+                          <code title={component.file}>{component.file ? `${component.file}${component.line ? `:${component.line}` : ""}` : t("inspector.noSource")}</code>
+                        </div>
+                        <button type="button" disabled={!component.file && !component.name} onClick={() => onCopyComponent(component)} title={t("inspector.copySource")}>
+                          {t("inspector.copySource")}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              : null}
+
+            {renderSection("text", t("inspector.text"), (
+              <>
+                <div className={styles.row}>
+                  <input
+                    value={textDraft ?? selected.text ?? ""}
+                    placeholder={t("inspector.noText")}
+                    onChange={(event) => setTextDraft(event.target.value)}
+                    onBlur={() => {
+                      // P2-18: the text field commits on blur, as the README promises.
+                      if (textDraft !== null && textDraft !== (selected.text ?? "")) {
+                        onEditText(textDraft);
+                        setTextDraft(null);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && textDraft !== null && textDraft !== (selected.text ?? "")) {
+                        onEditText(textDraft);
+                        setTextDraft(null);
+                      }
+                      if (event.key === "Escape") setTextDraft(null);
+                    }}
+                  />
+                  <button type="button" disabled={textDraft === null || textDraft === (selected.text ?? "")} onClick={() => {
+                    if (textDraft !== null) onEditText(textDraft);
+                    setTextDraft(null);
+                  }}>{t("inspector.apply")}</button>
                 </div>
-              );
-            })}
-            <p className={styles.note}>{t("inspector.stylesNote")}</p>
-          </section>
-        </div>
-      ) : (
-        <p className={styles.empty}>{t("inspector.empty")}</p>
-      )}
+                <p className={styles.note}>{t("inspector.textOwnNote")}</p>
+              </>
+            ))}
+
+            {renderSection("classes", t("inspector.classes"), (
+              <>
+                {classes.length > 0 && (
+                  <div className={styles.classChips}>
+                    {classes.map((name, index) => (
+                      <span key={`${name}-${index}`} className={styles.classChip}>
+                        <code>{name}</code>
+                        <button type="button" title={t("inspector.removeClass")} onClick={() => removeClass(index)}>x</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  className={styles.classInput}
+                  value={classDraft ?? ""}
+                  placeholder={t("inspector.classesPlaceholder")}
+                  onChange={(event) => setClassDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && classDraft !== null) { addClass(classDraft); setClassDraft(null); }
+                    if (event.key === "Escape") setClassDraft(null);
+                  }}
+                />
+                <button className={styles.inlineAction} type="button" disabled={classDraft === null || !classDraft.trim()} onClick={() => {
+                  if (classDraft !== null) addClass(classDraft);
+                  setClassDraft(null);
+                }}>{t("inspector.addClass")}</button>
+                {selected.tailwind && <p className={styles.note}>{t("inspector.tailwind")}</p>}
+              </>
+            ))}
+
+            {renderSection("attributes", t("inspector.attributes"), (
+              <div className={styles.editor}>
+                {attributeDefs.map((def) => renderAttributeEditor(def.name, def))}
+                {extraAttributeNames.map((name) => renderAttributeEditor(name, undefined))}
+              </div>
+            ))}
+
+            {renderSection("structure", t("inspector.structure"), (
+              <div className={styles.actions}>
+                {BLOCK_OPS.map(({ op, key }) => <button key={op} type="button" onClick={() => onApplyOp(op)}>{t(key)}</button>)}
+              </div>
+            ))}
+
+            {renderSection("styles", t("inspector.styles"), (
+              <>
+                {styleGroups.map((group) => {
+                  const defs = PROPERTY_DEFINITIONS.filter((def) => def.group === group);
+                  if (defs.length === 0) return null;
+                  return (
+                    <div key={group} className={styles.styleGroup}>
+                      <h4>{t(PROPERTY_GROUP_LABEL_KEYS[group])}</h4>
+                      <div className={styles.editor}>
+                        {defs.map(renderStyleControl)}
+                      </div>
+                    </div>
+                  );
+                })}
+                <p className={styles.note}>{t("inspector.stylesNote")}</p>
+              </>
+            ))}
+          </>
+        ) : (
+          <p className={styles.empty}>{t("inspector.empty")}</p>
+        )}
+      </div>
     </aside>
   );
 }

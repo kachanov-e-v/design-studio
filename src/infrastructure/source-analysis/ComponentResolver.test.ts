@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -133,5 +133,53 @@ describe("findComponentDefinition (RT-02: name-only component fibers)", () => {
     const root = makeProject({ "src/Late.tsx": "export function Late() {}\n" });
     expect(await findComponentDefinition(root, "Late", { maxTotalBytes: 0 })).toBeUndefined();
     expect(await findComponentDefinition(root, "Late")).toBeDefined();
+  });
+
+  it("prefers non-test definitions over *.test.* / *.spec.* / *.stories.* / __tests__ / __mocks__", async () => {
+    const root = makeProject({
+      "src/__tests__/Widget.test.tsx": "export function Widget() {}\n",
+      "src/Widget.spec.tsx": "export function Widget() {}\n",
+      "src/Widget.stories.tsx": "export function Widget() {}\n",
+      "src/__mocks__/Widget.tsx": "export function Widget() {}\n",
+      "src/components/Widget.tsx": "export function Widget() {\n  return null;\n}\n",
+    });
+    const found = await findComponentDefinition(root, "Widget");
+    expect(found?.file.replace(/\\/g, "/")).toBe("src/components/Widget.tsx");
+    expect(found?.line).toBe(1);
+  });
+
+  it("falls back to a test-file definition when it is the only one", async () => {
+    const root = makeProject({ "src/Only.test.tsx": "export function Only() {}\n" });
+    const found = await findComponentDefinition(root, "Only");
+    expect(found?.file.replace(/\\/g, "/")).toBe("src/Only.test.tsx");
+  });
+
+  it("caches scans per root+name and rescans after the TTL", async () => {
+    const root = makeProject({ "src/Cached.tsx": "export function Cached() {}\n" });
+    const readdirSpy = vi.spyOn(fs.promises, "readdir");
+    try {
+      const first = await findComponentDefinition(root, "Cached");
+      expect(first?.file.replace(/\\/g, "/")).toBe("src/Cached.tsx");
+      const callsAfterFirst = readdirSpy.mock.calls.length;
+      expect(callsAfterFirst).toBeGreaterThan(0);
+      const second = await findComponentDefinition(root, "Cached");
+      expect(second).toEqual(first);
+      expect(readdirSpy.mock.calls.length).toBe(callsAfterFirst);
+      // Negative results are cached too.
+      expect(await findComponentDefinition(root, "Absent")).toBeUndefined();
+      const callsAfterMiss = readdirSpy.mock.calls.length;
+      expect(await findComponentDefinition(root, "Absent")).toBeUndefined();
+      expect(readdirSpy.mock.calls.length).toBe(callsAfterMiss);
+      // Past the TTL the workspace is scanned again.
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+      try {
+        await findComponentDefinition(root, "Cached");
+        expect(readdirSpy.mock.calls.length).toBeGreaterThan(callsAfterMiss);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    } finally {
+      readdirSpy.mockRestore();
+    }
   });
 });

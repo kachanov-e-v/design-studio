@@ -1,4 +1,4 @@
-export type DesignEditKind = "style" | "text" | "classes" | "attribute" | "structure";
+export type DesignEditKind = "style" | "text" | "classes" | "attribute" | "structure" | "comment";
 
 export interface DesignEdit {
   kind: DesignEditKind;
@@ -8,4 +8,6 @@ export interface DesignEdit {
   after?: string;
   operation?: string;
   component?: { name?: string; file?: string; line?: number };
+  /** Runtime request id; present on structure edits so they can be undone. */
+  requestId?: string;
 }

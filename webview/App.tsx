@@ -6,6 +6,7 @@ import { FloatingPanel } from "./components/FloatingPanel";
 import { onExtensionMessage, postToExtension } from "./bridge";
 import { ackPendingStyles, buildStylePersistMessage, type PendingStyleEdit } from "./persistContract";
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
+import { primaryComponent } from "./componentInfo";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage } from "./types";
 import type { DesignEdit } from "../src/domain/entities/DesignEdit";
@@ -29,16 +30,21 @@ export function App(): React.ReactElement {
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
+  const [instruction, setInstruction] = useState("");
+  const [popupDrafts, setPopupDrafts] = useState<Record<string, string>>({});
+  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
 
   const previewRef = useRef<PreviewContainerHandle | null>(null);
   const pendingRequestsRef = useRef<Map<string, PendingStyleRequest>>(new Map());
   const persistSeqRef = useRef(0);
   const selectedRef = useRef<ElementPayload | null>(null);
   const previousClassesRef = useRef<string[] | undefined>(undefined);
+  const editsRef = useRef<DesignEdit[]>([]);
   const language: Language = state.language === "en" ? "en" : "ru";
   const languageRef = useRef<Language>(language);
   languageRef.current = language;
   selectedRef.current = selected;
+  editsRef.current = edits;
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -56,6 +62,8 @@ export function App(): React.ReactElement {
     setPendingStyles([]);
     setEdits([]);
     setStyleError("");
+    setInstruction("");
+    setPopupDrafts({});
   }, []);
   const lastRouteRef = useRef<string | null>(null);
 
@@ -111,7 +119,7 @@ export function App(): React.ReactElement {
     clearPending();
     resetSessionEdits();
     lastRouteRef.current = null;
-  }, [state.url]);
+  }, [state.url, resetSessionEdits]);
 
   const handleChange = (property: string, value: string) => {
     const current = selectedRef.current;
@@ -130,8 +138,8 @@ export function App(): React.ReactElement {
     }
     const timeoutId = window.setTimeout(() => {
       if (!pendingRequestsRef.current.delete(result.requestId)) return;
-      setStyleError(translate(language, "status.styleTimeout"));
-      setOperationStatus(translate(language, "status.styleTimeout"));
+      setStyleError(translate(languageRef.current, "status.styleTimeout"));
+      setOperationStatus(translate(languageRef.current, "status.styleTimeout"));
     }, 5000);
     pendingRequestsRef.current.set(result.requestId, {
       requestId: result.requestId,
@@ -169,9 +177,14 @@ export function App(): React.ReactElement {
     setStyleError("");
     const payload = info.payload ?? selectedRef.current ?? undefined;
     if (payload) {
-      setSelected((previous) => ({ ...payload, styles: { ...previous?.styles, ...payload.styles, [info.property]: info.value } }));
-      const component = payload.component?.[0];
+      // A late apply for a previously selected element must not overwrite the
+      // current selection's payload.
+      if (payload.selector === selectedRef.current?.selector) {
+        setSelected((previous) => ({ ...payload, styles: { ...previous?.styles, ...payload.styles, [info.property]: info.value } }));
+      }
+      const component = primaryComponent(payload.component);
       if (payload.selector) {
+        previewRef.current?.markElement(payload.selector, true);
         recordEdit({
           kind: "style",
           selector: payload.selector,
@@ -206,13 +219,15 @@ export function App(): React.ReactElement {
 
   const handleOpApplied = (info: OpAppliedInfo) => {
     if (!info.success) {
+      if (info.op === "set-classes") previousClassesRef.current = undefined;
       setOperationStatus(info.reason ?? translate(language, "status.operationFailed"));
       return;
     }
     const payload = info.payload ?? selectedRef.current;
     setSelected(payload ?? null);
     if (!payload?.selector) return;
-    const component = payload.component?.[0];
+    previewRef.current?.markElement(payload.selector, true);
+    const component = primaryComponent(payload.component);
     const componentRef = component ? { name: component.name, file: component.file, line: component.line } : undefined;
     if (info.op === "set-classes") {
       const before = (previousClassesRef.current ?? selectedRef.current?.classes ?? []).join(" ");
@@ -241,8 +256,30 @@ export function App(): React.ReactElement {
       setOperationStatus(translate(language, "status.attributeApplied"));
       return;
     }
-    recordEdit({ kind: "structure", selector: payload.selector, operation: info.op, component: componentRef });
+    recordEdit({ kind: "structure", selector: payload.selector, operation: info.op, component: componentRef, requestId: info.requestId });
     setOperationStatus(translate(language, "status.operationApplied"));
+  };
+
+  const handleRuntimeReady = useCallback(() => {
+    // Marks live in the iframe and are wiped by ds:reload/HMR — replay them
+    // whenever the runtime handshake resolves again.
+    const selectors = new Set(editsRef.current.map((edit) => edit.selector));
+    for (const selector of selectors) previewRef.current?.markElement(selector, true);
+  }, []);
+
+  const handleUndone = (info: { requestId: string; success: boolean; payload?: ElementPayload | null }) => {
+    if (!info.success) {
+      setOperationStatus(translate(languageRef.current, "status.undoFailed"));
+      return;
+    }
+    const edit = editsRef.current.find((candidate) => candidate.requestId === info.requestId);
+    if (!edit) return;
+    const remaining = editsRef.current.filter((candidate) => candidate.requestId !== info.requestId);
+    setEdits(remaining);
+    if (!remaining.some((candidate) => candidate.selector === edit.selector)) {
+      previewRef.current?.markElement(edit.selector, false);
+    }
+    setOperationStatus(translate(languageRef.current, "status.undone"));
   };
 
   const handleSave = () => {
@@ -259,6 +296,89 @@ export function App(): React.ReactElement {
       return;
     }
     postToExtension({ type: "ai:copyInstruction", ...(selected ? { payload: selected } : {}), instruction, edits });
+  };
+
+  const handlePopupDraftChange = (selector: string, value: string) => {
+    setPopupDrafts((previous) => ({ ...previous, [selector]: value }));
+  };
+
+  const handleAddComment = (text: string) => {
+    const current = selectedRef.current;
+    const trimmed = text.trim();
+    if (!current?.selector || !trimmed) return;
+    const selector = current.selector;
+    setPopupDrafts((previous) => {
+      const next = { ...previous };
+      delete next[selector];
+      return next;
+    });
+    const duplicate = editsRef.current.some((edit) => edit.kind === "comment" && edit.selector === selector && edit.after === trimmed);
+    if (duplicate) return;
+    const component = primaryComponent(current.component);
+    recordEdit({
+      kind: "comment",
+      selector,
+      after: trimmed,
+      component: component ? { name: component.name, file: component.file, line: component.line } : undefined,
+    });
+    previewRef.current?.markElement(selector, true);
+    setOperationStatus(translate(language, "status.commentAdded"));
+  };
+
+  const hasSessionWork =
+    edits.length > 0 || instruction.trim() !== "" || Object.values(popupDrafts).some((value) => value.trim() !== "");
+
+  const confirmCancelRef = useRef<HTMLButtonElement | null>(null);
+  const refreshOpenerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (refreshConfirmOpen) confirmCancelRef.current?.focus();
+  }, [refreshConfirmOpen]);
+
+  const closeRefreshConfirm = () => {
+    setRefreshConfirmOpen(false);
+    refreshOpenerRef.current?.focus();
+  };
+
+  const handleConfirmKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeRefreshConfirm();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = event.currentTarget;
+    const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"));
+    if (buttons.length === 0) return;
+    const first = buttons[0];
+    const last = buttons[buttons.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !dialog.contains(active))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  // window.confirm is unavailable inside VS Code webviews — the App renders
+  // its own confirmation dialog and reloads via the container handle.
+  const handleBeforeRefresh = (): boolean => {
+    if (hasSessionWork) {
+      refreshOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setRefreshConfirmOpen(true);
+      return false;
+    }
+    clearPending();
+    return true;
+  };
+
+  const handleConfirmRefresh = () => {
+    closeRefreshConfirm();
+    clearPending();
+    resetSessionEdits();
+    previewRef.current?.reload();
   };
 
   const handlePreviewNavigate = (url: string) => {
@@ -321,9 +441,15 @@ export function App(): React.ReactElement {
           onRevealSource={handleRevealSource}
           onCopyInstruction={handleCopyInstruction}
           onRefresh={clearPending}
+          onBeforeRefresh={handleBeforeRefresh}
+          popupDrafts={popupDrafts}
+          onPopupDraftChange={handlePopupDraftChange}
+          onAddComment={handleAddComment}
           onSelect={setSelected}
           onStyleApplied={handleStyleApplied}
           onOpApplied={handleOpApplied}
+          onRuntimeReady={handleRuntimeReady}
+          onUndone={handleUndone}
         />
         <Inspector
           selected={selected}
@@ -332,10 +458,36 @@ export function App(): React.ReactElement {
           onApplyOp={applyOp}
           onEditText={(text) => applyOp("set-text", text)}
           onCopyComponent={handleCopyComponent}
+          instruction={instruction}
+          onInstructionChange={setInstruction}
+          edits={edits}
+          onCopyInstruction={handleCopyInstruction}
+          onUndoStructure={(requestId) => previewRef.current?.undo(requestId)}
           error={styleError}
         />
       </div>
-      <FloatingPanel selected={selected} status={operationStatus} edits={edits} language={language} onCopyInstruction={handleCopyInstruction} />
+      <FloatingPanel status={operationStatus} language={language} />
+      {refreshConfirmOpen && (
+        <div
+          className={styles.confirmOverlay}
+          role="alertdialog"
+          aria-modal="true"
+          aria-label={translate(language, "preview.refreshConfirm")}
+          onKeyDown={handleConfirmKeyDown}
+        >
+          <div className={styles.confirmBox}>
+            <p className={styles.confirmText}>{translate(language, "preview.refreshConfirm")}</p>
+            <div className={styles.confirmActions}>
+              <button type="button" className={styles.confirmDanger} onClick={handleConfirmRefresh}>
+                {translate(language, "preview.refreshContinue")}
+              </button>
+              <button type="button" ref={confirmCancelRef} onClick={closeRefreshConfirm}>
+                {translate(language, "preview.refreshCancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

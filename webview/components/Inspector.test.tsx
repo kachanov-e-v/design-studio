@@ -4,11 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, cleanup } from "@testing-library/react";
 import { Inspector } from "./Inspector";
 import type { ElementPayload } from "../types";
+import type { DesignEdit } from "../../src/domain/entities/DesignEdit";
 
 /**
  * P2-5/P2-18: the inspector must not flood the runtime with style applies
  * while a slider/color control is dragged, and the text field must commit
  * on blur as the README promises.
+ * Sections are collapsed by default now — tests expand them first.
  */
 
 const baseSelected: ElementPayload = {
@@ -19,7 +21,13 @@ const baseSelected: ElementPayload = {
   text: "Hello",
 };
 
-function renderInspector(overrides: { onApplyStyle?: (property: string, value: string) => void; onEditText?: (text: string) => void; selected?: ElementPayload } = {}) {
+function renderInspector(overrides: {
+  onApplyStyle?: (property: string, value: string) => void;
+  onEditText?: (text: string) => void;
+  selected?: ElementPayload;
+  edits?: DesignEdit[];
+  onUndoStructure?: (requestId: string) => void;
+} = {}) {
   return render(
     <Inspector
       selected={overrides.selected ?? baseSelected}
@@ -28,11 +36,29 @@ function renderInspector(overrides: { onApplyStyle?: (property: string, value: s
       onEditText={overrides.onEditText ?? vi.fn()}
       onCopyComponent={vi.fn()}
       language="ru"
+      instruction=""
+      onInstructionChange={vi.fn()}
+      edits={overrides.edits ?? []}
+      onCopyInstruction={vi.fn()}
+      onUndoStructure={overrides.onUndoStructure}
     />
   );
 }
 
+function openSection(name: string): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
 afterEach(cleanup);
+
+describe("Inspector collapsible sections", () => {
+  it("collapses element sections by default and expands on click", () => {
+    renderInspector();
+    expect(screen.queryByDisplayValue("Hello")).toBeNull();
+    openSection("Текст");
+    expect(screen.getByDisplayValue("Hello")).toBeTruthy();
+  });
+});
 
 describe("Inspector text commit (P2-18)", () => {
   afterEach(() => vi.useRealTimers());
@@ -40,6 +66,7 @@ describe("Inspector text commit (P2-18)", () => {
   it("commits the text field on blur", () => {
     const onEditText = vi.fn();
     renderInspector({ onEditText });
+    openSection("Текст");
     const textInput = screen.getByDisplayValue("Hello") as HTMLInputElement;
     fireEvent.change(textInput, { target: { value: "Hello world" } });
     expect(onEditText).not.toHaveBeenCalled();
@@ -55,6 +82,7 @@ describe("Inspector slider throttling (P2-5)", () => {
     vi.useFakeTimers();
     const onApplyStyle = vi.fn();
     renderInspector({ onApplyStyle });
+    openSection("Стили");
     const slider = screen.getByRole("slider");
     fireEvent.change(slider, { target: { value: "0.8" } });
     fireEvent.change(slider, { target: { value: "0.9" } });
@@ -74,6 +102,7 @@ describe("Inspector color throttling (P2-5)", () => {
     vi.useFakeTimers();
     const onApplyStyle = vi.fn();
     renderInspector({ onApplyStyle });
+    openSection("Стили");
     const colorInput = document.querySelector('input[type="color"]') as HTMLInputElement;
     fireEvent.change(colorInput, { target: { value: "#00ff00" } });
     expect(onApplyStyle).not.toHaveBeenCalled();
@@ -82,5 +111,63 @@ describe("Inspector color throttling (P2-5)", () => {
     });
     expect(onApplyStyle).toHaveBeenCalledTimes(1);
     expect(onApplyStyle).toHaveBeenCalledWith("color", "#00ff00");
+  });
+});
+
+describe("Inspector debounce timer safety", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("cancels pending previews on unmount", () => {
+    vi.useFakeTimers();
+    const onApplyStyle = vi.fn();
+    const { unmount } = renderInspector({ onApplyStyle });
+    openSection("Стили");
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "0.8" } });
+    unmount();
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(onApplyStyle).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a stale preview after the selection changed", () => {
+    vi.useFakeTimers();
+    const onApplyStyle = vi.fn();
+    const { rerender } = renderInspector({ onApplyStyle });
+    openSection("Стили");
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "0.8" } });
+    rerender(
+      <Inspector
+        selected={{ ...baseSelected, selector: "h2", tag: "h2" }}
+        onApplyStyle={onApplyStyle}
+        onApplyOp={vi.fn()}
+        onEditText={vi.fn()}
+        onCopyComponent={vi.fn()}
+        language="ru"
+        instruction=""
+        onInstructionChange={vi.fn()}
+        edits={[]}
+        onCopyInstruction={vi.fn()}
+      />
+    );
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(onApplyStyle).not.toHaveBeenCalled();
+  });
+});
+
+describe("Inspector structure undo", () => {
+  it("renders an undo button for structure edits with a requestId and calls onUndoStructure", () => {
+    const onUndoStructure = vi.fn();
+    const edits: DesignEdit[] = [
+      { kind: "structure", selector: "h1", operation: "duplicate", requestId: "req-1" },
+      { kind: "structure", selector: "h1", operation: "move-up" },
+    ];
+    renderInspector({ edits, onUndoStructure });
+    const buttons = screen.getAllByRole("button", { name: "Отменить структурную правку" });
+    expect(buttons.length).toBe(1);
+    fireEvent.click(buttons[0]);
+    expect(onUndoStructure).toHaveBeenCalledWith("req-1");
   });
 });

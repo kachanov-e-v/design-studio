@@ -1,4 +1,5 @@
 import { isLocalhostUrl } from "../../shared/url";
+import { validateUpstreamResolved } from "../preview/upstream-validation";
 import { findCssRules } from "./cssText";
 
 export interface SourceRule {
@@ -277,13 +278,15 @@ export class CssSourceResolver {
     const cached = this.cache.get(rule.href);
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached;
     if (!isLocalhostUrl(rule.href)) return null;
+    // Lexical loopback is not enough: *.localhost names may resolve off-host.
+    if (!(await validateUpstreamResolved(rule.href)).ok) return null;
     const css = await this.fetchCss(rule.href);
     if (css === null) return null;
     const entry: CacheEntry = { fetchedAt: Date.now(), css, map: null };
     const mapRef = parseSourceMapRef(css, rule.href);
     let raw = mapRef?.inline ?? null;
     // sourceMappingURL may point anywhere: only loopback URLs pass the gate.
-    if (raw === null && mapRef?.url && isLocalhostUrl(mapRef.url)) {
+    if (raw === null && mapRef?.url && isLocalhostUrl(mapRef.url) && (await validateUpstreamResolved(mapRef.url)).ok) {
       raw = await fetchText(mapRef.url, 2500);
     }
     if (raw) {

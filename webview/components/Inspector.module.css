@@ -13,7 +13,14 @@
 .identity span { flex: 0 0 58px; color: var(--vscode-descriptionForeground, #999); }
 .identity b, .identity code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-weight: 500; }
 .section { padding: 13px 0; border-bottom: 1px solid var(--vscode-panel-border, #353535); }
-.section h3 { margin: 0 0 9px; color: var(--vscode-descriptionForeground, #999); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.inspector button.sectionHeader { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 0; padding: 0; border: 0; background: transparent; text-align: left; }
+.inspector button.sectionHeader:hover { background: transparent; }
+.sectionTitle { flex: 1 1 auto; color: var(--vscode-descriptionForeground, #999); font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.inspector button.sectionHeader:hover .sectionTitle { color: var(--vscode-foreground, #ccc); }
+.chevron { display: inline-block; color: var(--vscode-descriptionForeground, #999); font-size: 10px; transition: transform .12s ease; }
+.chevronOpen { transform: rotate(90deg); }
+.sectionBody { margin-top: 9px; }
+.sectionBadge { flex: 0 0 auto; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #fff); font-size: 9px; line-height: 16px; text-align: center; }
 .row { display: flex; gap: 5px; }
 .row input, .classInput, .editor input {
   min-width: 0;
@@ -34,7 +41,7 @@
 .editor { display: grid; gap: 7px; }
 .section h4 { margin: 10px 0 7px; color: var(--vscode-descriptionForeground, #999); font-size: 10px; font-weight: 500; }
 .section h4:first-child { margin-top: 0; }
-.editor label { display: grid; grid-template-columns: minmax(86px, 1fr) minmax(0, 1.2fr); align-items: center; gap: 8px; font-size: 10px; }
+.editor label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); align-items: center; gap: 8px; font-size: 10px; }
 .editor label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground, #999); }
 .editor input, .editor select, .editor textarea {
   width: 100%;
@@ -48,12 +55,12 @@
 }
 .editor input { height: 25px; padding: 0 6px; }
 .editor select { height: 25px; padding: 0 4px; }
-.editor textarea { padding: 4px 6px; resize: vertical; }
+.editor textarea { padding: 4px 6px; resize: vertical; min-height: 25px; max-height: 160px; overflow-y: auto; }
 .editor input[type="color"] { padding: 2px; height: 25px; width: 34px; flex: 0 0 34px; }
 .editor input[type="range"] { padding: 0; accent-color: var(--vscode-focusBorder, #4a9aef); }
-.editor input[type="checkbox"] { width: auto; accent-color: var(--vscode-focusBorder, #4a9aef); }
+.editor input[type="checkbox"] { width: 14px; height: 14px; margin: 0; justify-self: start; accent-color: var(--vscode-focusBorder, #4a9aef); }
 .colorField, .sliderField, .unitField { display: flex; gap: 5px; align-items: center; min-width: 0; }
-.toggleRow { grid-template-columns: minmax(86px, 1fr) auto !important; }
+.toggleRow { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
 .wideField { grid-template-columns: 1fr !important; }
 .wideField span { height: 16px; }
 .classChips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 7px; }
@@ -70,3 +77,11 @@
 .empty { padding: 14px; }
 .error { padding: 8px 14px; color: var(--vscode-errorForeground, #f48771); font-size: 11px; }
 @media (max-width: 650px) { .inspector { width: 250px; flex-basis: 250px; } }
+.instructionInput { box-sizing: border-box; width: 100%; min-height: 40px; max-height: 160px; padding: 6px 7px; border: 1px solid var(--vscode-input-border, #414141); border-radius: 3px; background: var(--vscode-input-background, #252526); color: var(--vscode-input-foreground, #ddd); font: inherit; font-size: 11px; line-height: 1.5; resize: vertical; overflow-y: auto; }
+.editGroups { display: grid; gap: 8px; margin-top: 8px; }
+.editGroup { border: 1px solid var(--vscode-panel-border, #353535); border-radius: 3px; padding: 6px 8px; }
+.editGroupTitle { font-size: 10px; font-weight: 600; color: var(--vscode-foreground, #ccc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editList { margin: 4px 0 0; padding-left: 14px; display: grid; gap: 3px; }
+.editList li { font-size: 10px; color: var(--vscode-descriptionForeground, #aaa); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undoEdit { margin-left: 4px; padding: 0 3px; font-size: 9px; line-height: 1.2; }
+.inspector button.copyInstruction { width: 100%; margin-top: 9px; border-color: var(--vscode-focusBorder, #777); }

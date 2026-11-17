@@ -9,11 +9,11 @@ import * as path from "node:path";
 export async function findProjectEntries(root: string): Promise<string[]> {
   const results: string[] = [];
   const excludedDirs = new Set(["node_modules", "dist", "build", ".git", ".vscode", ".next", "coverage", "out", "public", "static"]);
-  const walk = (dir: string, depth: number): void => {
+  const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 6 || results.length >= 200) return;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -21,7 +21,7 @@ export async function findProjectEntries(root: string): Promise<string[]> {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (excludedDirs.has(entry.name) || entry.name.startsWith(".")) continue;
-        walk(full, depth + 1);
+        await walk(full, depth + 1);
         continue;
       }
       if (entry.isFile() && !entry.name.startsWith(".")) {
@@ -33,7 +33,7 @@ export async function findProjectEntries(root: string): Promise<string[]> {
       }
     }
   };
-  walk(root, 0);
+  await walk(root, 0);
   results.sort((a, b) => {
     const at = path.basename(a).toLowerCase() === "index.html" || path.basename(a).toLowerCase() === "index.htm" ? 0 : 1;
     const bt = path.basename(b).toLowerCase() === "index.html" || path.basename(b).toLowerCase() === "index.htm" ? 0 : 1;

@@ -132,19 +132,49 @@ function lineAt(content: string, index: number): number {
 /**
  * Search the workspace for the definition of a component by its exact name.
  * Deterministic traversal order; reading stops once the shared byte budget
- * is spent (already-read files are still searched). Returns the first
- * definition site as a workspace-relative file.
+ * is spent (already-read files are still searched). Non-test files win over
+ * *.test.* / *.spec.* / *.stories.* / __tests__ / __mocks__ definitions.
+ * Results (including misses) are cached per root+name+budget for a short TTL
+ * so repeated copy/reveal actions do not rescan the whole workspace.
  */
+const DEFINITION_CACHE_TTL_MS = 30_000;
+const DEFINITION_CACHE_MAX_ENTRIES = 100;
+const definitionCache = new Map<string, { at: number; result: { file: string; line?: number } | undefined }>();
+
+function isTestArtifact(rel: string): boolean {
+  return /(^|\/)(__tests__|__mocks__)\//.test(rel) || /\.(test|spec|stories)\.[a-z0-9]+$/i.test(rel);
+}
+
 export async function findComponentDefinition(
   root: string,
   name: string,
   options: FindComponentDefinitionOptions = {}
 ): Promise<{ file: string; line?: number } | undefined> {
   if (!IDENTIFIER_NAME.test(name)) return undefined;
-  const patterns = definitionPatterns(name);
   const maxTotalBytes = options.maxTotalBytes ?? MAX_DEFINITION_TOTAL_BYTES;
+  const cacheKey = `${root}|${name}|${maxTotalBytes}`;
+  const cached = definitionCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < DEFINITION_CACHE_TTL_MS) return cached.result;
+  const result = await scanComponentDefinition(root, name, maxTotalBytes);
+  definitionCache.delete(cacheKey);
+  definitionCache.set(cacheKey, { at: Date.now(), result });
+  while (definitionCache.size > DEFINITION_CACHE_MAX_ENTRIES) {
+    const oldest = definitionCache.keys().next().value;
+    if (oldest === undefined) break;
+    definitionCache.delete(oldest);
+  }
+  return result;
+}
+
+async function scanComponentDefinition(
+  root: string,
+  name: string,
+  maxTotalBytes: number
+): Promise<{ file: string; line?: number } | undefined> {
+  const patterns = definitionPatterns(name);
   let spentBytes = 0;
   let visited = 0;
+  let testFallback: { file: string; line?: number } | undefined;
 
   const walkDirs: string[] = [root];
   while (walkDirs.length > 0 && visited < MAX_DEFINITION_FILES) {
@@ -184,12 +214,17 @@ export async function findComponentDefinition(
           // D-01: a file outside the workspace root invalidates only this file,
           // not the entire scan — skip it and keep walking.
           if (!rel || rel.startsWith("..")) break;
-          return { file: rel, line: lineAt(content, match.index) };
+          const found = { file: rel, line: lineAt(content, match.index) };
+          if (!isTestArtifact(rel)) return found;
+          // A test-file definition is only a last resort: keep scanning for
+          // the real implementation.
+          testFallback ??= found;
+          break;
         }
       } catch {
         // Skip unreadable files and keep scanning.
       }
     }
   }
-  return undefined;
+  return testFallback;
 }

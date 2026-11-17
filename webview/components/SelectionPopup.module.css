@@ -69,18 +69,8 @@
   border-color: var(--vscode-focusBorder, #777);
 }
 
-.copyButton {
-  align-self: flex-end;
-  padding: 3px 10px;
-  border: 1px solid var(--vscode-panel-border, #414141);
-  border-radius: 3px;
-  background: transparent;
-  color: var(--vscode-foreground, #ccc);
-  font: inherit;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.copyButton:hover {
-  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
-}
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.copyButton, .addButton { padding: 3px 10px; border: 1px solid var(--vscode-panel-border, #414141); border-radius: 3px; background: transparent; color: var(--vscode-foreground, #ccc); font: inherit; font-size: 10px; cursor: pointer; }
+.copyButton:hover, .addButton:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); }
+.addButton:disabled { opacity: .4; cursor: default; }
+.success, .success:hover { border-color: var(--vscode-testing-iconPassed, #73c991); color: var(--vscode-testing-iconPassed, #73c991); background: transparent; }

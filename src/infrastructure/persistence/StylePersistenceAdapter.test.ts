@@ -4,6 +4,11 @@ import http from "node:http";
 
 const store = new Map<string, string>();
 
+const hooks = vi.hoisted(() => ({
+  beforeOpen: null as null | ((fsPath: string, callIndex: number) => void),
+  openCalls: new Map<string, number>(),
+}));
+
 vi.mock("vscode", () => {
   class Range {
     constructor(public start: any, public end: any) {}
@@ -19,9 +24,11 @@ vi.mock("vscode", () => {
       return keys.slice(0, typeof limit === "number" ? limit : undefined).map((p) => ({ fsPath: p, toString: () => p }));
     },
     openTextDocument: async (uri: any) => {
-      const text = store.get(uri.fsPath) ?? "";
+      const callIndex = (hooks.openCalls.get(uri.fsPath) ?? 0) + 1;
+      hooks.openCalls.set(uri.fsPath, callIndex);
+      hooks.beforeOpen?.(uri.fsPath, callIndex);
       return {
-        getText: () => text,
+        getText: () => store.get(uri.fsPath) ?? "",
         positionAt: (offset: number) => new Position(0, offset),
         isDirty: uri.fsPath.includes("dirty"),
         save: async () => {
@@ -97,6 +104,8 @@ describe("persistence utils", () => {
 describe("StylePersistenceAdapter.apply", () => {
   beforeEach(() => {
     store.clear();
+    hooks.beforeOpen = null;
+    hooks.openCalls.clear();
     (globalThis as any).__replacements = [];
     (globalThis as any).__saved = [];
   });
@@ -235,6 +244,40 @@ describe("StylePersistenceAdapter.apply", () => {
     expect(res.success).toBe(true);
     expect(res.message).toContain("already has this value");
     expect((res as { file?: string }).file).toBe("/tmp/same.css");
+  });
+
+  it("re-locates the rule when a concurrent user edit shifted the offsets", async () => {
+    store.set("/tmp/shift.css", ".a { color: red; }");
+    // The user's edit lands between the scan and the apply: the second open
+    // (inside editRule) sees a document whose rule body moved.
+    hooks.beforeOpen = (p, callIndex) => {
+      if (p === "/tmp/shift.css" && callIndex === 2) {
+        store.set(p, "/* user note */\n.a { color: red; }");
+      }
+    };
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".a", property: "color", value: "blue" });
+    expect(res.success).toBe(true);
+    const repl = (globalThis as any).__replacements[0];
+    const expected = findCssRules(store.get("/tmp/shift.css")!, ".a")[0];
+    expect(repl.range.start.character).toBe(expected.bodyStart);
+    expect(repl.range.end.character).toBe(expected.bodyEnd);
+    expect(repl.newText).toContain("color: blue;");
+  });
+
+  it("skips the edit instead of corrupting the file when the rule vanished", async () => {
+    store.set("/tmp/gone.css", ".a { color: red; }");
+    hooks.beforeOpen = (p, callIndex) => {
+      if (p === "/tmp/gone.css" && callIndex === 2) {
+        store.set(p, ".b { margin: 0; }");
+      }
+    };
+    const adapter = new StylePersistenceAdapter();
+    const res = await adapter.apply({ selector: ".a", property: "color", value: "blue" });
+    expect(res.success).toBe(false);
+    expect(res.message).toContain("changed while editing");
+    expect((globalThis as any).__replacements).toHaveLength(0);
+    expect(store.get("/tmp/gone.css")).toBe(".b { margin: 0; }");
   });
 });
 

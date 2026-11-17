@@ -63,6 +63,8 @@ function removeRuntimeListeners(): void {
 }
 
 async function spawnRuntime(scriptAttrs = ""): Promise<void> {
+  // Let the previous instance disconnect its MutationObserver before spawn.
+  window.dispatchEvent(new Event("pagehide"));
   removeRuntimeListeners();
   vi.resetModules();
   (window as unknown as { __dsRuntimeInitialized?: boolean }).__dsRuntimeInitialized = false;
@@ -349,10 +351,10 @@ describe("getSelector uniqueness (P2-17)", () => {
   });
 });
 
-/** P2-17: duplicating an element must not duplicate the ids of its descendants. */
+/** P2-17: duplicating an element must keep descendant ids unique but intact. */
 describe("duplicate op (P2-17)", () => {
-  it("strips ids from the clone and its descendants", async () => {
-    document.body.innerHTML = '<div id="target"><section><p id="para">x</p></section></div>';
+  it("suffixes clone ids and remaps in-clone references", async () => {
+    document.body.innerHTML = '<div id="target"><label for="para">L</label><p id="para" aria-describedby="para">x</p><a href="#para">j</a><a href="#outside">o</a></div>';
     await spawnRuntime();
     receive(ping, trustedOrigin);
     receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
@@ -361,7 +363,15 @@ describe("duplicate op (P2-17)", () => {
     receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "duplicate", requestId: "r-1", sessionId: "n-1" }, trustedOrigin);
     expect(document.querySelectorAll("#target").length).toBe(1);
     expect(document.querySelectorAll("#para").length).toBe(1);
-    expect(document.querySelectorAll("[data-ds-clone] [id]").length).toBe(0);
+    const clone = document.querySelector("[data-ds-clone]") as Element;
+    expect(clone.id).toMatch(/^target-/);
+    const clonePara = clone.querySelector("p") as Element;
+    expect(clonePara.id).toMatch(/^para-/);
+    expect(clone.querySelector("label")!.getAttribute("for")).toBe(clonePara.id);
+    expect(clonePara.getAttribute("aria-describedby")).toBe(clonePara.id);
+    expect(clone.querySelector("a")!.getAttribute("href")).toBe(`#${clonePara.id}`);
+    // References outside the clone stay untouched.
+    expect(clone.querySelectorAll("a")[1].getAttribute("href")).toBe("#outside");
   });
 });
 /** P2-6: popup must follow scroll/resize — runtime reposts a fresh rect. */
@@ -583,5 +593,275 @@ describe("session control messages", () => {
       backSpy.mockRestore();
       forwardSpy.mockRestore();
     }
+  });
+});
+
+/** Edit-mode UX: large arrow cursor, non-destructive own-text edits, edit badges. */
+describe("edit-mode UX (cursor, own text, marks)", () => {
+  it("set-text preserves child elements and only replaces own text", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    document.body.innerHTML = '<div id="card">Own <b id="keep">child</b> tail</div>';
+    const card = document.getElementById("card")!;
+    card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "Changed", requestId: "t1", sessionId: "n-1" }, trustedOrigin);
+    expect(document.getElementById("keep")).not.toBeNull();
+    expect(card.textContent).toBe("Changedchild");
+    // The trailing own text node is removed, not blanked.
+    expect(card.childNodes.length).toBe(2);
+  });
+
+  it("set-text keeps text after a child element in place (whitespace separators survive)", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    document.body.innerHTML = '<div id="card"> <b id="keep">child</b> tail</div>';
+    const card = document.getElementById("card")!;
+    card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "Changed", requestId: "t2", sessionId: "n-1" }, trustedOrigin);
+    // The new text lands in the node AFTER <b>, never jumps before it.
+    expect(card.textContent).toBe(" childChanged");
+    expect(card.lastChild!.nodeType).toBe(3);
+    expect(card.lastChild!.nodeValue).toBe("Changed");
+  });
+
+  it("set-text with an empty value removes all non-whitespace own text nodes", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    document.body.innerHTML = '<div id="card">Hello <b id="keep">x</b> bye</div>';
+    const card = document.getElementById("card")!;
+    card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "", requestId: "t3", sessionId: "n-1" }, trustedOrigin);
+    expect(card.textContent).toBe("x");
+    expect(document.getElementById("keep")).not.toBeNull();
+  });
+
+  it("set-text on an element without own text nodes inserts text, empty value is a no-op", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    document.body.innerHTML = '<div id="card"><b id="keep">x</b></div>';
+    const card = document.getElementById("card")!;
+    card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "", requestId: "t4", sessionId: "n-1" }, trustedOrigin);
+    expect(card.textContent).toBe("x");
+    receive({ type: "ds:apply-op", version: PROTOCOL_VERSION, op: "set-text", value: "New", requestId: "t5", sessionId: "n-1" }, trustedOrigin);
+    expect(card.textContent).toBe("Newx");
+  });
+
+  it("edit mode sets the large-arrow cursor attribute and clears it on browse", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    expect(document.documentElement.hasAttribute("data-ds-edit-mode")).toBe(true);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: false, sessionId: "n-1" }, trustedOrigin);
+    expect(document.documentElement.hasAttribute("data-ds-edit-mode")).toBe(false);
+  });
+
+  it("ds:mark adds a badge overlay for the marked selector", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    document.body.innerHTML = '<div id="marked">x</div>';
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#marked", marked: true, sessionId: "n-1" }, trustedOrigin);
+    // hover outline + selection outline + one edit badge
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBeGreaterThanOrEqual(3);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#marked", marked: false, sessionId: "n-1" }, trustedOrigin);
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(2);
+  });
+
+  it("ds:mark refuses non-selectable targets (head, script, body)", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    document.body.innerHTML = '<div id="ok">x</div><script id="bad">void 0;</script>';
+    const before = document.querySelectorAll("body > div[data-design-studio]").length;
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "head", marked: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#bad", marked: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "body", marked: true, sessionId: "n-1" }, trustedOrigin);
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(before);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#ok", marked: true, sessionId: "n-1" }, trustedOrigin);
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(before + 1);
+  });
+});
+
+/** Shared helpers for the message-driven suites below. */
+let undoSessionCounter = 0;
+async function spawnSelected(html: string, selectId: string): Promise<string> {
+  await spawnRuntime();
+  const session = `sess-x${++undoSessionCounter}`;
+  receive({ type: "ds:ping", version: PROTOCOL_VERSION, nonce: session, sessionId: session }, trustedOrigin);
+  receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: session }, trustedOrigin);
+  document.body.innerHTML = html;
+  const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+  Object.defineProperty(down, "target", { value: document.getElementById(selectId) });
+  withPostSpy(() => document.dispatchEvent(down));
+  return session;
+}
+function send(session: string, extra: Record<string, unknown>): Array<{ msg: Record<string, unknown>; target: string }> {
+  return withPostSpy(() => receive({ version: PROTOCOL_VERSION, sessionId: session, ...extra }, trustedOrigin));
+}
+
+/** ds:undo restores delete/duplicate/move snapshots taken per requestId. */
+describe("structure op undo (ds:undo)", () => {
+  const undone = (posted: Array<{ msg: Record<string, unknown>; target: string }>): Record<string, unknown> => {
+    const msg = posted.find((p) => p.msg.type === "ds:undone");
+    expect(msg).toBeDefined();
+    return msg!.msg;
+  };
+
+  it("restores a deleted element at its original index", async () => {
+    const session = await spawnSelected('<div id="wrap"><span id="a">a</span><span id="del">x</span><span id="b">b</span></div>', "del");
+    send(session, { type: "ds:apply-op", op: "delete", requestId: "u1" });
+    expect(document.getElementById("del")).toBeNull();
+    const posted = send(session, { type: "ds:undo", requestId: "u1" });
+    expect(undone(posted)).toMatchObject({ success: true, requestId: "u1" });
+    expect(undone(posted).payload).not.toBeNull();
+    const wrap = document.getElementById("wrap")!;
+    expect(wrap.children[1].id).toBe("del");
+    // The snapshot is consumed: a second undo of the same id fails.
+    expect(undone(send(session, { type: "ds:undo", requestId: "u1" }))).toMatchObject({ success: false, reason: "Unknown requestId" });
+  });
+
+  it("fails a delete undo when the parent is gone", async () => {
+    const session = await spawnSelected('<div id="wrap"><span id="del">x</span></div>', "del");
+    send(session, { type: "ds:apply-op", op: "delete", requestId: "u2" });
+    document.getElementById("wrap")!.remove();
+    expect(undone(send(session, { type: "ds:undo", requestId: "u2" }))).toMatchObject({ success: false, reason: "Parent not found" });
+  });
+
+  it("removes the clone on duplicate undo", async () => {
+    const session = await spawnSelected('<div id="wrap"><p id="src">x</p></div>', "src");
+    send(session, { type: "ds:apply-op", op: "duplicate", requestId: "u3" });
+    expect(document.querySelectorAll("#wrap p")).toHaveLength(2);
+    const posted = send(session, { type: "ds:undo", requestId: "u3" });
+    expect(undone(posted)).toMatchObject({ success: true, requestId: "u3", payload: null });
+    expect(document.querySelectorAll("#wrap p")).toHaveLength(1);
+    expect(document.querySelector("[data-ds-clone]")).toBeNull();
+  });
+
+  it("returns a moved element to its original position", async () => {
+    const session = await spawnSelected('<ul id="list"><li id="one">1</li><li id="two">2</li></ul>', "one");
+    send(session, { type: "ds:apply-op", op: "move-down", requestId: "u4" });
+    expect(Array.from(document.getElementById("list")!.children).map((c) => c.id)).toEqual(["two", "one"]);
+    const posted = send(session, { type: "ds:undo", requestId: "u4" });
+    expect(undone(posted)).toMatchObject({ success: true, requestId: "u4" });
+    expect(Array.from(document.getElementById("list")!.children).map((c) => c.id)).toEqual(["one", "two"]);
+  });
+
+  it("rejects an unknown requestId", async () => {
+    const session = await spawnSelected('<div id="solo">x</div>', "solo");
+    expect(undone(send(session, { type: "ds:undo", requestId: "nope" }))).toMatchObject({ success: false, reason: "Unknown requestId" });
+  });
+});
+
+/** URL-attribute sanitizing: control-char scheme obfuscation, data:text/html, form actions. */
+describe("URL attribute sanitizing", () => {
+  it("blocks java\\tscript:/java\\nscript:, javascript: action and data:text/html src; allows https and data:image", async () => {
+    const session = await spawnSelected('<a id="link" href="/safe">x</a>', "link");
+    for (const [i, value] of ["java\tscript:alert(1)", "java\nscript:alert(1)", "java\rscript:alert(1)"].entries()) {
+      const posted = send(session, { type: "ds:apply-op", op: "set-attribute", attribute: "href", value, requestId: `b${i}` });
+      expect(posted.find((p) => p.msg.type === "ds:op-applied")!.msg).toMatchObject({ success: false, reason: "Blocked URL scheme" });
+      expect(document.getElementById("link")!.getAttribute("href")).toBe("/safe");
+    }
+    const ok = send(session, { type: "ds:apply-op", op: "set-attribute", attribute: "href", value: "https://example.com/x", requestId: "ok1" });
+    expect(ok.find((p) => p.msg.type === "ds:op-applied")!.msg.success).toBe(true);
+
+    const formSession = await spawnSelected('<form id="f"><input id="img" src="/a.png"></form>', "f");
+    const action = send(formSession, { type: "ds:apply-op", op: "set-attribute", attribute: "action", value: "javascript:alert(1)", requestId: "a1" });
+    expect(action.find((p) => p.msg.type === "ds:op-applied")!.msg).toMatchObject({ success: false, reason: "Blocked URL scheme", attribute: "action" });
+    expect(document.getElementById("f")!.hasAttribute("action")).toBe(false);
+
+    const imgSession = await spawnSelected('<img id="pic" src="/a.png">', "pic");
+    const htmlData = send(imgSession, { type: "ds:apply-op", op: "set-attribute", attribute: "src", value: "data:text/html;base64,PHNjcmlwdD4=", requestId: "d1" });
+    expect(htmlData.find((p) => p.msg.type === "ds:op-applied")!.msg).toMatchObject({ success: false, reason: "Blocked URL scheme" });
+    const imageData = send(imgSession, { type: "ds:apply-op", op: "set-attribute", attribute: "src", value: "data:image/png;base64,AAAA", requestId: "d2" });
+    expect(imageData.find((p) => p.msg.type === "ds:op-applied")!.msg.success).toBe(true);
+  });
+
+  it("blocks submits of forms with a dangerous action in edit mode", async () => {
+    await spawnSelected('<form id="evil" action="java\tscript:alert(1)"></form><form id="safe" action="/submit"></form>', "evil");
+    const evilEvent = new Event("submit", { bubbles: true, cancelable: true });
+    const posted = withPostSpy(() => document.getElementById("evil")!.dispatchEvent(evilEvent));
+    expect(evilEvent.defaultPrevented).toBe(true);
+    expect(posted.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(true);
+    const safeEvent = new Event("submit", { bubbles: true, cancelable: true });
+    const safePosted = withPostSpy(() => document.getElementById("safe")!.dispatchEvent(safeEvent));
+    expect(safeEvent.defaultPrevented).toBe(false);
+    expect(safePosted.some((p) => p.msg.type === "ds:navigate-blocked")).toBe(false);
+  });
+});
+
+/** apply-style must report invalid CSS values honestly instead of a silent success. */
+describe("apply-style value validation", () => {
+  it("replies invalid-value without marking the element; custom properties always pass", async () => {
+    const session = await spawnSelected('<div id="styled">x</div>', "styled");
+    const css = (window as unknown as { CSS: Record<string, unknown> }).CSS;
+    const original = css.supports;
+    css.supports = (property: string, value: string) => !(property === "color" && value === "not-a-color");
+    try {
+      const bad = send(session, { type: "ds:apply-style", property: "color", value: "not-a-color", requestId: "s1" });
+      expect(bad.filter((p) => p.msg.type === "ds:style-applied").at(-1)!.msg).toMatchObject({ success: false, reason: "invalid-value", requestId: "s1" });
+      expect(document.getElementById("styled")!.hasAttribute("style")).toBe(false);
+      // No edit badge was created (only the two outlines live in body).
+      expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(2);
+      const good = send(session, { type: "ds:apply-style", property: "color", value: "blue", requestId: "s2" });
+      expect(good.filter((p) => p.msg.type === "ds:style-applied").at(-1)!.msg.success).toBe(true);
+      css.supports = () => false;
+      const custom = send(session, { type: "ds:apply-style", property: "--brand", value: "anything goes", requestId: "s3" });
+      expect(custom.filter((p) => p.msg.type === "ds:style-applied").at(-1)!.msg.success).toBe(true);
+    } finally {
+      if (original === undefined) delete css.supports;
+      else css.supports = original;
+    }
+  });
+});
+
+/** ds:ping must not establish a session across a version mismatch. */
+describe("ds:ping version gate", () => {
+  it("pongs a mismatched ping with the runtime version but keeps the old session", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin); // establishes session n-1
+    const posted = withPostSpy(() => receive({ type: "ds:ping", version: "999", nonce: "n-2", sessionId: "n-2" }, trustedOrigin));
+    const pong = posted.find((p) => p.msg.type === "ds:pong");
+    expect(pong).toBeDefined();
+    expect(pong!.msg.version).toBe(PROTOCOL_VERSION);
+    const control = withPostSpy(() => receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-2" }, trustedOrigin));
+    expect(control.some((p) => p.msg.type === "ds:mode-changed")).toBe(false);
+  });
+
+  it("rejects a ping with an oversized sessionId", async () => {
+    await spawnRuntime();
+    const posted = withPostSpy(() => receive({ type: "ds:ping", version: PROTOCOL_VERSION, nonce: "n-3", sessionId: "s".repeat(129) }, trustedOrigin));
+    expect(posted.find((p) => p.msg.type === "ds:pong")).toBeUndefined();
+  });
+});
+
+/** DOM mutations (framework re-renders) must prune detached marks and reposition badges. */
+describe("mutation-driven badge maintenance", () => {
+  it("removes the badge of a detached marked element in edit mode", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    document.body.innerHTML = '<div id="m">x</div>';
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#m", marked: true, sessionId: "n-1" }, trustedOrigin);
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBeGreaterThanOrEqual(3);
+    document.getElementById("m")!.remove();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(2);
+  });
+
+  it("prunes detached marks even outside edit mode", async () => {
+    await spawnRuntime();
+    receive(ping, trustedOrigin);
+    document.body.innerHTML = '<div id="m">x</div>';
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:mark", version: PROTOCOL_VERSION, selector: "#m", marked: true, sessionId: "n-1" }, trustedOrigin);
+    receive({ type: "ds:set-mode", version: PROTOCOL_VERSION, enabled: false, sessionId: "n-1" }, trustedOrigin);
+    document.getElementById("m")!.remove();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(document.querySelectorAll("body > div[data-design-studio]").length).toBe(2);
   });
 });

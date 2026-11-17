@@ -112,4 +112,52 @@ describe("collectReactComponents", () => {
     b._debugOwner = a;
     expect(collectReactComponents(fiberEl(a))).toEqual([]);
   });
+
+  it("keeps same-named components from different files, dedups identical name+file", () => {
+    const cardA = { type: function Card() {}, _debugSource: { fileName: "./src/a/Card.tsx", lineNumber: 1 }, _debugOwner: null };
+    const cardB = { type: function Card() {}, _debugSource: { fileName: "./src/b/Card.tsx", lineNumber: 2 }, _debugOwner: cardA };
+    expect(collectReactComponents(fiberEl({ type: "div", _debugOwner: cardB }))).toEqual([
+      { name: "Card", file: "./src/b/Card.tsx", line: 2 },
+      { name: "Card", file: "./src/a/Card.tsx", line: 1 },
+    ]);
+    const sameA = { type: function Card() {}, _debugSource: { fileName: "./src/Card.tsx", lineNumber: 1 }, _debugOwner: null };
+    const sameB = { type: function Card() {}, _debugSource: { fileName: "./src/Card.tsx", lineNumber: 1 }, _debugOwner: sameA };
+    expect(collectReactComponents(fiberEl({ type: "div", _debugOwner: sameB }))).toEqual([
+      { name: "Card", file: "./src/Card.tsx", line: 1 },
+    ]);
+  });
+
+  it("reads at most one _debugStack per element (React 19 lazy formatting is expensive)", () => {
+    let reads = 0;
+    const ownerA = {
+      type: function A() {},
+      _debugOwner: null,
+      get _debugStack() {
+        reads++;
+        return "Error\n  at A (webpack-internal:///./src/A.tsx:1:2)";
+      },
+    };
+    const ownerB = {
+      type: function B() {},
+      _debugOwner: ownerA,
+      get _debugStack() {
+        reads++;
+        return "Error\n  at B (webpack-internal:///./src/B.tsx:3:4)";
+      },
+    };
+    const comps = collectReactComponents(fiberEl({ type: "div", _debugOwner: ownerB }));
+    expect(reads).toBe(1);
+    expect(comps).toEqual([{ name: "B", file: "./src/B.tsx", line: 3 }, { name: "A" }]);
+  });
+
+  it("survives a throwing _debugStack getter", () => {
+    const owner = {
+      type: function A() {},
+      _debugOwner: null,
+      get _debugStack(): unknown {
+        throw new Error("lazy stack formatting failed");
+      },
+    };
+    expect(collectReactComponents(fiberEl({ type: "div", _debugOwner: owner }))).toEqual([{ name: "A" }]);
+  });
 });

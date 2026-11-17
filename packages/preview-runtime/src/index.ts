@@ -27,6 +27,20 @@ declare global {
     __dsRuntimeInitialized?: boolean;
   }
 }
+/** Attributes whose value is a URL and must never carry an executable scheme. */
+const URL_ATTRIBUTES = new Set(["href", "src", "poster", "action"]);
+
+/** Browsers strip tab/newline/CR inside URL schemes, so `java\tscript:` executes too. */
+function isUnsafeUrl(value: string): boolean {
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point: browsers ignore them in URL schemes
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (/^(javascript|vbscript):/i.test(normalized)) return true;
+  return /^data:text\/html/i.test(normalized);
+}
+
+/** Tags that can never carry a meaningful edit badge. */
+const NON_MARKABLE_TAGS = new Set(["head", "script", "style", "meta", "link", "title", "base", "noscript"]);
+
 /** DOM properties mirrored when the matching attribute is edited (`set-attribute`). */
 const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   checked: "checked",
@@ -36,6 +50,11 @@ const LIVE_PROPERTY_BY_ATTRIBUTE: Record<string, string> = {
   readonly: "readOnly",
   value: "value",
 };
+
+/** Large graphic-editor-style arrow shown over the page while edit mode is on. */
+const EDIT_CURSOR_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">' +
+  '<path d="M4 2v18.5l5.2-4.7 3.6 7.6 3.2-1.5-3.6-7.4 7.6-.6z" fill="#111111" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
 
 export function getSelector(el: Element): string {
   if (el.id) {
@@ -241,6 +260,28 @@ export function initDesignStudioRuntime(): void {
   let hoverOutline: HTMLDivElement | null = null;
   let selectionOutline: HTMLDivElement | null = null;
   let outlineFrame = 0;
+  let outlineTimer = 0;
+  let badgeTimer = 0;
+  const markedElements = new Set<Element>();
+  const editBadges = new Map<Element, HTMLDivElement>();
+  // Undo snapshots for structure ops, keyed by the op's requestId (bounded).
+  type UndoSnapshot =
+    | { op: "delete"; html: string; parentSelector: string; index: number }
+    | { op: "duplicate"; clone: Element; cloneSelector: string; original: Element }
+    | { op: "move"; el: Element; parent: Element; nextSibling: Node | null };
+  const undoSnapshots = new Map<string, UndoSnapshot>();
+  const MAX_UNDO_SNAPSHOTS = 50;
+  function saveUndoSnapshot(requestId: string | undefined, snapshot: UndoSnapshot): void {
+    if (!requestId) return;
+    undoSnapshots.delete(requestId);
+    undoSnapshots.set(requestId, snapshot);
+    while (undoSnapshots.size > MAX_UNDO_SNAPSHOTS) {
+      const oldest = undoSnapshots.keys().next().value;
+      if (oldest === undefined) break;
+      undoSnapshots.delete(oldest);
+    }
+  }
+  let cursorStyle: HTMLStyleElement | null = null;
   let perfEnabled = false;
   const runtimeScript = document.querySelector<HTMLScriptElement>('script[data-design-studio="1"]');
   // Opt-in diagnostics for the select pipeline; see docs/IMPLEMENTATION_PLAN.md (EPIC E/H4).
@@ -395,9 +436,14 @@ export function initDesignStudioRuntime(): void {
   }
 
   function scheduleOutlineUpdate(): void {
-    if (outlineFrame) return;
-    outlineFrame = window.requestAnimationFrame(() => {
+    if (outlineFrame || outlineTimer) return;
+    // FIX-08-style fallback: rAF can be throttled to zero in hidden VS Code
+    // webviews — whichever of rAF/timeout fires first runs, the other is canceled.
+    const run = (): void => {
+      if (outlineFrame) window.cancelAnimationFrame(outlineFrame);
+      if (outlineTimer) clearTimeout(outlineTimer);
       outlineFrame = 0;
+      outlineTimer = 0;
       if (!editMode) return;
       ensureOutlines();
       positionOutlinesNow();
@@ -410,7 +456,9 @@ export function initDesignStudioRuntime(): void {
           rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
         });
       }
-    });
+    };
+    outlineFrame = window.requestAnimationFrame(run);
+    outlineTimer = window.setTimeout(run, 100);
   }
 
   /**
@@ -424,13 +472,93 @@ export function initDesignStudioRuntime(): void {
   function positionOutlinesNow(): void {
     positionOutline(hoverOutline, hoveredElement);
     positionOutline(selectionOutline, selectedElement);
+    scheduleBadgeUpdate();
   }
 
   function hideOutlines(): void {
     if (outlineFrame) window.cancelAnimationFrame(outlineFrame);
+    if (outlineTimer) clearTimeout(outlineTimer);
     outlineFrame = 0;
+    outlineTimer = 0;
     if (hoverOutline) hoverOutline.style.display = "none";
     if (selectionOutline) selectionOutline.style.display = "none";
+    for (const badge of editBadges.values()) badge.style.display = "none";
+  }
+
+  function ensureEditCursor(): void {
+    if (!cursorStyle?.isConnected) {
+      cursorStyle?.remove();
+      const style = document.createElement("style");
+      style.setAttribute("data-design-studio", "1");
+      const url = `url("data:image/svg+xml,${encodeURIComponent(EDIT_CURSOR_SVG)}") 4 2, default`;
+      style.textContent = `html[data-ds-edit-mode], html[data-ds-edit-mode] * { cursor: ${url} !important; }`;
+      (document.head ?? document.documentElement).appendChild(style);
+      cursorStyle = style;
+    }
+    document.documentElement.setAttribute("data-ds-edit-mode", "1");
+  }
+
+  function clearEditCursor(): void {
+    document.documentElement.removeAttribute("data-ds-edit-mode");
+  }
+
+  function markElementEdited(el: Element): void {
+    markedElements.add(el);
+    scheduleBadgeUpdate();
+  }
+
+  /** Throttled badge pipeline: pointermove/edits/mutations never reposition all badges synchronously. */
+  function scheduleBadgeUpdate(): void {
+    if (badgeTimer) return;
+    badgeTimer = window.setTimeout(() => {
+      badgeTimer = 0;
+      positionBadgesNow();
+    }, 80);
+  }
+
+  function pruneDetachedMarks(): void {
+    for (const el of Array.from(markedElements)) {
+      if (!el.isConnected || isDesignStudioElement(el)) {
+        markedElements.delete(el);
+        editBadges.get(el)?.remove();
+        editBadges.delete(el);
+      }
+    }
+  }
+
+  /** Purple corner badges on every element that has pending edits/comments. */
+  function positionBadgesNow(): void {
+    // Batched layout: all reads first, then all style writes (no read/write interleaving).
+    const rects = new Map<Element, DOMRect>();
+    for (const el of Array.from(markedElements)) {
+      if (!el.isConnected || isDesignStudioElement(el)) {
+        markedElements.delete(el);
+        editBadges.get(el)?.remove();
+        editBadges.delete(el);
+        continue;
+      }
+      rects.set(el, el.getBoundingClientRect());
+    }
+    for (const [el, rect] of rects) {
+      let badge = editBadges.get(el);
+      if (!badge?.isConnected) {
+        badge?.remove();
+        badge = document.createElement("div");
+        badge.setAttribute("data-design-studio", "1");
+        badge.setAttribute("aria-hidden", "true");
+        badge.style.cssText = [
+          "position:fixed", "top:0", "left:0", "width:12px", "height:12px",
+          "border-radius:50%", "background:#c586c0", "border:2px solid #ffffff",
+          "box-shadow:0 0 4px rgba(0,0,0,.55)", "z-index:2147483647",
+          "pointer-events:none", "box-sizing:border-box", "display:none",
+        ].join(";");
+        document.body?.appendChild(badge);
+        editBadges.set(el, badge);
+      }
+      if (!editMode || rect.width <= 0 || rect.height <= 0) { badge.style.display = "none"; continue; }
+      badge.style.display = "block";
+      badge.style.transform = `translate(${Math.round(rect.right - 6)}px, ${Math.round(rect.top - 6)}px)`;
+    }
   }
 
   /** Tailwind usage flag for the current document, cached per load. */
@@ -511,10 +639,19 @@ export function initDesignStudioRuntime(): void {
     return payload;
   }
 
+  function ownTextNodes(el: Element): Text[] {
+    const nodes: Text[] = [];
+    for (const child of Array.from(el.childNodes)) {
+      if (child.nodeType === 3) nodes.push(child as Text);
+    }
+    return nodes;
+  }
+
   function readElementText(el: Element): string {
     if (el instanceof HTMLTextAreaElement) return el.value.trim();
     if (el instanceof HTMLInputElement) return el.type === "password" ? "" : el.value.trim();
-    return (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    // Only the element's OWN text: descendant components keep their content.
+    return ownTextNodes(el).map((node) => node.nodeValue ?? "").join("").replace(/\s+/g, " ").trim();
   }
 
   function postToParent(msg: RuntimeMessage): void {
@@ -584,6 +721,7 @@ export function initDesignStudioRuntime(): void {
     requestId?: string,
     attribute?: EditableAttribute
   ): void {
+    if (success && selectedElement) markElementEdited(selectedElement);
     postToParent({
       type: "ds:op-applied",
       version: PROTOCOL_VERSION,
@@ -616,7 +754,17 @@ export function initDesignStudioRuntime(): void {
             selectedElement.value = text;
             selectedElement.setAttribute("value", text);
           } else {
-            selectedElement.textContent = text;
+            // Replace only direct text nodes; never wipe child elements. The
+            // first non-whitespace own node receives the text, the other
+            // non-whitespace own nodes are removed (not blanked) so the text
+            // never jumps across child elements; whitespace separators stay.
+            const nodes = ownTextNodes(selectedElement).filter((n) => (n.nodeValue ?? "").trim() !== "");
+            if (text && nodes.length === 0) {
+              selectedElement.insertBefore(document.createTextNode(text), selectedElement.firstChild);
+            } else if (nodes.length > 0) {
+              if (text) nodes[0].nodeValue = text;
+              for (let i = text ? 1 : 0; i < nodes.length; i++) nodes[i].remove();
+            }
           }
           payload = collect(selectedElement);
           postOpApplied(op, text, true, undefined, payload, requestId);
@@ -624,7 +772,11 @@ export function initDesignStudioRuntime(): void {
         }
         case "delete": {
           const parent = selectedElement.parentElement;
+          const snapshot: UndoSnapshot | null = parent
+            ? { op: "delete", html: selectedElement.outerHTML, parentSelector: getSelector(parent), index: Array.prototype.indexOf.call(parent.children, selectedElement) }
+            : null;
           selectedElement.remove();
+          if (snapshot) saveUndoSnapshot(requestId, snapshot);
           selectedElement = parent && parent !== document.body ? parent : null;
           payload = selectedElement ? collect(selectedElement) : null;
           postOpApplied(op, undefined, true, undefined, payload, requestId);
@@ -632,11 +784,34 @@ export function initDesignStudioRuntime(): void {
         }
         case "duplicate": {
           const clone = selectedElement.cloneNode(true) as HTMLElement;
-          if (clone.id) clone.removeAttribute("id");
-          // Descendant ids must not be duplicated in the DOM.
-          for (const child of clone.querySelectorAll("[id]")) child.removeAttribute("id");
-          clone.setAttribute("data-ds-clone", Date.now().toString(36));
+          // Descendant ids must stay unique but keep label[for]/aria links alive:
+          // suffix every id and remap the references inside the clone.
+          const suffix = Date.now().toString(36);
+          const idMap = new Map<string, string>();
+          const idHolders = clone.id ? [clone as Element, ...Array.from(clone.querySelectorAll("[id]"))] : Array.from(clone.querySelectorAll("[id]"));
+          for (const node of idHolders) {
+            const oldId = node.getAttribute("id")!;
+            let newId = `${oldId}-${suffix}`;
+            for (let n = 2; document.getElementById(newId); n++) newId = `${oldId}-${suffix}-${n}`;
+            idMap.set(oldId, newId);
+            node.setAttribute("id", newId);
+          }
+          const remapRefs = (node: Element): void => {
+            const forId = node.getAttribute("for");
+            if (forId && idMap.has(forId)) node.setAttribute("for", idMap.get(forId)!);
+            for (const attr of ["aria-labelledby", "aria-describedby"]) {
+              const raw = node.getAttribute(attr);
+              if (raw) node.setAttribute(attr, raw.split(/\s+/).map((t) => idMap.get(t) ?? t).join(" "));
+            }
+            const href = node.getAttribute("href");
+            if (href && href.startsWith("#") && idMap.has(href.slice(1))) node.setAttribute("href", `#${idMap.get(href.slice(1))}`);
+          };
+          remapRefs(clone);
+          for (const node of Array.from(clone.querySelectorAll("[for], [aria-labelledby], [aria-describedby], [href]"))) remapRefs(node);
+          clone.setAttribute("data-ds-clone", suffix);
+          const original = selectedElement;
           selectedElement.after(clone);
+          saveUndoSnapshot(requestId, { op: "duplicate", clone, cloneSelector: getSelector(clone), original });
           selectedElement = clone;
           payload = collect(clone);
           postOpApplied(op, undefined, true, undefined, payload, requestId);
@@ -648,7 +823,10 @@ export function initDesignStudioRuntime(): void {
             postOpApplied(op, undefined, false, "No previous sibling", payload, requestId);
             return;
           }
+          const parent = selectedElement.parentElement;
+          const nextSibling = selectedElement.nextSibling;
           selectedElement.parentElement?.insertBefore(selectedElement, prev);
+          if (parent) saveUndoSnapshot(requestId, { op: "move", el: selectedElement, parent, nextSibling });
           payload = collect(selectedElement);
           postOpApplied(op, undefined, true, undefined, payload, requestId);
           return;
@@ -659,7 +837,10 @@ export function initDesignStudioRuntime(): void {
             postOpApplied(op, undefined, false, "No next sibling", payload, requestId);
             return;
           }
+          const parent = selectedElement.parentElement;
+          const nextSibling = selectedElement.nextSibling;
           next.after(selectedElement);
+          if (parent) saveUndoSnapshot(requestId, { op: "move", el: selectedElement, parent, nextSibling });
           payload = collect(selectedElement);
           postOpApplied(op, undefined, true, undefined, payload, requestId);
           return;
@@ -679,11 +860,7 @@ export function initDesignStudioRuntime(): void {
             postOpApplied(op, value, false, "Invalid attribute", null, requestId, attribute);
             return;
           }
-          if (
-            (attribute === "href" || attribute === "src") &&
-            value !== "" &&
-            /^(javascript|vbscript)\s*:/i.test(value.trim())
-          ) {
+          if (URL_ATTRIBUTES.has(attribute) && value !== "" && isUnsafeUrl(value)) {
             postOpApplied(op, value, false, "Blocked URL scheme", null, requestId, attribute);
             return;
           }
@@ -713,6 +890,69 @@ export function initDesignStudioRuntime(): void {
     }
   }
 
+  function applyUndo(requestId: string): void {
+    const reply = (success: boolean, reason?: string, payload?: ElementPayload | null): void => {
+      postToParent({ type: "ds:undone", version: PROTOCOL_VERSION, requestId, success, reason, payload, sessionId: activeSessionId || undefined });
+    };
+    const snapshot = undoSnapshots.get(requestId);
+    if (!snapshot) {
+      reply(false, "Unknown requestId");
+      return;
+    }
+    try {
+      let affected: Element | null = null;
+      if (snapshot.op === "delete") {
+        let parent: Element | null = null;
+        try {
+          parent = document.querySelector(snapshot.parentSelector);
+        } catch {
+          parent = null;
+        }
+        if (!parent || !parent.isConnected) {
+          reply(false, "Parent not found");
+          return;
+        }
+        const template = document.createElement("template");
+        template.innerHTML = snapshot.html;
+        const restored = template.content.firstElementChild;
+        if (!restored) {
+          reply(false, "Restore failed");
+          return;
+        }
+        // Clamp to the current child count when siblings disappeared meanwhile.
+        parent.insertBefore(restored, parent.children[snapshot.index] ?? null);
+        affected = restored;
+      } else if (snapshot.op === "duplicate") {
+        let clone: Element | null = snapshot.clone.isConnected ? snapshot.clone : null;
+        if (!clone) {
+          try {
+            clone = document.querySelector(snapshot.cloneSelector);
+          } catch {
+            clone = null;
+          }
+        }
+        if (!clone) {
+          reply(false, "Clone not found");
+          return;
+        }
+        clone.remove();
+        if (selectedElement === clone) selectedElement = snapshot.original.isConnected ? snapshot.original : null;
+      } else {
+        if (!snapshot.el.isConnected || !snapshot.parent.isConnected) {
+          reply(false, "Element detached");
+          return;
+        }
+        const anchor = snapshot.nextSibling && snapshot.nextSibling.parentNode === snapshot.parent ? snapshot.nextSibling : null;
+        snapshot.parent.insertBefore(snapshot.el, anchor);
+        affected = snapshot.el;
+      }
+      undoSnapshots.delete(requestId);
+      reply(true, undefined, affected && affected.isConnected && canSelect(affected) ? collect(affected) : null);
+    } catch {
+      reply(false, "Undo failed");
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     // P1-1: strict origin gate. Pings and control messages are accepted only
@@ -724,14 +964,19 @@ export function initDesignStudioRuntime(): void {
     if (data && typeof data === "object" && (data as { type?: unknown }).type === "ds:ping") {
       const ping = data as { nonce?: unknown; sessionId?: unknown; version?: unknown };
       if (typeof ping.nonce !== "string" || ping.nonce.length === 0 || ping.nonce.length > 128) return;
+      if (ping.sessionId !== undefined && (typeof ping.sessionId !== "string" || ping.sessionId.length > 128)) return;
       // Reply goes to the ping's exact origin — never "*".
       parentOrigin = event.origin;
-      activeSessionId = typeof ping.sessionId === "string" && ping.sessionId.length > 0 ? ping.sessionId : ping.nonce;
+      const requestedSession = typeof ping.sessionId === "string" && ping.sessionId.length > 0 ? ping.sessionId : ping.nonce;
+      // A version-mismatched ping must not establish a session; the pong still
+      // carries OUR version so the webview can surface the mismatch.
+      const versionMatches = ping.version === PROTOCOL_VERSION;
+      if (versionMatches) activeSessionId = requestedSession;
       postToParent({
         type: "ds:pong",
         version: PROTOCOL_VERSION,
         nonce: ping.nonce,
-        sessionId: activeSessionId,
+        sessionId: versionMatches ? activeSessionId : requestedSession,
       });
       return;
     }
@@ -759,17 +1004,38 @@ export function initDesignStudioRuntime(): void {
       if (activeSessionId && msg.sessionId !== activeSessionId) return;
       editMode = Boolean(msg.enabled);
       if (editMode) {
+        ensureEditCursor();
         ensureOutlines();
         scheduleOutlineUpdate();
       } else {
         // Leaving edit mode clears all selection visuals so no stale outline
         // survives a later re-entry.
+        clearEditCursor();
         hoveredElement = null;
         selectedElement = null;
         hideOutlines();
       }
       postToParent({ type: "ds:mode-changed", version: PROTOCOL_VERSION, enabled: editMode, sessionId: activeSessionId || msg.sessionId });
       notifyNavigation();
+      return;
+    }
+    if (msg.type === "ds:mark") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      let target: Element | null = null;
+      try {
+        target = document.querySelector(msg.selector);
+      } catch {
+        target = null;
+      }
+      if (!target || !canSelect(target) || !document.body.contains(target) || NON_MARKABLE_TAGS.has(target.tagName.toLowerCase())) return;
+      if (msg.marked) {
+        markedElements.add(target);
+      } else {
+        markedElements.delete(target);
+        editBadges.get(target)?.remove();
+        editBadges.delete(target);
+      }
+      positionBadgesNow();
       return;
     }
     if (msg.type === "ds:apply-style") {
@@ -815,8 +1081,24 @@ export function initDesignStudioRuntime(): void {
         return;
       }
       try {
+        // Custom properties accept any token stream; everything else must be a
+        // value the engine actually supports — otherwise report a honest failure.
+        if (!property.startsWith("--") && typeof CSS !== "undefined" && typeof CSS.supports === "function" && !CSS.supports(property, value)) {
+          postToParent({
+            type: "ds:style-applied",
+            version: PROTOCOL_VERSION,
+            property,
+            value,
+            success: false,
+            reason: "invalid-value",
+            requestId,
+            sessionId: activeSessionId || msg.sessionId,
+          });
+          return;
+        }
         (selectedElement as HTMLElement).style.setProperty(property, value);
         const actual = getComputedStyle(selectedElement).getPropertyValue(property).trim();
+        markElementEdited(selectedElement);
         const payload = collect(selectedElement);
         postToParent({
           type: "ds:style-applied",
@@ -847,6 +1129,11 @@ export function initDesignStudioRuntime(): void {
       applyElementOp(msg.op, msg.value, msg.requestId, msg.attribute);
       return;
     }
+    if (msg.type === "ds:undo") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      applyUndo(msg.requestId);
+      return;
+    }
   });
 
   const originalPushState = window.history.pushState.bind(window.history);
@@ -870,6 +1157,7 @@ export function initDesignStudioRuntime(): void {
   // FIX-04: re-assert edit-mode visuals when the document is shown again or
   // restored from bfcache; outlines may have been detached while hidden.
   const reassertOutlines = (): void => {
+    ensureMutationObserver();
     if (!editMode) return;
     ensureOutlines();
     positionOutlinesNow();
@@ -893,6 +1181,20 @@ export function initDesignStudioRuntime(): void {
     event.preventDefault();
     event.stopImmediatePropagation();
     sendSelection(target);
+  }, true);
+
+  document.addEventListener("submit", (event) => {
+    if (!editMode) return;
+    const form = toElement(event.target);
+    const action = form?.getAttribute("action") ?? "";
+    if (!form || !isUnsafeUrl(action)) return;
+    event.preventDefault();
+    postToParent({
+      type: "ds:navigate-blocked",
+      version: PROTOCOL_VERSION,
+      url: action.slice(0, 2048),
+      sessionId: activeSessionId || undefined,
+    });
   }, true);
 
   document.addEventListener("click", (event) => {
@@ -945,6 +1247,45 @@ export function initDesignStudioRuntime(): void {
     event.preventDefault();
     window.location.assign(`${href.pathname}${href.search}${href.hash}`);
   }, true);
+
+  // Framework re-renders (React et al.) move/replace marked elements without
+  // any scroll/resize/pointer event — follow DOM mutations to prune detached
+  // marks (also outside edit mode) and reposition the badges.
+  let mutationObserver: MutationObserver | null = null;
+  let mutationTimer = 0;
+  const isOwnMutation = (record: MutationRecord): boolean => {
+    if (record.type === "childList") {
+      const nodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+      return nodes.length > 0 && nodes.every((n) => n instanceof Element && isDesignStudioElement(n));
+    }
+    return isDesignStudioElement(toElement(record.target));
+  };
+  function ensureMutationObserver(): void {
+    if (mutationObserver || typeof MutationObserver === "undefined" || !document.body) return;
+    mutationObserver = new MutationObserver((records) => {
+      if (records.every(isOwnMutation)) return;
+      if (mutationTimer) return;
+      mutationTimer = window.setTimeout(() => {
+        mutationTimer = 0;
+        pruneDetachedMarks();
+        if (editMode) scheduleBadgeUpdate();
+      }, 100);
+    });
+    mutationObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+  ensureMutationObserver();
+  window.addEventListener("pagehide", () => {
+    mutationObserver?.disconnect();
+    mutationObserver = null;
+    if (mutationTimer) clearTimeout(mutationTimer);
+    mutationTimer = 0;
+    if (outlineFrame) window.cancelAnimationFrame(outlineFrame);
+    if (outlineTimer) clearTimeout(outlineTimer);
+    if (badgeTimer) clearTimeout(badgeTimer);
+    outlineFrame = 0;
+    outlineTimer = 0;
+    badgeTimer = 0;
+  });
 }
 
 if (typeof window !== "undefined") {

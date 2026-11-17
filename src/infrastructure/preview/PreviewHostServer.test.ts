@@ -414,13 +414,15 @@ describe("PreviewHostServer", () => {
     expect(res.status).toBe(400);
   });
 
-  it("passes RSC, cookies and rewritten Origin to the upstream", async () => {
+  it("passes RSC and rewritten Origin; drops browser cookies unknown to the target upstream", async () => {
     const res = await request(`${server.origin}/proxy/${stubOrigin}/echo-headers`, {
       headers: { RSC: "1", Cookie: "session=x", Origin: server.origin, Accept: "*/*" },
     });
     const echo = JSON.parse(res.body) as { rsc: string | null; cookie: string | null; origin: string | null };
     expect(echo.rsc).toBe("1");
-    expect(echo.cookie).toBe("session=x");
+    // The jar has no "session" cookie for this upstream, so the browser value
+    // must not be forwarded (per-upstream isolation).
+    expect(echo.cookie).toBeNull();
     expect(echo.origin).toBe(stubOrigin);
   });
 
@@ -722,6 +724,18 @@ describe("PreviewHostServer", () => {
     expect(resolveProjectPath(projectRoot, "styles/site.css")).toMatchObject({ ok: true });
   });
 
+  it("resolveProjectPath rejects NTFS alternate data stream suffixes", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-ads-"));
+    fs.writeFileSync(path.join(projectRoot, ".env"), "SECRET=1");
+    fs.writeFileSync(path.join(projectRoot, "file.txt"), "ok");
+    expect(resolveProjectPath(projectRoot, ".env::$DATA")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".env%3A%3A%24DATA")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, ".env::$data")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "foo.pem::$DATA")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "file.txt::$DATA")).toMatchObject({ ok: false, reason: "forbidden" });
+    expect(resolveProjectPath(projectRoot, "file.txt")).toMatchObject({ ok: true });
+  });
+
   it("rejects requests whose Host header is not the preview origin", async () => {
     const hijack = await request(`${server.origin}/demo.html`, { headers: { Host: "evil.example" } });
     expect(hijack.status).toBe(403);
@@ -784,9 +798,28 @@ describe("PreviewHostServer", () => {
       // Cookie app sessions must not leak to another loopback origin/port.
       const other = await request(`${isolateServer.origin}/proxy/${localOrigin}/echo-headers`, { headers: {} });
       expect((JSON.parse(other.body) as { cookie: string | null }).cookie).toBeNull();
+      // Browser-sent cookies of app A must not reach app B either: the Cookie
+      // header is filtered against the target upstream's jar.
+      const leaked = await request(`${isolateServer.origin}/proxy/${localOrigin}/echo-headers`, {
+        headers: { Cookie: "sid=abc; other=1" },
+      });
+      expect((JSON.parse(leaked.body) as { cookie: string | null }).cookie).toBeNull();
+      // The owning upstream still receives its session from the browser header.
+      const owned = await request(`${isolateServer.origin}/proxy/${stubOrigin}/echo-headers`, {
+        headers: { Cookie: "sid=abc" },
+      });
+      expect((JSON.parse(owned.body) as { cookie: string | null }).cookie).toContain("sid=abc");
     } finally {
       await isolateServer.stop();
     }
+  });
+
+  it("preserves the upstream Path attribute when rewriting Set-Cookie", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/path-cookie`);
+    expect(res.status).toBe(200);
+    const setCookie = res.headers["set-cookie"] as unknown as string[];
+    expect(setCookie).toContain("hop=a; Path=/a");
+    expect(setCookie).toContain("hop=b; Path=/b");
   });
 
   it("streams non-HTML responses progressively instead of buffering (SSE)", async () => {
@@ -894,6 +927,88 @@ describe("PreviewHostServer", () => {
       await new Promise<void>((r) => up.close(() => r()));
     }
   });
+
+  it("destroys the relay when the pre-101 handshake buffer exceeds 64 KiB", async () => {
+    const up = http.createServer(() => {});
+    let upstreamSide: Duplex | null = null;
+    let drip: ReturnType<typeof setInterval> | null = null;
+    up.on("upgrade", (_req, socket) => {
+      upstreamSide = socket;
+      socket.on("error", () => {});
+      // Never terminate the header block; keep dripping past the buffer cap.
+      socket.write("HTTP/1.1 101 Switching Protocols\r\n");
+      drip = setInterval(() => socket.write(`X-Pad: ${"a".repeat(8192)}\r\n`), 20);
+      socket.on("close", () => {
+        if (drip) clearInterval(drip);
+      });
+    });
+    await new Promise<void>((r) => up.listen(0, "127.0.0.1", r));
+    const upOrigin = `http://127.0.0.1:${(up.address() as { port: number }).port}`;
+    const upgrader = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await upgrader.start();
+    try {
+      const startedAt = Date.now();
+      const raw = await rawUpgradeRequest(upgrader.origin, `/proxy/${upOrigin}/hmr`);
+      expect(raw).toBe("");
+      expect(Date.now() - startedAt).toBeLessThan(3000);
+    } finally {
+      if (drip) clearInterval(drip);
+      (upstreamSide as net.Socket | null)?.destroy();
+      await upgrader.stop();
+      up.closeAllConnections();
+      await new Promise<void>((r) => up.close(() => r()));
+    }
+  });
+
+  it("enforces an absolute handshake deadline against slow-drip upstreams", async () => {
+    const up = http.createServer(() => {});
+    let upstreamSide: Duplex | null = null;
+    let drip: ReturnType<typeof setInterval> | null = null;
+    up.on("upgrade", (_req, socket) => {
+      upstreamSide = socket;
+      socket.on("error", () => {});
+      socket.write("HTTP/1.1 101 Switching Protocols\r\n");
+      // Tiny chunks keep the idle timer alive but never complete the headers.
+      drip = setInterval(() => socket.write("X-Pad: aa\r\n"), 100);
+      socket.on("close", () => {
+        if (drip) clearInterval(drip);
+      });
+    });
+    await new Promise<void>((r) => up.listen(0, "127.0.0.1", r));
+    const upOrigin = `http://127.0.0.1:${(up.address() as { port: number }).port}`;
+    const upgrader = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot() });
+    await upgrader.start();
+    try {
+      const port = Number(new URL(upgrader.origin).port);
+      const host = new URL(upgrader.origin).host;
+      const outcome = await new Promise<{ closed: boolean; elapsed: number }>((resolve) => {
+        const startedAt = Date.now();
+        const sock = net.connect(port, "127.0.0.1", () => {
+          sock.write(
+            `GET /proxy/${upOrigin}/hmr HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`
+          );
+        });
+        let settled = false;
+        const finish = (closed: boolean) => {
+          if (settled) return;
+          settled = true;
+          sock.destroy();
+          resolve({ closed, elapsed: Date.now() - startedAt });
+        };
+        sock.on("close", () => finish(true));
+        sock.on("error", () => finish(true));
+        setTimeout(() => finish(false), 8000);
+      });
+      expect(outcome.closed).toBe(true);
+      expect(outcome.elapsed).toBeLessThan(7000);
+    } finally {
+      if (drip) clearInterval(drip);
+      (upstreamSide as net.Socket | null)?.destroy();
+      await upgrader.stop();
+      up.closeAllConnections();
+      await new Promise<void>((r) => up.close(() => r()));
+    }
+  }, 10_000);
 
   it("rewrites the Origin header of WebSocket upgrades to the upstream origin", async () => {
     const stubPort = new URL(stubOrigin).port;

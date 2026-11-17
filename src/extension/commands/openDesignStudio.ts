@@ -18,9 +18,14 @@ const DEMO_KEY = "designStudio.demoPreview.v1";
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
 let activePanel: vscode.WebviewPanel | null = null;
+// Re-entrancy guard: panel creation awaits the host server before activePanel
+// is set, so a second concurrent command invocation must join the first one.
+let openingPanel: Promise<void> | null = null;
 // P1-2: exactly one live host-dispose subscription at a time; recreated hosts
 // replace the previous subscription instead of accumulating dead ones.
 let hostServerSubscription: vscode.Disposable | null = null;
+// One stable teardown entry in context.subscriptions for all host generations.
+let hostTeardownRegistered = false;
 
 function ensureTraceChannel(context: vscode.ExtensionContext): vscode.OutputChannel {
   if (!sharedTraceChannel) {
@@ -51,7 +56,15 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
       hostServerSubscription = null;
     }
     hostServerSubscription = { dispose: () => void server.stop() };
-    context.subscriptions.push(hostServerSubscription);
+    if (!hostTeardownRegistered) {
+      hostTeardownRegistered = true;
+      context.subscriptions.push({
+        dispose: () => {
+          hostServerSubscription?.dispose();
+          hostServerSubscription = null;
+        },
+      });
+    }
     return server;
   } catch (err) {
     console.error("Design Studio: failed to start preview host server:", err);
@@ -62,7 +75,7 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
 // P1-5: edits enter the exported instruction verbatim; webview payloads are
 // not fully trusted, so each field is re-validated and truncated here before
 // reaching the prompt.
-const EDIT_KINDS = new Set(["style", "text", "classes", "attribute", "structure"]);
+const EDIT_KINDS = new Set(["style", "text", "classes", "attribute", "structure", "comment"]);
 
 function boundedString(value: unknown, max: number): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
@@ -130,6 +143,15 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
     activePanel.reveal(vscode.ViewColumn.Beside);
     return;
   }
+  if (!openingPanel) {
+    openingPanel = createPanel(context).finally(() => {
+      openingPanel = null;
+    });
+  }
+  return openingPanel;
+}
+
+async function createPanel(context: vscode.ExtensionContext): Promise<void> {
   let language: Language = context.globalState.get<Language>(LANGUAGE_KEY, "ru");
   const root = getWorkspaceRoot(context);
   const host = await ensureHostServer(context, root);
@@ -422,12 +444,25 @@ export async function openDesignStudio(context: vscode.ExtensionContext): Promis
         return;
       }
       if (msg.type === "ai:copyComponent") {
-        const component = msg.component;
-        if (!component || typeof component !== "object") {
+        const raw = msg.component;
+        const item = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+        // Same strictness as source:reveal: bounded strings and a finite,
+        // sane line number; anything else is dropped before reaching the service.
+        const component = item
+          ? {
+              name: boundedString(item.name, 500),
+              file: boundedString(item.file, 500),
+              line:
+                typeof item.line === "number" && Number.isFinite(item.line) && item.line > 0 && item.line <= 1_000_000
+                  ? Math.floor(item.line)
+                  : undefined,
+            }
+          : undefined;
+        if (!component || (!component.name && !component.file)) {
           panel.webview.postMessage({ type: "ai:componentResult", success: false, message: translate(language, "status.sourceMissing") });
           return;
         }
-        const result = await promptExport.copyComponent(component as { name?: string; file?: string; line?: number }, language);
+        const result = await promptExport.copyComponent(component, language);
         panel.webview.postMessage({
           type: "ai:componentResult",
           success: result.success,

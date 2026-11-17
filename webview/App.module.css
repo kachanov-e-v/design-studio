@@ -10,3 +10,10 @@
   font-family: var(--vscode-font-family, sans-serif);
 }
 .content { display: flex; flex: 1 1 auto; min-height: 0; }
+.confirmOverlay { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); }
+.confirmBox { width: min(360px, calc(100% - 32px)); padding: 16px; border: 1px solid var(--vscode-panel-border, #414141); border-radius: 6px; background: var(--vscode-editorWidget-background, #252526); box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+.confirmText { margin: 0 0 14px; font-size: 12px; line-height: 1.5; }
+.confirmActions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirmActions button { min-height: 28px; padding: 0 12px; border: 1px solid var(--vscode-panel-border, #414141); border-radius: 3px; background: transparent; color: var(--vscode-foreground, #ccc); font: inherit; font-size: 11px; cursor: pointer; }
+.confirmActions button:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); }
+.confirmActions button.confirmDanger { border-color: var(--vscode-inputValidation-warningBorder, #b89500); color: var(--vscode-foreground, #eee); }

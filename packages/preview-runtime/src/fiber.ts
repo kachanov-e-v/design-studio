@@ -76,24 +76,39 @@ export function parseOwnerStack(stack: unknown, limit = 3): { file: string; line
   return out;
 }
 
-function sourceFromFiber(fiber: FiberLike): { file?: string; line?: number } {
+/** At most one `_debugStack` read per element: React 19 formats it lazily and expensively. */
+interface StackBudget {
+  used: boolean;
+}
+
+function sourceFromFiber(fiber: FiberLike, stackBudget: StackBudget): { file?: string; line?: number } {
   const src = fiber._debugSource;
   if (src && typeof src === "object") {
     const file = asString(src.fileName, 500);
     const line = typeof src.lineNumber === "number" && Number.isFinite(src.lineNumber) && src.lineNumber > 0 ? src.lineNumber : undefined;
     if (file) return { file: file.replace(/^(?:webpack-internal:\/\/\/?)/, ""), line };
   }
-  const stack = parseOwnerStack(fiber._debugStack, 1)[0];
-  if (stack) return { file: stack.file, line: stack.line };
+  if (stackBudget.used) return {};
+  try {
+    const debugStack = fiber._debugStack;
+    if (debugStack == null) return {};
+    stackBudget.used = true;
+    const stack = parseOwnerStack(debugStack, 1)[0];
+    if (stack) return { file: stack.file, line: stack.line };
+  } catch {
+    // Lazy stack formatting can throw — treat as no source.
+  }
   return {};
 }
 
-function pushOwner(out: ComponentInfo[], seen: Set<string>, owner: FiberLike, sourceOverride?: { file?: string; line?: number }): void {
+function pushOwner(out: ComponentInfo[], seen: Set<string>, owner: FiberLike, stackBudget: StackBudget, sourceOverride?: { file?: string; line?: number }): void {
   const name = componentDisplayName(owner.type);
-  const { file, line } = sourceOverride ?? sourceFromFiber(owner);
+  const { file, line } = sourceOverride ?? sourceFromFiber(owner, stackBudget);
   if (!name && !file) return;
-  if (name && seen.has(name)) return;
-  if (name) seen.add(name);
+  // Dedup by name+file: distinct components that share a name must all survive.
+  const key = `${name ?? ""}\u0000${file ?? ""}`;
+  if (seen.has(key)) return;
+  seen.add(key);
   out.push({ ...(name !== undefined ? { name } : {}), ...(file !== undefined ? { file, line } : {}) });
 }
 
@@ -122,15 +137,16 @@ export function collectReactComponents(el: Element): ComponentInfo[] {
     const fiber = findFiber(el);
     if (!fiber) return [];
     const seen = new Set<string>();
+    const stackBudget: StackBudget = { used: false };
     // The element's own `_debugSource` points at its JSX inside the nearest
     // owning component — the most precise location available.
-    const ownSource = sourceFromFiber(fiber);
+    const ownSource = sourceFromFiber(fiber, stackBudget);
     const out: ComponentInfo[] = [];
 
     let cur: FiberLike | null | undefined = fiber._debugOwner;
     let guard = 0;
     while (cur && typeof cur === "object" && guard++ < 32) {
-      pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
+      pushOwner(out, seen, cur, stackBudget, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
       cur = cur._debugOwner;
     }
 
@@ -141,7 +157,7 @@ export function collectReactComponents(el: Element): ComponentInfo[] {
         if (cur.type === undefined || cur.type === null) break; // above the component root (HostRoot/Offscreen)
         if (typeof cur.type !== "string") {
           // skip host fibers (type is a tag string); collect component fibers
-          pushOwner(out, seen, cur, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
+          pushOwner(out, seen, cur, stackBudget, out.length === 0 && (ownSource.file || ownSource.line) ? ownSource : undefined);
         }
         cur = cur.return;
       }

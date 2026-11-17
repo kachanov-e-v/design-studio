@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as fs from "node:fs";
 import { CssSourceResolver, type SourceRule } from "./CssSourceResolver";
 import { findCssRules, findTopLevelDeclarations, isValidCssProperty, isValidCssValue, type CssRuleMatch } from "./cssText";
 
@@ -39,6 +40,19 @@ export class StylePersistenceAdapter {
     return true;
   }
 
+  /** Scan reads go through the filesystem so hundreds of candidate CSS files
+   * do not stay open as TextDocuments; only the edited file is opened. */
+  private async readCssText(uri: vscode.Uri): Promise<string> {
+    if (uri.scheme === "file") {
+      try {
+        return await fs.promises.readFile(uri.fsPath, "utf8");
+      } catch {
+        // Fall back to the editor buffer (virtual or unreadable-on-disk docs).
+      }
+    }
+    return (await vscode.workspace.openTextDocument(uri)).getText();
+  }
+
   async apply(change: StyleChange): Promise<PersistenceResult> {
     if (!isValidCssProperty(change.property)) {
       return { success: false, message: "Invalid CSS property" };
@@ -51,20 +65,19 @@ export class StylePersistenceAdapter {
     // findFiles truncates silently: a full hit on the cap means candidates may
     // be missing, so the tail must not report a confident "no match".
     const cssListTruncated = files.length >= CSS_SEARCH_LIMIT;
-    const matches: { uri: vscode.Uri; doc: vscode.TextDocument; text: string; rule: CssRuleMatch }[] = [];
+    const matches: { uri: vscode.Uri; text: string; rule: CssRuleMatch }[] = [];
 
     for (const uri of files) {
-      const doc = await vscode.workspace.openTextDocument(uri);
-      const text = doc.getText();
+      const text = await this.readCssText(uri);
       const selectorCandidates = change.selectors?.length ? change.selectors : [change.selector];
       const rules = findCssRules(text, selectorCandidates);
       for (const rule of rules) {
-        matches.push({ uri, doc, text, rule });
+        matches.push({ uri, text, rule });
       }
     }
 
     if (matches.length === 1) {
-      return this.editRule(matches[0].uri, matches[0].doc, matches[0].text, matches[0].rule, change, "");
+      return this.editRule(matches[0].uri, matches[0].text, matches[0].rule, change, "");
     }
 
     // No (or ambiguous) direct match: hashed CSS Modules selectors from a dev
@@ -91,13 +104,12 @@ export class StylePersistenceAdapter {
       // with a unique rule and disambiguate by the source-map path instead of
       // silently editing the first hit.
       const files = await vscode.workspace.findFiles(`**/${resolved.sourceFile}`, CSS_EXCLUDE_GLOB, 25);
-      const candidates: { uri: vscode.Uri; doc: vscode.TextDocument; text: string; rule: CssRuleMatch }[] = [];
+      const candidates: { uri: vscode.Uri; text: string; rule: CssRuleMatch }[] = [];
       for (const uri of files) {
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const text = doc.getText();
+        const text = await this.readCssText(uri);
         const found = findCssRules(text, resolved.selectors);
         if (found.length !== 1) continue;
-        candidates.push({ uri, doc, text, rule: found[0] });
+        candidates.push({ uri, text, rule: found[0] });
       }
       if (candidates.length === 0) continue;
       let selected = candidates;
@@ -111,7 +123,7 @@ export class StylePersistenceAdapter {
       }
       const match = selected[0];
       const note = ` (mapped to ${resolved.sourceFile} via ${resolved.via})`;
-      return this.editRule(match.uri, match.doc, match.text, match.rule, change, note);
+      return this.editRule(match.uri, match.text, match.rule, change, note);
     }
     if (sawAmbiguity) {
       return { success: false, message: "Ambiguous CSS rule match: source file resolves to several paths" };
@@ -121,12 +133,24 @@ export class StylePersistenceAdapter {
 
   private async editRule(
     uri: vscode.Uri,
-    doc: vscode.TextDocument,
     text: string,
     rule: CssRuleMatch,
     change: StyleChange,
     note: string
   ): Promise<PersistenceResult> {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    // The offsets were computed against the scan-time text; a concurrent user
+    // edit may have shifted them. Re-read the live buffer right before the
+    // edit and re-locate the rule, or skip instead of corrupting the file.
+    const currentText = doc.getText();
+    if (currentText !== text) {
+      const relocated = findCssRules(currentText, rule.selectors).filter((r) => r.selectorText === rule.selectorText);
+      if (relocated.length !== 1) {
+        return { success: false, message: "CSS file changed while editing; rule offsets are stale — retry", file: uri.fsPath };
+      }
+      text = currentText;
+      rule = relocated[0];
+    }
     const body = text.slice(rule.bodyStart, rule.bodyEnd);
     // P2-7: only top-level declarations of the body are matched, so nested rule
     // blocks, comments and parenthesised values never collide with the edit.

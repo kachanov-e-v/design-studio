@@ -7,12 +7,14 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor, injectIntoHtml, prependProxyOriginToPathUrls } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
-import { validateUpstreamTarget } from "./upstream-validation";
+import { validateUpstreamTarget, validateUpstreamResolved } from "./upstream-validation";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 const WS_CONNECT_TIMEOUT_MS = 5_000;
+/** Hard cap on the buffered upstream handshake before the 101 response. */
+const MAX_WS_HANDSHAKE_BYTES = 64 * 1024;
 
 /**
  * Read a whole upstream body into memory, refusing oversized responses instead
@@ -62,7 +64,9 @@ interface JarCookie {
   path: string;
 }
 
-/** Scope upstream cookies to the local preview origin so app sessions survive navigation. */
+/** Scope upstream cookies to the local preview origin so app sessions survive
+ * navigation. The upstream Path is preserved (rewriting it to "/" would widen
+ * the cookie's scope); only a missing Path gets the preview-root default. */
 function rewriteSetCookieForPreview(cookie: string): string {
   const [pair, ...rawAttributes] = cookie.split(";");
   if (!pair?.trim()) return cookie;
@@ -73,7 +77,7 @@ function rewriteSetCookieForPreview(cookie: string): string {
     if (/^domain\s*=/i.test(attribute)) return [];
     if (/^path\s*=/i.test(attribute)) {
       hasPath = true;
-      return ["Path=/"];
+      return [attribute];
     }
     return attribute ? [attribute] : [];
   });
@@ -209,6 +213,9 @@ const FORBIDDEN_SEGMENTS = new Set([
 
 function isForbiddenSegment(segment: string): boolean {
   const s = segment.toLowerCase();
+  // NTFS alternate data streams: ".env::$DATA" reads the base .env file on
+  // Windows, so any colon-bearing segment (and the ::$DATA suffix) is denied.
+  if (s.includes(":") || /::\$data$/.test(s)) return true;
   if (FORBIDDEN_SEGMENTS.has(s)) return true;
   if (s === ".env" || /^\.env[.\-_]/.test(s)) return true;
   if (/\.(?:pem|key|p12|pfx)$/.test(s)) return true;
@@ -703,19 +710,14 @@ export class PreviewHostServer {
     }
     const jarCookieHeader = this.buildCookieHeader(headers["cookie"], upstreamOrigin, target.pathname);
     if (jarCookieHeader) headers["cookie"] = jarCookieHeader;
+    else delete headers["cookie"];
     return headers;
   }
 
   private buildCookieHeader(browserCookie: string | undefined, upstreamOrigin: string, requestPath: string): string | undefined {
-    if (this.cookieJar.size === 0) return browserCookie;
     const prefix = `${upstreamOrigin}|`;
     const cookies = new Map<string, string>();
-    for (const pair of (browserCookie ?? "").split(";")) {
-      const eq = pair.indexOf("=");
-      if (eq === -1) continue;
-      const name = pair.slice(0, eq).trim();
-      if (name) cookies.set(name, pair.slice(eq + 1).trim());
-    }
+    const jarNames = new Set<string>();
     const now = Date.now();
     const touched: [string, JarCookie][] = [];
     for (const [key, entry] of this.cookieJar) {
@@ -733,6 +735,7 @@ export class PreviewHostServer {
         continue;
       }
       if (entry.path !== "/" && !cookiePathMatches(entry.path, requestPath)) continue;
+      jarNames.add(name);
       cookies.set(name, entry.value);
       touched.push([key, entry]);
     }
@@ -741,6 +744,17 @@ export class PreviewHostServer {
     for (const [key, entry] of touched) {
       this.cookieJar.delete(key);
       this.cookieJar.set(key, entry);
+    }
+    // Browser cookies belong to the shared preview origin, not to a specific
+    // upstream: forward only names the target upstream itself has set, so one
+    // app's session never leaks to another loopback server. Jar values win.
+    for (const pair of (browserCookie ?? "").split(";")) {
+      const eq = pair.indexOf("=");
+      if (eq === -1) continue;
+      const name = pair.slice(0, eq).trim();
+      if (name && jarNames.has(name) && !cookies.has(name)) {
+        cookies.set(name, pair.slice(eq + 1).trim());
+      }
     }
     if (cookies.size === 0) return undefined;
     return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
@@ -900,8 +914,9 @@ export class PreviewHostServer {
       return;
     }
     // SSRF gate: only loopback upstreams are ever fetched, no matter how the
-    // target arrived (explicit proxy route, Referer, sticky dev target).
-    const validation = validateUpstreamTarget(target);
+    // target arrived (explicit proxy route, Referer, sticky dev target). The
+    // resolved check also covers names like evil.localhost pointing off-host.
+    const validation = await validateUpstreamResolved(target);
     if (!validation.ok) {
       this.trace(`[proxy] blocked ${validation.reason} target: ${target}`);
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
@@ -1093,7 +1108,7 @@ export class PreviewHostServer {
       return;
     }
     // SSRF gate for WebSocket upgrades as well.
-    if (!validateUpstreamTarget(parsedTarget).ok) {
+    if (!(await validateUpstreamResolved(parsedTarget)).ok) {
       this.trace(`[upgrade] blocked non-loopback target: ${target}`);
       socket.destroy();
       return;
@@ -1123,9 +1138,25 @@ export class PreviewHostServer {
     });
     let headerBuffer = Buffer.alloc(0);
     let headersForwarded = false;
+    // Hard handshake deadline: a slow-drip upstream keeps resetting the idle
+    // timer, so the pre-101 phase needs its own absolute bound.
+    const handshakeDeadline = setTimeout(() => {
+      if (!headersForwarded) {
+        this.trace(`[upgrade] handshake deadline exceeded for ${rawHostname}:${port}`);
+        upstreamSocket.destroy();
+        socket.destroy();
+      }
+    }, WS_CONNECT_TIMEOUT_MS);
+    upstreamSocket.once("close", () => clearTimeout(handshakeDeadline));
     upstreamSocket.on("data", (chunk: Buffer) => {
       if (!headersForwarded) {
         headerBuffer = Buffer.concat([headerBuffer, chunk]);
+        if (headerBuffer.length > MAX_WS_HANDSHAKE_BYTES) {
+          this.trace(`[upgrade] handshake header buffer exceeded ${MAX_WS_HANDSHAKE_BYTES} bytes`);
+          socket.destroy();
+          upstreamSocket.destroy();
+          return;
+        }
         const idx = headerBuffer.indexOf("\r\n\r\n");
         if (idx === -1) return;
         const statusLine = headerBuffer.toString("latin1", 0, headerBuffer.indexOf("\r\n"));
@@ -1136,6 +1167,7 @@ export class PreviewHostServer {
           upstreamSocket.destroy();
           return;
         }
+        clearTimeout(handshakeDeadline);
         upstreamSocket.setTimeout(0);
         socket.write(headerBuffer);
         headersForwarded = true;

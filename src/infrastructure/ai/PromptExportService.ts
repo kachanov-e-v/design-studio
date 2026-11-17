@@ -110,23 +110,36 @@ export class PromptExportService {
     if (!this.workspaceRoot) {
       return { success: false, message: translate(language, "status.noProject") };
     }
-    if (!component.file) {
-      return { success: false, message: translate(language, "status.sourceMissing") };
-    }
-
+    // Name-only components (React 19 / Turbopack) fall through to the
+    // definition scan below instead of failing here.
     let sourceFile: string | undefined = component.file;
+    let sourceLine: number | undefined = component.line;
     try {
       sourceFile = resolveComponentPaths(this.workspaceRoot, [component])[0]?.file ?? sourceFile;
     } catch {
       // The direct bundler-path resolver below remains the fallback.
     }
-    // RT-02: name-only components (React 19 / Turbopack) get the same
-    // definition-scan fallback as "reveal".
+    // RT-02 / FIX-07: the name-based definition scan runs at most once per
+    // copy; both fallbacks reuse its result (file AND line — the fiber line
+    // belongs to a different file and must not label the found definition).
+    let definition: { file: string; line?: number } | undefined;
+    let scanned = false;
+    const scanByName = async (): Promise<{ file: string; line?: number } | undefined> => {
+      if (!scanned && component.name && this.workspaceRoot) {
+        scanned = true;
+        try {
+          definition = await findComponentDefinition(this.workspaceRoot, component.name);
+        } catch {
+          // Fall through to the missing-source result below.
+        }
+      }
+      return definition;
+    };
     if (!sourceFile && component.name) {
-      try {
-        sourceFile = (await findComponentDefinition(this.workspaceRoot, component.name))?.file;
-      } catch {
-        // Fall through to the missing-source result below.
+      const found = await scanByName();
+      if (found) {
+        sourceFile = found.file;
+        sourceLine = found.line ?? sourceLine;
       }
     }
     if (!sourceFile) {
@@ -136,11 +149,10 @@ export class PromptExportService {
     // FIX-07: a present-but-unresolvable bundler file must still fall back to the
     // name-based definition scan (previously only name-only components did).
     if (!filePath && component.name) {
-      try {
-        const byName = await findComponentDefinition(this.workspaceRoot, component.name);
-        if (byName) filePath = this.resolveSourcePath(byName.file);
-      } catch {
-        // Fall through to the missing-source result below.
+      const byName = await scanByName();
+      if (byName) {
+        filePath = this.resolveSourcePath(byName.file);
+        if (filePath) sourceLine = byName.line ?? sourceLine;
       }
     }
     if (!filePath) {
@@ -158,7 +170,7 @@ export class PromptExportService {
       const languageHint = path.extname(filePath).slice(1);
       const header = language === "ru" ? "Исходный код выбранного компонента" : "Selected component source";
       const prompt = [
-        `${header}: ${component.name ?? path.basename(filePath)} — ${relative}${component.line ? `:${component.line}` : ""}`,
+        `${header}: ${component.name ?? path.basename(filePath)} — ${relative}${sourceLine ? `:${sourceLine}` : ""}`,
         language === "ru"
           ? `Используй этот файл как контекст. Внеси только правки, которые я опишу в чате, сохранив соглашения проекта ${this.detectFramework()}.`
           : `Use this file as context. Apply only the changes I describe in chat, following the project's ${this.detectFramework()} conventions.`,

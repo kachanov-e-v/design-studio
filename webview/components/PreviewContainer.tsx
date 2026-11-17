@@ -1,4 +1,4 @@
-import React, { useEffect, useImperativeHandle, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
@@ -14,6 +14,9 @@ export interface RevealComponentInfo {
 export interface PreviewContainerHandle {
   applyStyle: (property: string, value: string) => { requestId: string; sessionId: string } | null;
   applyOp: (op: ElementOp, value?: string, attribute?: EditableAttribute) => { requestId: string; sessionId: string } | null;
+  reload: () => void;
+  markElement: (selector: string, marked: boolean) => void;
+  undo: (requestId: string) => void;
 }
 
 type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "protocol-mismatch" | "error";
@@ -24,8 +27,18 @@ export interface OpAppliedInfo {
   attribute?: EditableAttribute;
   success: boolean;
   reason?: string;
+  requestId?: string;
   payload?: ElementPayload | null;
 }
+
+export interface UndoneInfo {
+  requestId: string;
+  success: boolean;
+  payload?: ElementPayload | null;
+}
+
+const MODE_RESYNC_TIMEOUT_MS = 400;
+const MODE_RESYNC_MAX_POSTS = 8;
 
 function makeSessionId(): string {
   try {
@@ -53,11 +66,17 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   onNavigate: (url: string) => void;
   onLocationChange: (path: string) => void;
   onSelect: (payload: ElementPayload | null) => void;
+  onBeforeRefresh?: () => boolean;
+  popupDrafts?: Record<string, string>;
+  onPopupDraftChange?: (selector: string, value: string) => void;
+  onAddComment?: (text: string) => void;
   onNavigateBlocked?: (url: string) => void;
   onRevealSource?: (components: RevealComponentInfo[]) => void;
   onCopyInstruction?: (instruction: string) => void;
   onStyleApplied?: (info: { success: boolean; reason?: string; requestId?: string; sessionId?: string; property: string; value: string; payload?: ElementPayload }) => void;
   onOpApplied?: (info: OpAppliedInfo) => void;
+  onRuntimeReady?: () => void;
+  onUndone?: (info: UndoneInfo) => void;
 }>(function PreviewContainer(
   {
     url,
@@ -70,11 +89,17 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onNavigate,
     onLocationChange,
     onSelect,
+    onBeforeRefresh,
+    popupDrafts,
+    onPopupDraftChange,
+    onAddComment,
     onNavigateBlocked,
     onRevealSource,
     onCopyInstruction,
     onStyleApplied,
     onOpApplied,
+    onRuntimeReady,
+    onUndone,
   },
   ref
 ): React.ReactElement {
@@ -85,8 +110,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const onOpAppliedRef = useRef(onOpApplied);
   const onEditModeChangeRef = useRef(onEditModeChange);
   const onLocationChangeRef = useRef(onLocationChange);
+  const onRefreshRef = useRef(onRefresh);
+  const onRuntimeReadyRef = useRef(onRuntimeReady);
+  const onUndoneRef = useRef(onUndone);
   const editModeRef = useRef(editMode);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
+  const [readyEpoch, setReadyEpoch] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [diagnostic, setDiagnostic] = useState("");
   const [address, setAddress] = useState(devServer ?? "");
@@ -111,8 +140,6 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   // the echo confirms the current mode, matching value only.
   const modeResyncTimerRef = useRef<number | null>(null);
   const modeResyncPostsRef = useRef(0);
-  const MODE_RESYNC_TIMEOUT_MS = 400;
-  const MODE_RESYNC_MAX_POSTS = 8;
 
   // P1-1: exact origin of the preview document; all postMessage traffic both
   // ways is pinned to it ("*" would leak the session to any surrounding page).
@@ -133,6 +160,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onNavigateBlockedRef.current = onNavigateBlocked;
     onEditModeChangeRef.current = onEditModeChange;
     onLocationChangeRef.current = onLocationChange;
+    onRefreshRef.current = onRefresh;
+    onRuntimeReadyRef.current = onRuntimeReady;
+    onUndoneRef.current = onUndone;
     editModeRef.current = editMode;
   });
 
@@ -185,8 +215,10 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (modeResyncPostsRef.current >= MODE_RESYNC_MAX_POSTS) return;
     modeResyncPostsRef.current += 1;
     if (modeResyncTimerRef.current) window.clearTimeout(modeResyncTimerRef.current);
-    modeResyncTimerRef.current = window.setTimeout(postSetModeWithResync, MODE_RESYNC_TIMEOUT_MS);
+    modeResyncTimerRef.current = window.setTimeout(() => postSetModeWithResyncRef.current(), MODE_RESYNC_TIMEOUT_MS);
   };
+  const postSetModeWithResyncRef = useRef(postSetModeWithResync);
+  postSetModeWithResyncRef.current = postSetModeWithResync;
 
   const sendPing = () => {
     const iframe = iframeRef.current;
@@ -222,6 +254,20 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     tryPing();
   };
 
+  const performReload = useCallback(() => {
+    const iframe = iframeRef.current;
+    if (iframe?.contentWindow && runtimeStatus === "ready" && sessionIdRef.current) {
+      iframe.contentWindow.postMessage({
+        type: "ds:reload",
+        version: PROTOCOL_VERSION,
+        sessionId: sessionIdRef.current,
+      }, previewOriginRef.current);
+    } else {
+      setRefreshKey((key) => key + 1);
+    }
+    onRefreshRef.current();
+  }, [runtimeStatus]);
+
   useImperativeHandle(ref, () => ({
     applyStyle: (property, value) => {
       const iframe = iframeRef.current;
@@ -243,7 +289,24 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       );
       return { requestId, sessionId: sessionIdRef.current };
     },
-  }), [runtimeStatus, url]);
+    reload: () => performReload(),
+    markElement: (selector, marked) => {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return;
+      iframe.contentWindow.postMessage(
+        { type: "ds:mark", version: PROTOCOL_VERSION, selector, marked, sessionId: sessionIdRef.current },
+        previewOriginRef.current
+      );
+    },
+    undo: (requestId) => {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return;
+      iframe.contentWindow.postMessage(
+        { type: "ds:undo", version: PROTOCOL_VERSION, requestId, sessionId: sessionIdRef.current },
+        previewOriginRef.current
+      );
+    },
+  }), [runtimeStatus, performReload]);
 
   useEffect(() => {
     clearTimers();
@@ -292,6 +355,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         clearTimers();
         resolvedRef.current = true;
         setRuntimeStatus("ready");
+        setReadyEpoch((epoch) => epoch + 1);
         setDiagnostic("");
         // FIX-02: the nonce-less runtime-ready announcement arrives at parse
         // time, before onLoad. Ping immediately so the runtime captures
@@ -321,7 +385,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         onSelectRef.current(data.payload);
         setPopupTarget(
           data.payload
-            ? { rect: data.payload.rect, components: data.payload.component }
+            ? { selector: data.payload.selector, rect: data.payload.rect, components: data.payload.component }
             : null
         );
         return;
@@ -350,8 +414,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
           attribute: isEditableAttribute(data.attribute) ? data.attribute : undefined,
           success: data.success,
           reason: data.reason,
+          requestId: data.requestId,
           payload: data.payload ?? null,
         });
+        return;
+      }
+      if (data.type === "ds:undone") {
+        onUndoneRef.current?.({ requestId: data.requestId, success: data.success, payload: data.payload ?? null });
         return;
       }
       if (data.type === "ds:navigate") {
@@ -384,6 +453,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     if (runtimeStatus !== "ready") return;
     postSetModeWithResync();
   }, [editMode, runtimeStatus, url]);
+
+  // The epoch bumps on every handshake resolution (including the re-announce
+  // after ds:reload); the passive effect runs after the imperative handle is
+  // refreshed, so replayed marks pass the "ready" gate.
+  useEffect(() => {
+    if (runtimeStatus === "ready") onRuntimeReadyRef.current?.();
+  }, [runtimeStatus, readyEpoch]);
 
   const runtimeLabel =
     runtimeStatus === "idle"
@@ -438,18 +514,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     }, previewOriginRef.current);
   };
 
-  const reloadPreview = () => {
-    const iframe = iframeRef.current;
-    if (iframe?.contentWindow && runtimeStatus === "ready" && sessionIdRef.current) {
-      iframe.contentWindow.postMessage({
-        type: "ds:reload",
-        version: PROTOCOL_VERSION,
-        sessionId: sessionIdRef.current,
-      }, previewOriginRef.current);
-    } else {
-      setRefreshKey((key) => key + 1);
-    }
-    onRefresh();
+  const requestReload = () => {
+    if (onBeforeRefresh && !onBeforeRefresh()) return;
+    performReload();
   };
 
   return (
@@ -477,7 +544,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         {editMode && runtimeStatus === "ready" && <span className={styles.hint}>{translate(language, "preview.selectHint")}</span>}
         <button
           type="button"
-          onClick={reloadPreview}
+          onClick={requestReload}
         >
           {translate(language, "preview.refresh")}
         </button>
@@ -503,12 +570,12 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
             )}
             {runtimeStatus === "error" && (
               <div className={styles.overlay} role="status">
-                Unable to connect to preview. {diagnostic}
+                {translate(language, "preview.overlayMissing")} {diagnostic}
               </div>
             )}
             {runtimeStatus === "protocol-mismatch" && (
               <div className={styles.overlay} role="status">
-                Runtime protocol mismatch. {diagnostic}
+                {translate(language, "preview.overlayMismatch")} {diagnostic}
               </div>
             )}
             {runtimeStatus === "connecting" && (
@@ -520,6 +587,9 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
               <SelectionPopup
                 target={popupTarget}
                 language={language}
+                draft={popupDrafts?.[popupTarget.selector] ?? ""}
+                onDraftChange={(value) => onPopupDraftChange?.(popupTarget.selector, value)}
+                onAddToInstruction={onAddComment}
                 onReveal={(components) => onRevealSource?.(components)}
                 onCopyInstruction={(instruction) => onCopyInstruction?.(instruction)}
                 onClose={() => setPopupTarget(null)}

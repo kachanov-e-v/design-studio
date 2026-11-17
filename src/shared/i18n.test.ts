@@ -14,6 +14,19 @@ describe("P2-11: toolbar labels and RU/EN parity", () => {
     expect(translate("en", "toolbar.toBrowse")).toBe("Browse");
   });
 
+  it("Localizes structure undo and the preview error overlays", () => {
+    expect(translate("ru", "inspector.undoStructure")).toBe("Отменить структурную правку");
+    expect(translate("en", "inspector.undoStructure")).toBe("Undo structure edit");
+    expect(translate("ru", "status.undone")).toBe("Структурная правка отменена");
+    expect(translate("en", "status.undone")).toBe("Structure edit undone");
+    expect(translate("ru", "status.undoFailed")).toBe("Не удалось отменить правку");
+    expect(translate("en", "status.undoFailed")).toBe("Could not undo the edit");
+    expect(translate("en", "preview.overlayMissing")).toBe("Unable to connect to preview.");
+    expect(translate("en", "preview.overlayMismatch")).toBe("Runtime protocol mismatch.");
+    expect(translate("ru", "preview.overlayMissing")).not.toBe("preview.overlayMissing");
+    expect(translate("ru", "preview.overlayMismatch")).not.toBe("preview.overlayMismatch");
+  });
+
   it("Keeps RU and EN key sets in perfect parity", () => {
     const keys = Object.keys(I18N_STRINGS);
     for (const key of keys) {

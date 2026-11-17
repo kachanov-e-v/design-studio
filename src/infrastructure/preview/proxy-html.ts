@@ -84,6 +84,36 @@ export function candidateLoopbackTargets(target: string): string[] {
 
 const AUTHORED_BASE_RE = /<base\s[^>]*href=/i;
 
+/**
+ * Meta-delivered CSP survives header stripping and silently blocks the
+ * injected runtime — remove both enforce and report-only variants.
+ */
+const META_CSP_RE = /<meta(?=[\s>])[^>]*http-equiv\s*=\s*["']?content-security-policy(?:-report-only)?["']?[^>]*>/gi;
+
+/**
+ * Find the end of a real `<head>`/`<body>` open tag, skipping comments and
+ * raw-text elements: a regex alone can land on "<head>" inside an inline
+ * script string or an HTML comment.
+ */
+function findTagInjectionPoint(html: string, tagName: "head" | "body"): number | null {
+  const token = new RegExp(`<!--|<(script|style|textarea|title)(?=[\\s>])[^>]*>|<${tagName}(?=[\\s>])[^>]*>`, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = token.exec(html)) !== null) {
+    if (match[0] === "<!--") {
+      const end = html.indexOf("-->", token.lastIndex);
+      token.lastIndex = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    if (match[1]) {
+      const close = new RegExp(`</${match[1]}(?=[\\s>])`, "i").exec(html.slice(token.lastIndex));
+      token.lastIndex = close ? token.lastIndex + close.index + close[0].length : html.length;
+      continue;
+    }
+    return token.lastIndex;
+  }
+  return null;
+}
+
 export interface InjectOptions {
   /**
    * When the document already defines its own <base href>, keep it and only
@@ -120,20 +150,22 @@ export function buildInjectedHead(runtimeUrl: string, baseHref: string, options?
 }
 
 export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
+  html = html.replace(META_CSP_RE, "");
   const injection =
     options?.respectAuthoredBase && AUTHORED_BASE_RE.test(html)
       ? runtimeScriptTag(runtimeUrl, options)
       : buildInjectedHead(runtimeUrl, baseHref, options);
-  // `(?=[\s>])` keeps the match on the real <head>/<body> element — a bare
-  // <header>/<bodyart> tag in headless HTML must not swallow the injection.
-  const headMatch = /<head(?=[\s>])[^>]*>/i.exec(html);
-  if (headMatch) {
-    const at = headMatch.index + headMatch[0].length;
-    return html.slice(0, at) + injection + html.slice(at);
+  const headEnd = findTagInjectionPoint(html, "head");
+  if (headEnd !== null) {
+    return html.slice(0, headEnd) + injection + html.slice(headEnd);
   }
-  const bodyMatch = /<body(?=[\s>])[^>]*>/i.exec(html);
-  if (bodyMatch) {
-    const at = bodyMatch.index + bodyMatch[0].length;
+  const bodyEnd = findTagInjectionPoint(html, "body");
+  if (bodyEnd !== null) {
+    return html.slice(0, bodyEnd) + injection + html.slice(bodyEnd);
+  }
+  const htmlMatch = /<html(?=[\s>])[^>]*>/i.exec(html);
+  if (htmlMatch) {
+    const at = htmlMatch.index + htmlMatch[0].length;
     return html.slice(0, at) + injection + html.slice(at);
   }
   return injection + html;

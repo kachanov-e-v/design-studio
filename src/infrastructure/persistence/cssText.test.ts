@@ -102,6 +102,14 @@ describe("validators and selector normalization (coverage)", () => {
     expect(isValidCssValue("plain-value")).toBe(true);
   });
 
+  it("rejects values with unclosed comments that would swallow the rest of the file", () => {
+    expect(isValidCssValue("red /*")).toBe(false);
+    expect(isValidCssValue("red /* comment")).toBe(false);
+    expect(isValidCssValue("/* closed */ red /*")).toBe(false);
+    expect(isValidCssValue("red /* closed */")).toBe(true);
+    expect(isValidCssValue("/* a */ blue /* b */")).toBe(true);
+  });
+
   it("normalizes selector whitespace", () => {
     expect(normalizeCssSelector("div    >    span ,   a")).toBe("div > span , a");
   });

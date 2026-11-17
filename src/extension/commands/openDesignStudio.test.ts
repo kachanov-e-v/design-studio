@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   handler: null as ((msg: any) => Promise<void>) | null,
   disposeCb: null as (() => void) | null,
   copyInstruction: vi.fn(async () => ({ success: true, message: "copied" })),
+  copyComponent: vi.fn(async () => ({ success: true, message: "component copied" })),
+  createPanel: vi.fn(),
   findProjectEntries: vi.fn(async () => ["index.html", "my page#1.html"]),
   detectDevServers: vi.fn(async () => []),
 }));
@@ -14,22 +16,25 @@ const mocks = vi.hoisted(() => ({
 vi.mock("vscode", () => {
   return {
     window: {
-      createWebviewPanel: () => ({
-        title: "",
-        reveal: () => {},
-        onDidDispose: (cb: () => void) => {
-          mocks.disposeCb = cb;
-          return { dispose() {} };
-        },
-        webview: {
-          html: "",
-          postMessage: mocks.postMessage,
-          onDidReceiveMessage: (cb: (msg: any) => Promise<void>) => {
-            mocks.handler = cb;
+      createWebviewPanel: (...args: any[]) => {
+        mocks.createPanel(...args);
+        return {
+          title: "",
+          reveal: () => {},
+          onDidDispose: (cb: () => void) => {
+            mocks.disposeCb = cb;
             return { dispose() {} };
           },
-        },
-      }),
+          webview: {
+            html: "",
+            postMessage: mocks.postMessage,
+            onDidReceiveMessage: (cb: (msg: any) => Promise<void>) => {
+              mocks.handler = cb;
+              return { dispose() {} };
+            },
+          },
+        };
+      },
       createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
       showErrorMessage: vi.fn(async () => undefined),
     },
@@ -81,6 +86,7 @@ vi.mock("../../infrastructure/persistence/StylePersistenceAdapter", () => ({
 vi.mock("../../infrastructure/ai/PromptExportService", () => ({
   PromptExportService: class {
     copyInstruction = mocks.copyInstruction;
+    copyComponent = mocks.copyComponent;
     async revealComponent() {
       return { success: true, message: "" };
     }
@@ -123,6 +129,8 @@ describe("style:persist extension handler (webview -> extension integration)", (
   beforeEach(() => {
     mocks.apply.mockReset();
     mocks.postMessage.mockClear();
+    mocks.createPanel.mockClear();
+    mocks.copyComponent.mockClear();
     // Simulate closing the panel so each test opens a fresh one.
     mocks.disposeCb?.();
     mocks.disposeCb = null;
@@ -179,6 +187,44 @@ describe("style:persist extension handler (webview -> extension integration)", (
     await mocks.handler!(buildStylePersistMessage({ selector: ".x", property: "color", value: "red" }));
     expect(mocks.apply).toHaveBeenCalledTimes(1);
     expect(lastMessage().type).toBe("persist:result");
+  });
+
+  // Double invocation while the host server is still starting must join the
+  // first creation instead of spawning a second server/panel pair.
+  it("joins an in-flight open instead of creating a second panel", async () => {
+    const first = openDesignStudio(makeContext());
+    const second = openDesignStudio(makeContext());
+    await Promise.all([first, second]);
+    expect(mocks.createPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes ai:copyComponent payloads with the source:reveal strictness", async () => {
+    await openDesignStudio(makeContext());
+    await mocks.handler!({ type: "ai:copyComponent", component: { name: "N".repeat(600), file: "f.tsx", line: 3.9 } });
+    expect(mocks.copyComponent).toHaveBeenCalledTimes(1);
+    const comp = (mocks.copyComponent.mock.calls as unknown as any[][])[0][0];
+    expect(comp.name).toHaveLength(500);
+    expect(comp.file).toBe("f.tsx");
+    expect(comp.line).toBe(3);
+    expect(lastMessage().type).toBe("ai:componentResult");
+    expect(lastMessage().success).toBe(true);
+  });
+
+  it("drops invalid ai:copyComponent fields and rejects unusable components", async () => {
+    await openDesignStudio(makeContext());
+    for (const line of ["7", Number.POSITIVE_INFINITY, Number.NaN, -3, 0, 1_000_001]) {
+      mocks.copyComponent.mockClear();
+      await mocks.handler!({ type: "ai:copyComponent", component: { name: "Ok", line } });
+      const comp = (mocks.copyComponent.mock.calls as unknown as any[][])[0][0];
+      expect(comp.line).toBeUndefined();
+    }
+    mocks.copyComponent.mockClear();
+    await mocks.handler!({ type: "ai:copyComponent", component: { name: 42, file: {}, line: "7" } });
+    await mocks.handler!({ type: "ai:copyComponent", component: "junk" });
+    await mocks.handler!({ type: "ai:copyComponent", component: null });
+    expect(mocks.copyComponent).not.toHaveBeenCalled();
+    expect(lastMessage().type).toBe("ai:componentResult");
+    expect(lastMessage().success).toBe(false);
   });
 
   // P0-4: parallel style:persist messages must be applied strictly one at a

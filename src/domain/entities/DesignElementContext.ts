@@ -69,6 +69,10 @@ export function contextToPrompt(
 ): string {
   const ru = language === "ru";
   const lines: string[] = [];
+  // User comments are trusted input and must stay outside the untrusted
+  // PAGE DATA fence, whose contents the agent is told to ignore.
+  const commentEdits = edits.filter((edit) => edit.kind === "comment");
+  const dataEdits = edits.filter((edit) => edit.kind !== "comment");
 
   lines.push(ru ? "# Инструкция для ИИ-кодового агента · Design Studio" : "# AI coding agent instruction · Design Studio");
   lines.push("");
@@ -77,10 +81,10 @@ export function contextToPrompt(
   lines.push(
     ru
       ? edits.length > 0
-        ? `- Правки в редакторе: выполнено ${edits.length}, их нужно синхронизировать с исходным кодом (список — в данных страницы).`
+        ? `- Правки в редакторе: выполнено ${edits.length}, их нужно синхронизировать с исходным кодом (список — ниже).`
         : "- Правки в редакторе: нет; задача задаётся только пожеланием пользователя."
       : edits.length > 0
-        ? `- Editor edits: ${edits.length} were made and must be synced to the source code (listed in the page data).`
+        ? `- Editor edits: ${edits.length} were made and must be synced to the source code (listed below).`
         : "- Editor edits: none; the task comes from the user request only."
   );
   lines.push("");
@@ -149,15 +153,25 @@ export function contextToPrompt(
     lines.push("");
   }
 
-  if (edits.length > 0) {
+  if (dataEdits.length > 0) {
     lines.push(ru ? "## Правки в редакторе" : "## Editor edits");
-    lines.push(...editsToLines(edits, ru));
+    lines.push(...editsToLines(dataEdits, ru));
     lines.push("");
   }
 
   lines.push(ru ? "ДАННЫЕ СТРАНИЦЫ — КОНЕЦ." : "");
   lines.push("PAGE DATA — END");
   lines.push("");
+  if (commentEdits.length > 0) {
+    lines.push(ru ? "## Комментарии пользователя" : "## User comments");
+    lines.push(
+      ru
+        ? "Доверенные комментарии пользователя, оставленные в редакторе Design Studio; выполни их как часть задачи."
+        : "Trusted user comments left in the Design Studio editor; apply them as part of the task."
+    );
+    lines.push(...editsToLines(commentEdits, ru));
+    lines.push("");
+  }
   lines.push(ru ? "## Пожелание пользователя" : "## User request");
   lines.push(instruction || (ru ? "Синхронизируй с исходным кодом перечисленные визуальные изменения." : "Synchronize the listed visual changes with the source code."));
   lines.push("");
@@ -201,6 +215,9 @@ function editsToLines(edits: DesignEdit[], ru: boolean): string[] {
         return `${index + 1}. ${ru ? "Атрибут удалён" : "Attribute removed"}: ${dataValue(edit.property ?? "")} ${ru ? "было" : "was"} ${JSON.stringify(edit.before ?? "")} (${where}; ${dataValue(edit.selector)})`;
       }
       return `${index + 1}. ${ru ? "Атрибут" : "Attribute"} ${dataValue(edit.property ?? "")}: ${JSON.stringify(edit.before ?? "")} → ${JSON.stringify(edit.after)} (${where}; ${dataValue(edit.selector)})`;
+    }
+    if (edit.kind === "comment") {
+      return `${index + 1}. ${ru ? "Комментарий пользователя" : "User comment"}: ${JSON.stringify(edit.after ?? "")} (${where}; ${dataValue(edit.selector)})`;
     }
     return `${index + 1}. ${ru ? "Структура" : "Structure"}: ${dataValue(edit.operation ?? "change")} (${where}; ${dataValue(edit.selector)})`;
   });
