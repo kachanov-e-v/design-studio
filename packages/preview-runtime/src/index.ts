@@ -349,6 +349,12 @@ export function initDesignStudioRuntime(): void {
       outline.setAttribute("aria-hidden", "true");
       outline.style.cssText = [
         "position:fixed",
+        // FIX-08: outline is positioned by transform only. Without an explicit
+        // top/left Chromium anchors a fixed box at its in-flow static position
+        // (end of body). On pages taller than the viewport — e.g. demo.html —
+        // that lands below the fold and hover/selection outlines are invisible.
+        "top:0",
+        "left:0",
         "z-index:2147483647",
         "display:none",
         "pointer-events:none",
