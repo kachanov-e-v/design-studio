@@ -12,6 +12,7 @@
   border-radius: 4px;
   background: var(--vscode-editorWidget-background, #252526);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  animation: popIn .12s ease;
   color: var(--vscode-editorWidget-foreground, #ccc);
   font-size: 11px;
 }
@@ -74,3 +75,4 @@
 .copyButton:hover, .addButton:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); }
 .addButton:disabled { opacity: .4; cursor: default; }
 .success, .success:hover { border-color: var(--vscode-testing-iconPassed, #73c991); color: var(--vscode-testing-iconPassed, #73c991); background: transparent; }
+@keyframes popIn { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }

@@ -4,11 +4,14 @@ import { EDITABLE_ATTRIBUTES } from "@design-studio/preview-runtime/protocol";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
 import type { DesignEdit } from "../../src/domain/entities/DesignEdit";
 import { translate, type Language } from "@design-studio/shared/i18n";
+import { Icon } from "./Icon";
+import { BoxModel } from "./BoxModel";
 import {
   PROPERTY_DEFINITIONS,
   PROPERTY_GROUP_LABEL_KEYS,
   attributeDefinitionsForTag,
   cssColorToHex,
+  cssColorToRgba,
   parseUnitValue,
   type AttributeDefinition,
   type PropertyDefinition,
@@ -20,6 +23,15 @@ const BLOCK_OPS: { op: ElementOp; key: "inspector.moveUp" | "inspector.moveDown"
   { op: "duplicate", key: "inspector.duplicate" },
   { op: "delete", key: "inspector.delete" },
 ];
+
+const KIND_CHIP_KEYS: Record<DesignEdit["kind"], Parameters<typeof translate>[1]> = {
+  style: "edits.style",
+  text: "edits.text",
+  classes: "edits.classes",
+  attribute: "edits.attribute",
+  structure: "edits.structure",
+  comment: "edits.commentShort",
+};
 
 export function Inspector({
   selected,
@@ -53,6 +65,7 @@ export function Inspector({
   const [styleDrafts, setStyleDrafts] = useState<Record<string, string>>({});
   const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({ instruction: true });
+  const [styleFilter, setStyleFilter] = useState("");
   const toggleSection = (id: string) => setOpenSections((previous) => ({ ...previous, [id]: !previous[id] }));
   const autoSizeTextarea = (node: HTMLTextAreaElement | null) => {
     if (!node) return;
@@ -112,6 +125,7 @@ export function Inspector({
     setClassDraft(null);
     setStyleDrafts({});
     setAttributeDrafts({});
+    setStyleFilter("");
   }, [selected?.selector]);
 
   const renderAttributeEditor = (name: EditableAttribute, def: AttributeDefinition | undefined) => {
@@ -244,21 +258,39 @@ export function Inspector({
       );
     }
     if (def.editor === "color") {
-      const hex = cssColorToHex(draft ?? current);
+      const shown = draft ?? current;
+      const hex = cssColorToHex(shown);
+      const rgba = cssColorToRgba(shown);
       return (
         <label key={def.key}>
           <span>{def.key}</span>
-          <span className={styles.colorField}>
-            {hex && (
+          <span className={styles.colorControl}>
+            <span className={styles.colorField}>
+              {hex && (
+                <input
+                  type="color"
+                  value={hex}
+                  onChange={(event) => preview(def.key, event.target.value)}
+                  onBlur={commit}
+                  aria-label={def.key}
+                />
+              )}
+              {textInput}
+            </span>
+            {rgba && (
               <input
-                type="color"
-                value={hex}
-                onChange={(event) => preview(def.key, event.target.value)}
-                onBlur={commit}
-                aria-label={def.key}
+                type="range"
+                className={styles.alphaSlider}
+                min={0}
+                max={1}
+                step={0.01}
+                value={rgba.a}
+                onChange={(event) => preview(def.key, `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, ${event.target.value})`)}
+                onPointerUp={commit}
+                onKeyUp={commit}
+                aria-label={`${def.key} alpha`}
               />
             )}
-            {textInput}
           </span>
         </label>
       );
@@ -370,7 +402,7 @@ export function Inspector({
     return (
       <section className={styles.section} key={id}>
         <button type="button" className={styles.sectionHeader} aria-expanded={open} onClick={() => toggleSection(id)}>
-          <span className={`${styles.chevron} ${open ? styles.chevronOpen : ""}`} aria-hidden="true">▸</span>
+          <span className={`${styles.chevron} ${open ? styles.chevronOpen : ""}`} aria-hidden="true"><Icon name="chevron" size={12} /></span>
           <span className={styles.sectionTitle}>{title}</span>
           {badge}
         </button>
@@ -415,7 +447,8 @@ export function Inspector({
                         const undoRequestId = edit.kind === "structure" ? edit.requestId : undefined;
                         return (
                           <li key={index} title={description}>
-                            {description}
+                            <span className={styles.kindChip} data-kind={edit.kind}>{t(KIND_CHIP_KEYS[edit.kind])}</span>
+                            <span className={styles.editText}>{description}</span>
                             {undoRequestId && onUndoStructure && (
                               <button
                                 type="button"
@@ -424,7 +457,7 @@ export function Inspector({
                                 aria-label={t("inspector.undoStructure")}
                                 onClick={() => onUndoStructure(undoRequestId)}
                               >
-                                ↩
+                                <Icon name="undo" size={12} />
                               </button>
                             )}
                           </li>
@@ -511,7 +544,7 @@ export function Inspector({
                     {classes.map((name, index) => (
                       <span key={`${name}-${index}`} className={styles.classChip}>
                         <code>{name}</code>
-                        <button type="button" title={t("inspector.removeClass")} onClick={() => removeClass(index)}>x</button>
+                        <button type="button" title={t("inspector.removeClass")} onClick={() => removeClass(index)}><Icon name="close" size={10} /></button>
                       </span>
                     ))}
                   </div>
@@ -549,18 +582,52 @@ export function Inspector({
 
             {renderSection("styles", t("inspector.styles"), (
               <>
+                <input
+                  className={styles.styleFilter}
+                  value={styleFilter}
+                  placeholder={t("inspector.filterPlaceholder")}
+                  aria-label={t("inspector.filterPlaceholder")}
+                  onChange={(event) => setStyleFilter(event.target.value)}
+                />
+                {!styleFilter.trim() && (
+                  <BoxModel elementStyles={selected.styles} rect={selected.rect} onApplyStyle={onApplyStyle} />
+                )}
                 {styleGroups.map((group) => {
-                  const defs = PROPERTY_DEFINITIONS.filter((def) => def.group === group);
+                  const query = styleFilter.trim().toLowerCase();
+                  const defs = PROPERTY_DEFINITIONS.filter((def) => def.group === group && (!query || def.key.includes(query)));
                   if (defs.length === 0) return null;
+                  let typePreview: React.ReactNode = null;
+                  if (group === "text") {
+                    const pick = (key: string) => styleDrafts[key] ?? selected.styles[key] ?? "";
+                    const size = pick("font-size");
+                    const px = /^(\d*\.?\d+)px$/.exec(size);
+                    typePreview = (
+                      <div
+                        className={styles.typePreview}
+                        style={{
+                          fontFamily: pick("font-family") || undefined,
+                          fontSize: px && Number(px[1]) > 28 ? "28px" : size || undefined,
+                          fontWeight: pick("font-weight") || undefined,
+                          color: pick("color") || undefined,
+                        }}
+                      >
+                        {t("inspector.typeSample")}
+                      </div>
+                    );
+                  }
                   return (
                     <div key={group} className={styles.styleGroup}>
                       <h4>{t(PROPERTY_GROUP_LABEL_KEYS[group])}</h4>
+                      {typePreview}
                       <div className={styles.editor}>
                         {defs.map(renderStyleControl)}
                       </div>
                     </div>
                   );
                 })}
+                {styleFilter.trim() && !PROPERTY_DEFINITIONS.some((def) => def.key.includes(styleFilter.trim().toLowerCase())) && (
+                  <p className={styles.note}>{t("inspector.filterNone")}</p>
+                )}
                 <p className={styles.note}>{t("inspector.stylesNote")}</p>
               </>
             ))}

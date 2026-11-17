@@ -4,7 +4,10 @@ import {
   PROPERTY_DEFINITIONS,
   PROPERTY_GROUP_LABEL_KEYS,
   attributeDefinitionsForTag,
+  composeBoxSides,
   cssColorToHex,
+  cssColorToRgba,
+  expandBoxSides,
   parseUnitValue,
 } from "./propertyRegistry";
 
@@ -39,6 +42,32 @@ describe("propertyRegistry", () => {
     expect(cssColorToHex("rgba(0, 0, 255, 0.5)")).toBe("#0000ff");
     expect(cssColorToHex("var(--brand)")).toBeNull();
     expect(cssColorToHex("transparent")).toBeNull();
+  });
+
+  it("expands and recomposes box shorthands", () => {
+    expect(expandBoxSides("8px")).toEqual(["8px", "8px", "8px", "8px"]);
+    expect(expandBoxSides("1px 2px")).toEqual(["1px", "2px", "1px", "2px"]);
+    expect(expandBoxSides("1px 2px 3px")).toEqual(["1px", "2px", "3px", "2px"]);
+    expect(expandBoxSides("1px 2px 3px 4px")).toEqual(["1px", "2px", "3px", "4px"]);
+    expect(expandBoxSides("auto 0")).toEqual(["auto", "0", "auto", "0"]);
+    expect(expandBoxSides("calc(1px + 2%) 0px")).toBeNull();
+    expect(expandBoxSides("")).toBeNull();
+    expect(expandBoxSides("1px 2px 3px 4px 5px")).toBeNull();
+
+    expect(composeBoxSides(["8px", "8px", "8px", "8px"])).toBe("8px");
+    expect(composeBoxSides(["1px", "2px", "1px", "2px"])).toBe("1px 2px");
+    expect(composeBoxSides(["1px", "2px", "3px", "2px"])).toBe("1px 2px 3px");
+    expect(composeBoxSides(["1px", "2px", "3px", "4px"])).toBe("1px 2px 3px 4px");
+  });
+
+  it("parses colors into rgba components with alpha", () => {
+    expect(cssColorToRgba("#ff0000")).toEqual({ r: 255, g: 0, b: 0, a: 1 });
+    expect(cssColorToRgba("rgb(255, 0, 0)")).toEqual({ r: 255, g: 0, b: 0, a: 1 });
+    expect(cssColorToRgba("rgba(0, 0, 255, 0.5)")).toEqual({ r: 0, g: 0, b: 255, a: 0.5 });
+    expect(cssColorToRgba("rgba(0 0 255 / 50%)")).toEqual({ r: 0, g: 0, b: 255, a: 0.5 });
+    expect(cssColorToRgba("transparent")).toEqual({ r: 0, g: 0, b: 0, a: 0 });
+    expect(cssColorToRgba("var(--brand)")).toBeNull();
+    expect(cssColorToRgba("")).toBeNull();
   });
 
   it("returns tag-relevant attributes, deduplicated and typed", () => {

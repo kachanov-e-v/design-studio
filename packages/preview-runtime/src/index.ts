@@ -491,7 +491,8 @@ export function initDesignStudioRuntime(): void {
       const style = document.createElement("style");
       style.setAttribute("data-design-studio", "1");
       const url = `url("data:image/svg+xml,${encodeURIComponent(EDIT_CURSOR_SVG)}") 4 2, default`;
-      style.textContent = `html[data-ds-edit-mode], html[data-ds-edit-mode] * { cursor: ${url} !important; }`;
+      style.textContent = `html[data-ds-edit-mode], html[data-ds-edit-mode] * { cursor: ${url} !important; }` +
+        "@keyframes ds-badge-pulse{from{box-shadow:0 0 0 7px rgba(197,134,192,.45);}to{box-shadow:0 0 4px rgba(0,0,0,.55);}}";
       (document.head ?? document.documentElement).appendChild(style);
       cursorStyle = style;
     }
@@ -551,6 +552,7 @@ export function initDesignStudioRuntime(): void {
           "border-radius:50%", "background:#c586c0", "border:2px solid #ffffff",
           "box-shadow:0 0 4px rgba(0,0,0,.55)", "z-index:2147483647",
           "pointer-events:none", "box-sizing:border-box", "display:none",
+          "animation:ds-badge-pulse .45s ease",
         ].join(";");
         document.body?.appendChild(badge);
         editBadges.set(el, badge);

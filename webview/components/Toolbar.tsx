@@ -13,7 +13,7 @@ export function Toolbar({
   editMode,
   language,
   onLanguageChange,
-  onInspect,
+  onSetMode,
   onSave,
   canSave,
 }: {
@@ -25,7 +25,7 @@ export function Toolbar({
   editMode: boolean;
   language: Language;
   onLanguageChange: (language: Language) => void;
-  onInspect: () => void;
+  onSetMode: (enabled: boolean) => void;
   onSave: () => void;
   canSave?: boolean;
 }): React.ReactElement {
@@ -115,10 +115,24 @@ export function Toolbar({
         {!projectRoot && <span className={styles.projectMissing}>{t("toolbar.projectMissing")}</span>}
       </div>
       <nav className={styles.actions} aria-label={t("toolbar.aria")}>
-        <button className={editMode ? styles.active : styles.quiet} type="button" onClick={onInspect} aria-pressed={editMode}>
-          {/* P2-11: the label is the target mode (the action), not the current state. */}
-          {editMode ? t("toolbar.toBrowse") : t("toolbar.toEdit")}
-        </button>
+        <div className={styles.modeSwitch} role="group" aria-label={t("toolbar.modeAria")}>
+          <button
+            type="button"
+            className={!editMode ? styles.modeActive : styles.modeQuiet}
+            aria-pressed={!editMode}
+            onClick={() => onSetMode(false)}
+          >
+            {t("toolbar.toBrowse")}
+          </button>
+          <button
+            type="button"
+            className={editMode ? styles.modeActive : styles.modeQuiet}
+            aria-pressed={editMode}
+            onClick={() => onSetMode(true)}
+          >
+            {t("toolbar.toEdit")}
+          </button>
+        </div>
         <button className={styles.quiet} type="button" onClick={onSave} disabled={!canSave}>{t("toolbar.save")}</button>
         <div className={styles.language} role="group" aria-label={t("toolbar.language")}>
           <button type="button" className={language === "ru" ? styles.languageActive : ""} onClick={() => onLanguageChange("ru")}>RU</button>

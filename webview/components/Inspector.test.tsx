@@ -83,7 +83,7 @@ describe("Inspector slider throttling (P2-5)", () => {
     const onApplyStyle = vi.fn();
     renderInspector({ onApplyStyle });
     openSection("Стили");
-    const slider = screen.getByRole("slider");
+    const slider = screen.getByRole("slider", { name: "opacity" });
     fireEvent.change(slider, { target: { value: "0.8" } });
     fireEvent.change(slider, { target: { value: "0.9" } });
     expect(onApplyStyle).not.toHaveBeenCalled();
@@ -122,7 +122,7 @@ describe("Inspector debounce timer safety", () => {
     const onApplyStyle = vi.fn();
     const { unmount } = renderInspector({ onApplyStyle });
     openSection("Стили");
-    fireEvent.change(screen.getByRole("slider"), { target: { value: "0.8" } });
+    fireEvent.change(screen.getByRole("slider", { name: "opacity" }), { target: { value: "0.8" } });
     unmount();
     act(() => {
       vi.advanceTimersByTime(150);
@@ -135,7 +135,7 @@ describe("Inspector debounce timer safety", () => {
     const onApplyStyle = vi.fn();
     const { rerender } = renderInspector({ onApplyStyle });
     openSection("Стили");
-    fireEvent.change(screen.getByRole("slider"), { target: { value: "0.8" } });
+    fireEvent.change(screen.getByRole("slider", { name: "opacity" }), { target: { value: "0.8" } });
     rerender(
       <Inspector
         selected={{ ...baseSelected, selector: "h2", tag: "h2" }}
@@ -169,5 +169,90 @@ describe("Inspector structure undo", () => {
     expect(buttons.length).toBe(1);
     fireEvent.click(buttons[0]);
     expect(onUndoStructure).toHaveBeenCalledWith("req-1");
+  });
+});
+
+describe("Inspector journal kind chips", () => {
+  it("labels each journal entry with its edit kind", () => {
+    render(
+      <Inspector
+        selected={baseSelected}
+        onApplyStyle={vi.fn()}
+        onApplyOp={vi.fn()}
+        onEditText={vi.fn()}
+        onCopyComponent={vi.fn()}
+        language="ru"
+        instruction=""
+        onInstructionChange={vi.fn()}
+        edits={[
+          { kind: "style", selector: "h1", property: "color", before: "red", after: "blue" },
+          { kind: "comment", selector: "h1", after: "Добавить тень" },
+        ]}
+        onCopyInstruction={vi.fn()}
+      />
+    );
+    expect(screen.getByText("стиль")).toBeTruthy();
+    expect(screen.getByText("комментарий")).toBeTruthy();
+  });
+});
+
+describe("Inspector color alpha (IMP-G phase 2)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("applies an rgba value when the alpha slider moves", () => {
+    vi.useFakeTimers();
+    const onApplyStyle = vi.fn();
+    renderInspector({ onApplyStyle });
+    openSection("Стили");
+    const alpha = screen.getByRole("slider", { name: "color alpha" });
+    fireEvent.change(alpha, { target: { value: "0.4" } });
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(onApplyStyle).toHaveBeenCalledWith("color", "rgba(255, 0, 0, 0.4)");
+  });
+});
+
+describe("Inspector property filter (IMP-G phase 2)", () => {
+  it("narrows style controls to the query and hides the box model", () => {
+    renderInspector();
+    openSection("Стили");
+    expect(screen.getByText("display")).toBeTruthy();
+    expect(screen.getByLabelText("box model")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Фильтр свойств…"), { target: { value: "opacity" } });
+    expect(screen.getByText("opacity")).toBeTruthy();
+    expect(screen.queryByText("display")).toBeNull();
+    expect(screen.queryByLabelText("box model")).toBeNull();
+  });
+
+  it("reports when nothing matches the filter", () => {
+    renderInspector();
+    openSection("Стили");
+    fireEvent.change(screen.getByPlaceholderText("Фильтр свойств…"), { target: { value: "zzz" } });
+    expect(screen.getByText("Нет свойств по запросу.")).toBeTruthy();
+  });
+});
+
+describe("Inspector typography preview (IMP-G phase 2)", () => {
+  it("renders a live sample styled from the selected element", () => {
+    renderInspector({
+      selected: {
+        ...baseSelected,
+        styles: { ...baseSelected.styles, "font-family": "Georgia", "font-size": "18px", "font-weight": "bold" },
+      },
+    });
+    openSection("Стили");
+    const sample = screen.getByText("Aa Текст 123");
+    expect(sample.style.fontFamily).toBe("Georgia");
+    expect(sample.style.fontSize).toBe("18px");
+    expect(sample.style.fontWeight).toBe("bold");
+  });
+
+  it("caps huge font sizes in the preview", () => {
+    renderInspector({
+      selected: { ...baseSelected, styles: { ...baseSelected.styles, "font-size": "200px" } },
+    });
+    openSection("Стили");
+    expect(screen.getByText("Aa Текст 123").style.fontSize).toBe("28px");
   });
 });

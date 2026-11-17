@@ -17,6 +17,7 @@ const messages = {
   "toolbar.save": { ru: "Сохранить стили", en: "Save styles" },
   "toolbar.language": { ru: "Язык", en: "Language" },
   "toolbar.aria": { ru: "Панель Design Studio", en: "Design Studio toolbar" },
+  "toolbar.modeAria": { ru: "Режим работы", en: "Working mode" },
   "toolbar.projectPage": { ru: "Страница проекта", en: "Project page" },
   "toolbar.detectedNext": { ru: "Обнаружен Next.js", en: "Next.js detected" },
   "toolbar.detectedVite": { ru: "Обнаружен Vite", en: "Vite detected" },
@@ -67,6 +68,9 @@ const messages = {
   "inspector.groupBorder": { ru: "Рамка", en: "Border" },
   "inspector.groupAdvanced": { ru: "Прочее", en: "Advanced" },
   "inspector.stylesNote": { ru: "Значения применяются к предпросмотру; запись в исходники — кнопкой «Сохранить стили».", en: "Values apply to the preview; saving to source files uses the Save styles button." },
+  "inspector.filterPlaceholder": { ru: "Фильтр свойств…", en: "Filter properties…" },
+  "inspector.filterNone": { ru: "Нет свойств по запросу.", en: "No properties match the filter." },
+  "inspector.typeSample": { ru: "Aa Текст 123", en: "Aa Text 123" },
   "inspector.component": { ru: "Компонент", en: "Component" },
   "inspector.copySource": { ru: "Копировать исходник", en: "Copy source" },
   "inspector.noSource": { ru: "Исходник компонента не определён", en: "Component source is unknown" },
@@ -128,7 +132,13 @@ const messages = {
   "edits.comment": { ru: "Комментарий пользователя", en: "User comment" },
   "edits.attribute": { ru: "Атрибут", en: "Attribute" },
   "edits.removed": { ru: "удалён", en: "removed" },
-  "status.aria": { ru: "Строка состояния", en: "Status bar" },
+  "status.aria": { ru: "Уведомление", en: "Notification" },
+  "status.dismiss": { ru: "Закрыть уведомление", en: "Dismiss notification" },
+  "edits.style": { ru: "стиль", en: "style" },
+  "edits.text": { ru: "текст", en: "text" },
+  "edits.classes": { ru: "классы", en: "classes" },
+  "edits.structure": { ru: "структура", en: "structure" },
+  "edits.commentShort": { ru: "комментарий", en: "comment" },
 } as const;
 
 export type MessageKey = keyof typeof messages;

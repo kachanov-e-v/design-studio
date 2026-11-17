@@ -103,6 +103,51 @@ export function parseUnitValue(value: string, units: string[]): { number: number
   return { number: Number(match[1]), unit };
 }
 
+const BOX_SIDE_TOKEN = /^(auto|0|-?\d*\.?\d+(px|rem|em|%|vw|vh)?)$/i;
+
+/** Expands a 1-4 value box shorthand (margin/padding/border-width) into [top, right, bottom, left]. */
+export function expandBoxSides(value: string): [string, string, string, string] | null {
+  const tokens = value.trim().split(/\s+/).filter((token) => token.length > 0);
+  if (tokens.length === 0 || tokens.length > 4) return null;
+  if (!tokens.every((token) => BOX_SIDE_TOKEN.test(token))) return null;
+  const [t, r = t, b = t, l = r] = tokens;
+  return [t, r, b, l];
+}
+
+/** Collapses four sides back into the shortest equivalent shorthand. */
+export function composeBoxSides(sides: [string, string, string, string]): string {
+  const [t, r, b, l] = sides;
+  if (t === r && r === b && b === l) return t;
+  if (t === b && r === l) return `${t} ${r}`;
+  if (r === l) return `${t} ${r} ${b}`;
+  return `${t} ${r} ${b} ${l}`;
+}
+
+/** Parses any supported CSS color into rgba components; alpha defaults to 1. */
+export function cssColorToRgba(value: string): { r: number; g: number; b: number; a: number } | null {
+  const v = value.trim().toLowerCase();
+  if (v === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
+  const hex = cssColorToHex(v);
+  if (hex && /^#/.test(v)) {
+    return {
+      r: parseInt(hex.slice(1, 3), 16),
+      g: parseInt(hex.slice(3, 5), 16),
+      b: parseInt(hex.slice(5, 7), 16),
+      a: 1,
+    };
+  }
+  const match = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)\s*(?:[,/]\s*(\d*\.?\d+%?)\s*)?\)$/i.exec(v);
+  if (!match) return null;
+  const [, r, g, b, alpha] = match;
+  let a = 1;
+  if (alpha !== undefined) {
+    a = alpha.endsWith("%") ? Number(alpha.slice(0, -1)) / 100 : Number(alpha);
+    if (!Number.isFinite(a)) return null;
+    a = Math.min(1, Math.max(0, a));
+  }
+  return { r: Number(r), g: Number(g), b: Number(b), a };
+}
+
 export type AttributeEditorKind = "text" | "textarea" | "select" | "toggle" | "number" | "url";
 
 export interface AttributeDefinition {

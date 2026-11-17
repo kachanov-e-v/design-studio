@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import styles from "./SelectionPopup.module.css";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import { primaryComponent } from "../componentInfo";
+import { Icon } from "./Icon";
 
 export interface SelectionPopupTarget {
   selector: string;
@@ -147,7 +148,7 @@ export const SelectionPopup = function SelectionPopup({
             title={translate(language, "popup.close")}
             onClick={onClose}
           >
-            x
+            <Icon name="close" size={12} />
           </button>
         )}
       </div>

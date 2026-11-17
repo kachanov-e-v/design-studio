@@ -1,17 +1,23 @@
-.statusBar {
+.toast {
   position: absolute;
   left: 12px;
-  bottom: 8px;
-  z-index: 2;
-  max-width: min(60%, 480px);
-  padding: 4px 10px;
+  bottom: 10px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(70%, 480px);
+  padding: 6px 8px 6px 10px;
   border: 1px solid var(--vscode-panel-border, #414141);
-  border-radius: 4px;
-  background: var(--vscode-editorWidget-background, #202020);
-  color: var(--vscode-descriptionForeground, #aaa);
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, #252526);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+  color: var(--vscode-foreground, #ccc);
+  font-size: 11px;
+  animation: toastIn .16s ease;
 }
+.toastIcon { display: flex; flex: 0 0 auto; color: var(--vscode-testing-iconPassed, #73c991); }
+.toastText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toastClose { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-descriptionForeground, #999); cursor: pointer; transition: background-color .12s ease, color .12s ease; }
+.toastClose:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); color: var(--vscode-foreground, #ccc); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }

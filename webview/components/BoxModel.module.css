@@ -1,0 +1,64 @@
+.boxModel { margin-bottom: 10px; font-size: 9px; }
+.ring {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(30px, 1fr) auto minmax(30px, 1fr);
+  grid-template-rows: auto auto auto;
+  gap: 2px;
+  padding: 12px 4px 4px;
+  border: 1px solid var(--vscode-panel-border, #4a4a4a);
+  border-radius: 3px;
+}
+.marginRing { border-color: rgba(209, 154, 102, .55); background: rgba(209, 154, 102, .06); }
+.borderRing { border-color: rgba(229, 192, 123, .55); background: rgba(229, 192, 123, .06); }
+.paddingRing { border-color: rgba(152, 195, 121, .55); background: rgba(152, 195, 121, .06); }
+.ringLabel {
+  position: absolute;
+  top: 1px;
+  left: 5px;
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 8px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.sideTop { grid-column: 2; grid-row: 1; }
+.sideRight { grid-column: 3; grid-row: 2; }
+.sideBottom { grid-column: 2; grid-row: 3; }
+.sideLeft { grid-column: 1; grid-row: 2; }
+.center { grid-column: 2; grid-row: 2; display: flex; align-items: center; justify-content: center; min-width: 0; }
+.boxModel button.sideCell {
+  min-height: 16px;
+  min-width: 30px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  font: inherit;
+  font-size: 9px;
+  text-align: center;
+  cursor: pointer;
+}
+.boxModel button.sideCell:hover { background: var(--vscode-toolbar-hoverBackground, #2a2d2e); }
+.boxModel button.sideCell:disabled { color: var(--vscode-descriptionForeground, #777); cursor: default; }
+.sideInput {
+  width: 44px;
+  min-width: 0;
+  height: 16px;
+  padding: 0 3px;
+  border: 1px solid var(--vscode-focusBorder, #4a9aef);
+  border-radius: 2px;
+  background: var(--vscode-input-background, #252526);
+  color: var(--vscode-input-foreground, #ddd);
+  font: inherit;
+  font-size: 9px;
+  text-align: center;
+}
+.contentSize {
+  padding: 3px 6px;
+  border-radius: 2px;
+  background: rgba(97, 175, 239, .12);
+  color: var(--vscode-foreground, #ccc);
+  white-space: nowrap;
+}

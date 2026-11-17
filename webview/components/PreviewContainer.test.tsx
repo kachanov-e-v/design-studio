@@ -210,3 +210,41 @@ describe("PreviewContainer address freshness (WV-02)", () => {
     expect(addressInput?.value).toBe("http://localhost:4700/boards/b");
   });
 });
+
+describe("PreviewContainer edit-mode accent frame", () => {
+  function renderSection(editMode: boolean) {
+    return render(
+      React.createElement(PreviewContainer, {
+        url: "http://127.0.0.1:4100/project/index.html",
+        editMode,
+        language: "ru" as const,
+        status: "project",
+        onEditModeChange: () => {},
+        onRefresh: () => {},
+        onNavigate: () => {},
+        onLocationChange: () => {},
+        onSelect: () => {},
+      })
+    );
+  }
+
+  it("marks the preview frame while edit mode is on", () => {
+    const { container, rerender } = renderSection(false);
+    const section = container.querySelector("section") as HTMLElement;
+    expect(section.className).not.toContain("editing");
+    rerender(
+      React.createElement(PreviewContainer, {
+        url: "http://127.0.0.1:4100/project/index.html",
+        editMode: true,
+        language: "ru" as const,
+        status: "project",
+        onEditModeChange: () => {},
+        onRefresh: () => {},
+        onNavigate: () => {},
+        onLocationChange: () => {},
+        onSelect: () => {},
+      })
+    );
+    expect(section.className).toContain("editing");
+  });
+});

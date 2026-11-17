@@ -30,6 +30,11 @@ export function App(): React.ReactElement {
   const [editMode, setEditMode] = useState(false);
   const [styleError, setStyleError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
+  const [toastSeq, setToastSeq] = useState(0);
+  const notify = useCallback((message: string) => {
+    setOperationStatus(message);
+    setToastSeq((seq) => seq + 1);
+  }, []);
   const [instruction, setInstruction] = useState("");
   const [popupDrafts, setPopupDrafts] = useState<Record<string, string>>({});
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
@@ -102,18 +107,18 @@ export function App(): React.ReactElement {
         });
       } else if (msg.type === "preview:error") {
         setState((current) => ({ ...current, status: "error" }));
-        setOperationStatus(msg.message ?? translate(languageRef.current, "status.previewError"));
+        notify(msg.message ?? translate(languageRef.current, "status.previewError"));
       } else if (msg.type === "persist:result") {
         // P0-4: drop only the acknowledged edit; failed/unconfirmed edits stay.
         setPendingStyles((current) => ackPendingStyles(current, msg));
-        setOperationStatus(msg.message ?? "");
+        notify(msg.message ?? "");
       } else if (msg.type === "ai:result" || msg.type === "ai:componentResult") {
-        setOperationStatus(msg.message ?? "");
+        notify(msg.message ?? "");
       } else if (msg.type === "error") {
-        setOperationStatus(translate(languageRef.current, "status.extensionError", { error: msg.message ?? "" }));
+        notify(translate(languageRef.current, "status.extensionError", { error: msg.message ?? "" }));
       }
     });
-  }, []);
+  }, [notify]);
 
   useEffect(() => {
     clearPending();
@@ -139,7 +144,7 @@ export function App(): React.ReactElement {
     const timeoutId = window.setTimeout(() => {
       if (!pendingRequestsRef.current.delete(result.requestId)) return;
       setStyleError(translate(languageRef.current, "status.styleTimeout"));
-      setOperationStatus(translate(languageRef.current, "status.styleTimeout"));
+      notify(translate(languageRef.current, "status.styleTimeout"));
     }, 5000);
     pendingRequestsRef.current.set(result.requestId, {
       requestId: result.requestId,
@@ -170,7 +175,7 @@ export function App(): React.ReactElement {
     if (!info.success) {
       const message = info.reason ?? translate(language, "status.styleFailed");
       setStyleError(message);
-      setOperationStatus(message);
+      notify(message);
       return;
     }
 
@@ -204,7 +209,7 @@ export function App(): React.ReactElement {
             sourceRules: payload.rules,
           },
         ]);
-        setOperationStatus(translate(language, "status.styleApplied"));
+        notify(translate(language, "status.styleApplied"));
       }
     }
   };
@@ -220,7 +225,7 @@ export function App(): React.ReactElement {
   const handleOpApplied = (info: OpAppliedInfo) => {
     if (!info.success) {
       if (info.op === "set-classes") previousClassesRef.current = undefined;
-      setOperationStatus(info.reason ?? translate(language, "status.operationFailed"));
+      notify(info.reason ?? translate(language, "status.operationFailed"));
       return;
     }
     const payload = info.payload ?? selectedRef.current;
@@ -234,12 +239,12 @@ export function App(): React.ReactElement {
       const after = (info.value ?? "").split(/\s+/).filter(Boolean).join(" ");
       recordEdit({ kind: "classes", selector: payload.selector, before, after, component: componentRef });
       previousClassesRef.current = undefined;
-      setOperationStatus(translate(language, "status.classesApplied"));
+      notify(translate(language, "status.classesApplied"));
       return;
     }
     if (info.op === "set-text") {
       recordEdit({ kind: "text", selector: payload.selector, before: selectedRef.current?.text ?? "", after: info.value ?? payload.text ?? "", component: componentRef });
-      setOperationStatus(translate(language, "status.textApplied"));
+      notify(translate(language, "status.textApplied"));
       return;
     }
     if (info.op === "set-attribute") {
@@ -253,11 +258,11 @@ export function App(): React.ReactElement {
         after: info.value ?? payload.attributes?.[name] ?? "",
         component: componentRef,
       });
-      setOperationStatus(translate(language, "status.attributeApplied"));
+      notify(translate(language, "status.attributeApplied"));
       return;
     }
     recordEdit({ kind: "structure", selector: payload.selector, operation: info.op, component: componentRef, requestId: info.requestId });
-    setOperationStatus(translate(language, "status.operationApplied"));
+    notify(translate(language, "status.operationApplied"));
   };
 
   const handleRuntimeReady = useCallback(() => {
@@ -269,7 +274,7 @@ export function App(): React.ReactElement {
 
   const handleUndone = (info: { requestId: string; success: boolean; payload?: ElementPayload | null }) => {
     if (!info.success) {
-      setOperationStatus(translate(languageRef.current, "status.undoFailed"));
+      notify(translate(languageRef.current, "status.undoFailed"));
       return;
     }
     const edit = editsRef.current.find((candidate) => candidate.requestId === info.requestId);
@@ -279,20 +284,20 @@ export function App(): React.ReactElement {
     if (!remaining.some((candidate) => candidate.selector === edit.selector)) {
       previewRef.current?.markElement(edit.selector, false);
     }
-    setOperationStatus(translate(languageRef.current, "status.undone"));
+    notify(translate(languageRef.current, "status.undone"));
   };
 
   const handleSave = () => {
     if (pendingStyles.length === 0) {
-      setOperationStatus(translate(language, "status.noEdits"));
+      notify(translate(language, "status.noEdits"));
       return;
     }
     for (const edit of pendingStyles) postToExtension(buildStylePersistMessage(edit));
-    setOperationStatus(translate(language, "status.saving"));  };
+    notify(translate(language, "status.saving"));  };
 
   const handleCopyInstruction = (instruction: string) => {
     if (!selected && !instruction.trim() && edits.length === 0) {
-      setOperationStatus(translate(language, "status.noSelection"));
+      notify(translate(language, "status.noSelection"));
       return;
     }
     postToExtension({ type: "ai:copyInstruction", ...(selected ? { payload: selected } : {}), instruction, edits });
@@ -322,7 +327,7 @@ export function App(): React.ReactElement {
       component: component ? { name: component.name, file: component.file, line: component.line } : undefined,
     });
     previewRef.current?.markElement(selector, true);
-    setOperationStatus(translate(language, "status.commentAdded"));
+    notify(translate(language, "status.commentAdded"));
   };
 
   const hasSessionWork =
@@ -395,7 +400,7 @@ export function App(): React.ReactElement {
   };
 
   const handleNavigateBlocked = (url: string) => {
-    setOperationStatus(translate(language, "status.externalLinkBlocked", { url }));
+    notify(translate(language, "status.externalLinkBlocked", { url }));
   };
 
   const handleCopyComponent = (component: { name?: string; file?: string; line?: number }) => {
@@ -422,7 +427,7 @@ export function App(): React.ReactElement {
         editMode={editMode}
         language={language}
         onLanguageChange={handleLanguageChange}
-        onInspect={() => setEditMode((value) => !value)}
+        onSetMode={setEditMode}
         onSave={handleSave}
         canSave={pendingStyles.length > 0}
       />
@@ -466,7 +471,7 @@ export function App(): React.ReactElement {
           error={styleError}
         />
       </div>
-      <FloatingPanel status={operationStatus} language={language} />
+      <FloatingPanel status={operationStatus} seq={toastSeq} language={language} onDismiss={() => setOperationStatus("")} />
       {refreshConfirmOpen && (
         <div
           className={styles.confirmOverlay}

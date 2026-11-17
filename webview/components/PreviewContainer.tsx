@@ -4,6 +4,7 @@ import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
 import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import { SelectionPopup, type SelectionPopupTarget } from "./SelectionPopup";
+import { Icon } from "./Icon";
 
 export interface RevealComponentInfo {
   name?: string;
@@ -520,13 +521,13 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   };
 
   return (
-    <section className={styles.preview}>
+    <section className={`${styles.preview} ${editMode ? styles.editing : ""}`}>
       <div className={styles.bar}>
         <span className={styles.status}>{translate(language, "preview.status")}: {projectStatus}</span>
         {status === "devserver" && (
           <>
-            <button type="button" title={translate(language, "preview.back")} aria-label={translate(language, "preview.back")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("back")}>←</button>
-            <button type="button" title={translate(language, "preview.forward")} aria-label={translate(language, "preview.forward")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("forward")}>→</button>
+            <button type="button" title={translate(language, "preview.back")} aria-label={translate(language, "preview.back")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("back")}><Icon name="back" /></button>
+            <button type="button" title={translate(language, "preview.forward")} aria-label={translate(language, "preview.forward")} disabled={runtimeStatus !== "ready"} onClick={() => moveHistory("forward")}><Icon name="forward" /></button>
             <form className={styles.addressForm} onSubmit={(event) => { event.preventDefault(); submitAddress(); }}>
               <input
                 className={styles.address}
@@ -537,15 +538,17 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
                 aria-label={translate(language, "preview.addressPlaceholder")}
               />
             </form>
-            <button type="button" title={translate(language, "preview.go")} aria-label={translate(language, "preview.go")} onClick={submitAddress}>↵</button>
+            <button type="button" title={translate(language, "preview.go")} aria-label={translate(language, "preview.go")} onClick={submitAddress}><Icon name="go" /></button>
           </>
         )}
         <span className={styles.status}>{statusText}</span>
         {editMode && runtimeStatus === "ready" && <span className={styles.hint}>{translate(language, "preview.selectHint")}</span>}
         <button
           type="button"
+          className={styles.refreshButton}
           onClick={requestReload}
         >
+          <Icon name="refresh" />
           {translate(language, "preview.refresh")}
         </button>
       </div>
