@@ -311,6 +311,12 @@ SPA-переходы без полной перезагрузки (NAV-02), бл
 `9df444a` (IMP-A, protocol v9) и IMP-B (CSP-preserving инжекция).
 Роадмап: `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A, IMP-B и IMP-G выполнены).
 История версий протокола: `docs/PROTOCOL_CHANGELOG.md`.
+CI: матрица Node 22/24 (jsdom 31 требует `^22.22.2 || ^24.15.0 || >=26`, undici 8
+нуждается в `node:zlib createZstdDecompress`); `engines.node` выровнен с dev-тулчейном.
+Audit-гейт — `npm audit --omit=dev --audit-level=high` (runtime-зависимостей у расширения
+нет, VSIX пакуется `--no-dependencies`); полный audit дерева — advisory-шаг: dev-advisories
+(picomatch/fdir ReDoS и др.) пока без патчей upstream, «фиксы» npm audit — мажорные
+даунгрейды тулчейна. Отслеживаются dependabot'ом.
 
 ### Протокол v9 (`packages/preview-runtime/src/protocol.ts`)
 

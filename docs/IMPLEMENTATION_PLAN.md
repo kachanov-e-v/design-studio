@@ -643,6 +643,9 @@ build (verify-build) OK — финальный прогон см. отчёт с�
 Актуальный роадмап — `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A, IMP-B
 и IMP-G выполнены); история версий протокола — `docs/PROTOCOL_CHANGELOG.md`; полная
 таблица сообщений и handshake — в `docs/AI_HANDOFF.md`, раздел «Текущее состояние».
+CI: матрица Node 22/24 (jsdom 31 требует `^22.22.2 || ^24.15.0 || >=26`), `engines.node`
+выровнен; audit-гейт — `npm audit --omit=dev --audit-level=high` (runtime-зависимостей
+нет), полный audit — advisory (dev-advisories без патчей upstream, отслеживает dependabot).
 
 ### Протокол v9 (кратко)
 
