@@ -58,6 +58,18 @@ beforeAll(async () => {
     } else if (p === "/with-style") {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(stubHtmlWithStyle);
+    } else if (p === "/csp-strict") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "script-src 'self'" });
+      res.end(stubHtml);
+    } else if (p === "/csp-unsafe-inline") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "script-src 'self' 'unsafe-inline'" });
+      res.end(stubHtml);
+    } else if (p === "/csp-sandbox") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; sandbox allow-forms" });
+      res.end(stubHtml);
+    } else if (p === "/csp-report-only") {
+      res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy-Report-Only": "script-src 'self'" });
+      res.end(stubHtml);
     } else if (p === "/slow-html" || p === "/slow-css" || p === "/slow-redirect") {
       // P3-7: never-ending buffered responses; the preview must abort the
       // upstream fetch once the client connection goes away. Next.js action
@@ -1267,5 +1279,110 @@ describe("P3-7: proxy reliability", () => {
     expect(removed).toBeGreaterThanOrEqual(1);
     const after = await request(`${server.origin}/proxy/http/${stubHost()}/echo-headers`, { method: "GET" });
     expect(JSON.parse(after.body).cookie).not.toContain("aged=1");
+  });
+});
+
+describe("IMP-B: CSP-preserving proxy", () => {
+  let server: PreviewHostServer;
+  const fallbacks: string[] = [];
+
+  beforeAll(async () => {
+    server = new PreviewHostServer({
+      webviewRoot: makeTempWebviewRoot(),
+      onCspFallback: (target) => fallbacks.push(target),
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  it("adapts the upstream CSP header and matches the runtime script nonce", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/csp-strict`);
+    expect(res.status).toBe(200);
+    const policy = res.headers["content-security-policy"];
+    expect(policy).toBeDefined();
+    expect(policy).toContain("'nonce-");
+    expect(policy).toContain("script-src");
+    const headerNonce = /'nonce-([^']+)'/.exec(policy)?.[1];
+    const tagNonce = /<script[^>]*src="[^"]*__ds-runtime\.js"[^>]*nonce="([^"]+)"/.exec(res.body)?.[1];
+    expect(headerNonce).toBeTruthy();
+    expect(tagNonce).toBe(headerNonce);
+    const swNonce = /<script nonce="([^"]+)">if\('serviceWorker'/.exec(res.body)?.[1];
+    expect(swNonce).toBe(headerNonce);
+  });
+
+  it("keeps 'unsafe-inline' policies without adding a nonce", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/csp-unsafe-inline`);
+    expect(res.status).toBe(200);
+    const policy = res.headers["content-security-policy"];
+    expect(policy).toContain("'unsafe-inline'");
+    expect(policy).not.toContain("nonce-");
+  });
+
+  it("strips sandbox policies and notifies the fallback callback once per path", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/csp-sandbox`);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-security-policy"]).toBeUndefined();
+    expect(fallbacks).toEqual([`${stubOrigin}/csp-sandbox`]);
+    const again = await get(`${server.origin}/proxy/${stubOrigin}/csp-sandbox`);
+    expect(again.headers["content-security-policy"]).toBeUndefined();
+    expect(fallbacks).toHaveLength(1);
+  });
+
+  it("adapts report-only CSP headers too", async () => {
+    const res = await get(`${server.origin}/proxy/${stubOrigin}/csp-report-only`);
+    expect(res.status).toBe(200);
+    const policy = res.headers["content-security-policy-report-only"];
+    expect(policy).toBeDefined();
+    expect(policy).toContain("'nonce-");
+    expect(policy).toContain("'self'");
+  });
+
+  it("adapts meta CSP on /project/ pages and preserves inline scripts", async () => {
+    const fixtureRoot = path.join(import.meta.dirname, "..", "..", "..", "fixtures", "static-site");
+    const projectServer = new PreviewHostServer({ webviewRoot: makeTempWebviewRoot(), projectRoot: fixtureRoot });
+    await projectServer.start();
+    try {
+      const res = await get(`${projectServer.origin}/project/csp.html`);
+      expect(res.status).toBe(200);
+      const meta = /<meta[^>]*http-equiv="Content-Security-Policy"[^>]*>/i.exec(res.body)?.[0] ?? "";
+      expect(meta).toBeTruthy();
+      const content = /content="([^"]*)"/.exec(meta)?.[1] ?? "";
+      expect(content).toContain("'self'");
+      expect(content).toContain("'unsafe-inline'");
+      expect(content).not.toContain("nonce-");
+      expect(res.body).toContain('document.getElementById("csp-marker").textContent = "csp-inline-ok";');
+      expect(res.body).toContain("__ds-runtime.js");
+    } finally {
+      await projectServer.stop();
+    }
+  });
+
+  it("removes sandbox meta CSP on /project/ pages and fires the fallback callback", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ds-csp-sandbox-"));
+    fs.writeFileSync(
+      path.join(projectRoot, "sandbox.html"),
+      '<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'; sandbox allow-forms">' +
+        "<title>S</title></head><body>sandboxed</body></html>"
+    );
+    const projectFallbacks: string[] = [];
+    const projectServer = new PreviewHostServer({
+      webviewRoot: makeTempWebviewRoot(),
+      projectRoot,
+      onCspFallback: (target) => projectFallbacks.push(target),
+    });
+    await projectServer.start();
+    try {
+      const res = await get(`${projectServer.origin}/project/sandbox.html`);
+      expect(res.status).toBe(200);
+      expect(res.body.toLowerCase()).not.toContain("content-security-policy");
+      expect(res.body).toContain("sandboxed");
+      expect(projectFallbacks).toHaveLength(1);
+      expect(projectFallbacks[0]).toMatch(/^project:.*sandbox\.html$/);
+    } finally {
+      await projectServer.stop();
+    }
   });
 });

@@ -142,6 +142,8 @@ export function App(): React.ReactElement {
       } else if (msg.type === "preview:error") {
         setState((current) => ({ ...current, status: "error" }));
         notify(msg.message ?? translate(languageRef.current, "status.previewError"));
+      } else if (msg.type === "preview:csp-fallback") {
+        notify(translate(languageRef.current, "status.cspFallback"));
       } else if (msg.type === "persist:result") {
         // P0-4: drop only the acknowledged edit; failed/unconfirmed edits stay.
         setPendingStyles((current) => ackPendingStyles(current, msg));

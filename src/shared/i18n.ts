@@ -112,6 +112,10 @@ const messages = {
   "status.editUndone": { ru: "Правка отменена", en: "Edit undone" },
   "status.editsRestored": { ru: "Восстановлено правок: {count}", en: "Restored edits: {count}" },
   "status.previewError": { ru: "Ошибка предпросмотра", en: "Preview error" },
+  "status.cspFallback": {
+    ru: "CSP страницы снят: политика содержит sandbox, иначе runtime не выполнить",
+    en: "Page CSP removed: the policy contains sandbox, the runtime cannot run otherwise",
+  },
   "app.errorTitle": { ru: "Интерфейс упал", en: "The UI crashed" }, // P2-20
   "app.reload": { ru: "Перезагрузить", en: "Reload" }, // P2-20
   // P2-22: extension-side strings moved out of inline ternaries.

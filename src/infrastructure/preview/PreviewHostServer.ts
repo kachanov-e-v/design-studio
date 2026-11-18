@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { targetFromProxyPath, targetFromReferer, DS_SERVICE_WORKER, candidateLoopbackTargets, proxyPathFor, injectIntoHtml, prependProxyOriginToPathUrls } from "./proxy-html";
 import { rewriteProxiedCss, rewriteProxiedHtml, HEADERS_TO_STRIP } from "./proxy-html";
 import { validateUpstreamTarget, validateUpstreamResolved } from "./upstream-validation";
+import { generateNonce, adaptCsp, cspRequiresFallback, htmlMetaCspRequiresFallback } from "./csp";
 
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
@@ -112,6 +113,8 @@ export interface PreviewHostServerOptions {
   maxResponseBytes?: number;
   /** Optional sink for compact proxy diagnostics (redirects, 4xx, 5xx). */
   trace?: (line: string) => void;
+  /** IMP-B: notified (once per target key) when a sandbox CSP forces the legacy strip. */
+  onCspFallback?: (target: string) => void;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -288,8 +291,11 @@ export class PreviewHostServer {
   private readonly host: string;
   private readonly webviewRoot: string;
   private readonly trace: (line: string) => void;
+  private readonly onCspFallback: (target: string) => void;
   private readonly maxResponseBytes: number;
   private projectRoot: string | null = null;
+  private readonly nonce = generateNonce();
+  private readonly cspFallbackNotified = new Set<string>();
 
   constructor(options: PreviewHostServerOptions) {
     this.host = options.host ?? "127.0.0.1";
@@ -297,6 +303,14 @@ export class PreviewHostServer {
     this.projectRoot = options.projectRoot ?? null;
     this.maxResponseBytes = options.maxResponseBytes ?? MAX_RESPONSE_BYTES;
     this.trace = options.trace ?? (() => {});
+    this.onCspFallback = options.onCspFallback ?? (() => {});
+  }
+
+  private notifyCspFallback(key: string): void {
+    if (this.cspFallbackNotified.has(key)) return;
+    this.cspFallbackNotified.add(key);
+    this.trace(`[csp] sandbox policy — stripping CSP for ${key}`);
+    this.onCspFallback(key);
   }
 
   setProjectRoot(root: string | null): void {
@@ -616,6 +630,9 @@ export class PreviewHostServer {
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     if (ext === ".html" && contentType.startsWith("text/html")) {
       let htmlContent = content.toString("utf8");
+      if (htmlMetaCspRequiresFallback(htmlContent)) {
+        this.notifyCspFallback(`project:${path.relative(this.projectRoot ?? "", filePath) || filePath}`);
+      }
       // Single injection point for project pages: base + runtime + authored
       // <base> respect live in injectIntoHtml (P0-2 guard lives in the runtime).
       // The upstream origin is the preview origin itself: all /project/ links
@@ -624,6 +641,7 @@ export class PreviewHostServer {
         respectAuthoredBase: true,
         upstreamOrigin: this.origin,
         parentOrigins: [this.origin],
+        nonce: this.nonce,
       });
       res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
       res.end(htmlContent);
@@ -957,11 +975,25 @@ export class PreviewHostServer {
     // HTML, CSS and streaming alike.
     res.on("close", () => abortUpstream());
     const headers: Record<string, string> = {};
+    const cspHeaders: [string, string][] = [];
     upstream.headers.forEach((value, key) => {
+      if (key === "content-security-policy" || key === "content-security-policy-report-only") {
+        cspHeaders.push([key, value]);
+      }
       if (!HEADERS_TO_STRIP.includes(key as (typeof HEADERS_TO_STRIP)[number])) {
         headers[key] = value;
       }
     });
+    // undici Headers joins repeated CSP headers with ", "; treat the joined
+    // value as a single policy (dev servers send one).
+    for (const [key, value] of cspHeaders) {
+      if (cspRequiresFallback(value)) {
+        this.notifyCspFallback(parsedTarget.origin + parsedTarget.pathname);
+        continue;
+      }
+      const adapted = adaptCsp(value, this.nonce);
+      if (adapted !== "") headers[key] = adapted;
+    }
     // Remember the app session in the host-side jar: browser cookie storage is
     // unreliable for a cross-site iframe inside a VS Code webview.
     const upstreamCookies =
@@ -1016,7 +1048,7 @@ export class PreviewHostServer {
         return;
       }
       const html = buf.toString("utf8");
-      const rewritten = rewriteProxiedHtml(html, finalTarget, `${this.origin}/__ds-runtime.js`, this.origin);
+      const rewritten = rewriteProxiedHtml(html, finalTarget, `${this.origin}/__ds-runtime.js`, this.origin, this.nonce);
       headers["content-type"] = "text/html; charset=utf-8";
       headers["cache-control"] = "no-store";
       if (setCookies.length > 0) res.setHeader("Set-Cookie", setCookies);

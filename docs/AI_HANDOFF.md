@@ -5,7 +5,7 @@
 > **Статус (2026-11-18): актуальный протокол — v9 (`PROTOCOL_VERSION = "9"`).**
 > Этот файл — исторический журнал хендоффов: разделы ниже фиксируют состояние на
 > момент своих сессий (протокол v3–v6) и не переписываются. Актуальный роадмап —
-> `docs/IMPROVEMENT_PLAN.md` (эпики IMP-A…IMP-F; IMP-G выполнен); история версий
+> `docs/IMPROVEMENT_PLAN.md` (эпики IMP-A…IMP-F; IMP-A, IMP-B и IMP-G выполнены); история версий
 > протокола — `docs/PROTOCOL_CHANGELOG.md`. Текущее состояние протокола,
 > security hardening и известные ограничения — в разделе
 > «Текущее состояние (2026-11-18): протокол v9» в конце файла.
@@ -307,10 +307,16 @@ SPA-переходы без полной перезагрузки (NAV-02), бл
 ## Текущее состояние (2026-11-18): протокол v9
 
 Разделы выше — история. Ниже — актуальное состояние после коммитов `05f9b0d`
-(security hardening + protocol v8, FIX-01..08), `0dac41d` (IMP-G, фазы 1–2 UI)
-и батча IMP-A (персист журнала + replay, protocol v9, ещё не закоммичен).
-Роадмап: `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A и IMP-G выполнены).
+(security hardening + protocol v8, FIX-01..08), `0dac41d` (IMP-G, фазы 1–2 UI),
+`9df444a` (IMP-A, protocol v9) и IMP-B (CSP-preserving инжекция).
+Роадмап: `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A, IMP-B и IMP-G выполнены).
 История версий протокола: `docs/PROTOCOL_CHANGELOG.md`.
+CI: матрица Node 22/24 (jsdom 31 требует `^22.22.2 || ^24.15.0 || >=26`, undici 8
+нуждается в `node:zlib createZstdDecompress`); `engines.node` выровнен с dev-тулчейном.
+Audit-гейт — `npm audit --omit=dev --audit-level=high` (runtime-зависимостей у расширения
+нет, VSIX пакуется `--no-dependencies`); полный audit дерева — advisory-шаг: dev-advisories
+(picomatch/fdir ReDoS и др.) пока без патчей upstream, «фиксы» npm audit — мажорные
+даунгрейды тулчейна. Отслеживаются dependabot'ом.
 
 ### Протокол v9 (`packages/preview-runtime/src/protocol.ts`)
 
@@ -388,6 +394,7 @@ SPA-переходы без полной перезагрузки (NAV-02), бл
 - CSP: прокси снимает и response-заголовки (`content-security-policy`,
   `-report-only`), и `<meta http-equiv="Content-Security-Policy">` — известное
   ограничение; IMP-B добавит nonce-инжекцию с сохранением CSP.
+  (На момент 05f9b0d; текущее поведение — в разделе IMP-B ниже.)
 - Промпт ИИ: контент страницы ограждён как недоверенные PAGE DATA; пожелание
   пользователя остаётся ВНЕ ограждения (PROMPT-01 + hardening).
 - `StylePersistenceAdapter` перечитывает файл перед `WorkspaceEdit`
@@ -403,7 +410,7 @@ Inline SVG-иконки, сегментированный переключате
 сторонам), альфа-слайдеры цвета, live-превью типографики, sticky-заголовки
 секций инспектора, фильтр свойств.
 
-### IMP-A: переживание правок (протокол v9, не закоммичено)
+### IMP-A: переживание правок (протокол v9, коммит 9df444a)
 
 - Хост персистит журнал правок в `workspaceState` (ключ `designStudio.journal.v1`):
   `Record<"${source}|${path}", DesignEdit[]>`, source = `demo` / `project:${entry}` /
@@ -423,9 +430,30 @@ Inline SVG-иконки, сегментированный переключате
   `ds:replay` со значением `before` + `forget: true`; комментарий → удаление
   записи журнала. Кнопка «Отменить правку» на каждой записи журнала.
 
+### IMP-B: CSP-preserving инжекция
+
+- Новый модуль `src/infrastructure/preview/csp.ts`: `adaptCsp` добавляет `'self'`
+  в source-списки и nonce сессии в `script-src`/`script-src-elem` (материализует
+  `script-src` из `default-src`); nonce НЕ добавляется к политикам, опирающимся
+  на `'unsafe-inline'` без nonce/hash/strict-dynamic (иначе inline-скрипты
+  приложения, например гидрация Next.js, сломались бы); `frame-ancestors` и
+  `upgrade-insecure-requests` удаляются; `sandbox` → fallback.
+- CSP-заголовки (enforce + report-only) больше не снимаются: `PreviewHostServer`
+  адаптирует их тем же nonce, что проставлен на внешнем `/__ds-runtime.js` и
+  inline-SW-сниппете; meta-CSP переписывается (`rewriteMetaCsp`) вместо вырезания.
+  Nonce — `crypto.randomBytes(18).base64url` на экземпляр хоста (сессия).
+- Fallback (sandbox): заголовок/meta снимается, хост шлёт `onCspFallback`
+  (дедуп по маршруту) → расширение постит webview `preview:csp-fallback` →
+  тост `status.cspFallback`. Это сообщение хост↔webview, НЕ часть ds:*-протокола
+  (версия протокола не менялась, осталась v9).
+- Fixture `fixtures/static-site/csp.html` (meta-CSP unsafe-inline + inline-скрипт).
+- Осознанные ослабления (SECURITY.md): `'self'` во всех source-списках (замена
+  одиночного `'none'`), удаление frame-ancestors, склейка нескольких CSP-заголовков
+  undici в одну политику.
+
 ### Гейты и известные ограничения
 
-- `npm test` — 462 теста / 35 файлов, зелёные; typecheck/lint/build чистые.
+- `npm test` — 505 тестов / 37 файлов, зелёные; typecheck/lint/build чистые.
 - Ограничения (честный список, детали — RC1–RC5 в `docs/IMPROVEMENT_PLAN.md`):
   - style/text/classes/attribute переживают reload страницы, ререндер/HMR и
     перезагрузку окна (журнал в `workspaceState` + replay); структурные операции
@@ -437,5 +465,6 @@ Inline SVG-иконки, сегментированный переключате
     неоднозначным/невалидным, запись пропускается;
   - детекция компонентов — только React dev mode (fiber); в production остаётся
     эвристика `SourceHintFinder`;
-  - CSP страницы снимается полностью (IMP-B);
+  - CSP страницы сохраняется и адаптируется (IMP-B); политики с `sandbox`
+    снимаются с тостом-предупреждением;
   - e2e в живом VS Code ещё нет — только jsdom/unit (IMP-D).
