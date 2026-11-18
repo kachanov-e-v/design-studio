@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./PreviewContainer.module.css";
 import type { EditableAttribute, ElementOp, ElementPayload } from "../types";
-import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage } from "@design-studio/preview-runtime/protocol";
+import { PROTOCOL_VERSION, isEditableAttribute, isRuntimeMessage, type ReplayEdit } from "@design-studio/preview-runtime/protocol";
 import { translate, type Language } from "@design-studio/shared/i18n";
 import { SelectionPopup, type SelectionPopupTarget } from "./SelectionPopup";
 import { Icon } from "./Icon";
@@ -18,6 +18,8 @@ export interface PreviewContainerHandle {
   reload: () => void;
   markElement: (selector: string, marked: boolean) => void;
   undo: (requestId: string) => void;
+  /** IMP-A: re-apply journal edits by selector; false when the session is not up. */
+  replayEdits: (edits: ReplayEdit[]) => boolean;
 }
 
 type RuntimeStatus = "idle" | "connecting" | "ready" | "missing" | "protocol-mismatch" | "error";
@@ -78,6 +80,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   onOpApplied?: (info: OpAppliedInfo) => void;
   onRuntimeReady?: () => void;
   onUndone?: (info: UndoneInfo) => void;
+  onReplayed?: (info: { applied: number; skipped: number }) => void;
 }>(function PreviewContainer(
   {
     url,
@@ -101,6 +104,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onOpApplied,
     onRuntimeReady,
     onUndone,
+    onReplayed,
   },
   ref
 ): React.ReactElement {
@@ -114,6 +118,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
   const onRefreshRef = useRef(onRefresh);
   const onRuntimeReadyRef = useRef(onRuntimeReady);
   const onUndoneRef = useRef(onUndone);
+  const onReplayedRef = useRef(onReplayed);
   const editModeRef = useRef(editMode);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("idle");
   const [readyEpoch, setReadyEpoch] = useState(0);
@@ -164,6 +169,7 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
     onRefreshRef.current = onRefresh;
     onRuntimeReadyRef.current = onRuntimeReady;
     onUndoneRef.current = onUndone;
+    onReplayedRef.current = onReplayed;
     editModeRef.current = editMode;
   });
 
@@ -307,6 +313,15 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
         previewOriginRef.current
       );
     },
+    replayEdits: (edits) => {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || !sessionIdRef.current || runtimeStatus !== "ready") return false;
+      iframe.contentWindow.postMessage(
+        { type: "ds:replay", version: PROTOCOL_VERSION, edits, sessionId: sessionIdRef.current },
+        previewOriginRef.current
+      );
+      return true;
+    },
   }), [runtimeStatus, performReload]);
 
   useEffect(() => {
@@ -422,6 +437,10 @@ export const PreviewContainer = React.forwardRef<PreviewContainerHandle, {
       }
       if (data.type === "ds:undone") {
         onUndoneRef.current?.({ requestId: data.requestId, success: data.success, payload: data.payload ?? null });
+        return;
+      }
+      if (data.type === "ds:replayed") {
+        onReplayedRef.current?.({ applied: data.applied, skipped: data.skipped });
         return;
       }
       if (data.type === "ds:navigate") {

@@ -14,6 +14,9 @@ const PROJECT_ENTRY_KEY = "designStudio.projectEntry.v3";
 const DEV_SERVER_KEY = "designStudio.devServer.v3";
 const LANGUAGE_KEY = "designStudio.language.v1";
 const DEMO_KEY = "designStudio.demoPreview.v1";
+// IMP-A: edit journals keyed by `${source}|${route}` so they survive reloads.
+const JOURNAL_KEY = "designStudio.journal.v1";
+const JOURNAL_MAX_ROUTES = 20;
 
 let sharedHostServer: PreviewHostServer | null = null;
 let sharedTraceChannel: vscode.OutputChannel | null = null;
@@ -115,6 +118,49 @@ function sanitizeDesignEdits(raw: unknown): DesignEdit[] {
     });
   }
   return edits;
+}
+
+// IMP-A: journal entries are persisted verbatim across reloads, so the
+// whitelist is rebuilt with tighter caps than the prompt-export sanitizer and
+// keeps requestId (needed to undo structure edits after a reload).
+function sanitizeJournalEdits(raw: unknown[]): DesignEdit[] {
+  const edits: DesignEdit[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    if (typeof item.kind !== "string" || !EDIT_KINDS.has(item.kind)) continue;
+    const selector = boundedString(item.selector, 500);
+    if (!selector) continue;
+    const componentRaw = item.component;
+    let component: DesignEdit["component"];
+    if (componentRaw && typeof componentRaw === "object" && !Array.isArray(componentRaw)) {
+      const c = componentRaw as Record<string, unknown>;
+      const name = boundedString(c.name, 100);
+      const file = boundedString(c.file, 500);
+      const line =
+        typeof c.line === "number" && Number.isFinite(c.line) && c.line >= 0 && c.line <= 1_000_000
+          ? Math.floor(c.line)
+          : undefined;
+      if (name !== undefined || file !== undefined || line !== undefined) component = { name, file, line };
+    }
+    edits.push({
+      kind: item.kind as DesignEdit["kind"],
+      selector,
+      property: boundedString(item.property, 64),
+      before: boundedString(item.before, 5000),
+      after: boundedString(item.after, 5000),
+      operation: boundedString(item.operation, 32),
+      requestId: boundedString(item.requestId, 128),
+      component,
+    });
+  }
+  return edits;
+}
+
+function journalRoutePath(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 4000) return null;
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+  return raw;
 }
 
 function getWorkspaceRoot(context: vscode.ExtensionContext): string | null {
@@ -258,6 +304,24 @@ async function createPanel(context: vscode.ExtensionContext): Promise<void> {
     });
   };
 
+  // IMP-A: journals are namespaced by the active preview source so switching
+  // demo/project/dev-server never mixes (or clears) another source's edits.
+  const journalSource = (): string | null => {
+    if (context.workspaceState.get<boolean>(DEMO_KEY, false)) return "demo";
+    const entry = context.workspaceState.get<string>(PROJECT_ENTRY_KEY, "");
+    if (entry) return `project:${entry}`;
+    const devServer = context.workspaceState.get<string>(DEV_SERVER_KEY, "");
+    if (devServer) {
+      try {
+        return `dev:${new URL(devServer).origin}`;
+      } catch {
+        // Ignore stale malformed dev-server state.
+        return null;
+      }
+    }
+    return null;
+  };
+
   panel.webview.onDidReceiveMessage(async (msg) => {
     try {
       if (!msg || typeof msg.type !== "string") return;
@@ -343,6 +407,36 @@ async function createPanel(context: vscode.ExtensionContext): Promise<void> {
         } catch {
           // Ignore malformed route updates from the preview frame.
         }
+        return;
+      }
+      if (msg.type === "journal:save") {
+        const route = journalRoutePath(msg.path);
+        if (!route || !Array.isArray(msg.edits) || msg.edits.length > 200) return;
+        const source = journalSource();
+        if (!source) return;
+        const stored = context.workspaceState.get<Record<string, DesignEdit[]>>(JOURNAL_KEY, {});
+        const journal = { ...stored };
+        journal[`${source}|${route}`] = sanitizeJournalEdits(msg.edits);
+        // FIFO eviction: object key order preserves insertion order.
+        const keys = Object.keys(journal);
+        while (keys.length > JOURNAL_MAX_ROUTES) {
+          const oldest = keys.shift();
+          if (oldest === undefined) break;
+          delete journal[oldest];
+        }
+        // Avoid a workspaceState write when the serialized journal is unchanged.
+        if (JSON.stringify(journal) !== JSON.stringify(stored)) {
+          await context.workspaceState.update(JOURNAL_KEY, journal);
+        }
+        return;
+      }
+      if (msg.type === "journal:request") {
+        const route = journalRoutePath(msg.path);
+        if (!route) return;
+        const source = journalSource();
+        const journal = context.workspaceState.get<Record<string, DesignEdit[]>>(JOURNAL_KEY, {});
+        const edits = source ? journal[`${source}|${route}`] ?? [] : [];
+        panel.webview.postMessage({ type: "journal:loaded", path: route, edits });
         return;
       }
       if (msg.type === "preview:refresh") {

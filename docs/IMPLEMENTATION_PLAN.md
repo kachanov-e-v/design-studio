@@ -1,8 +1,19 @@
 # IMPLEMENTATION PLAN (EPIC A)
 
+> **Статус (2026-11-18): актуальный протокол — v9 (`PROTOCOL_VERSION = "9"`).**
+> Этот файл — исторический аудит и ledger выполненных работ (эпики A–I, фазы 0–5,
+> NAV/RT/WV/EXT/UX, PROMPT-01): версии протокола и статусы ниже зафиксированы
+> на момент своих сессий и не переписываются. Актуальный роадмап —
+> `docs/IMPROVEMENT_PLAN.md` (эпики IMP-A…IMP-F; IMP-A и IMP-G выполнены); история
+> версий протокола — `docs/PROTOCOL_CHANGELOG.md`. Текущее состояние v9, security
+> hardening и известные ограничения — в разделе «Текущее состояние (2026-11-18)»
+> в конце файла; полная таблица сообщений — в `docs/AI_HANDOFF.md`.
+
 Дата аудита: рабочее дерево на ветке `master` с незакоммиченным рефакторингом протокола v2/v3 (атрибуты, outlines в iframe). Задача: превратить preview в полноценный браузер с раздельными режимами, начиная с политики навигации по ссылкам.
 
 ## Baseline команд
+
+(На момент аудита; текущий baseline — 462 теста / 35 файлов, см. конец файла.)
 
 | Команда | Результат |
 |---|---|
@@ -12,11 +23,11 @@
 | `npm test` | 121/121 прошли |
 | `npm run build` | ОК, все артефакты верифицированы |
 
-## Event flow (as-is)
+## Event flow (as-is на момент аудита; текущий протокол — v9)
 
 ```
 DOM события (iframe) → packages/preview-runtime/src/index.ts (capture listeners)
-  → postMessage protocol v2 (styled/validated) → webview/components/PreviewContainer.tsx
+  → postMessage protocol v2 (на момент аудита; сейчас v9, styled/validated) → webview/components/PreviewContainer.tsx
   → App.tsx (setSelected / handleStyleApplied / handleOpApplied)
   → Inspector.tsx (контролы) → op через PreviewContainer.applyOp
   → runtime applyElementOp → ds:op-applied → App.recordEdit → FloatingPanel (Change Journal)
@@ -42,7 +53,7 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 ### RC4. Инспектор — универсальные строковые контролы (EPIC D, не начат)
 
 - `webview/components/Inspector.tsx`: свойства CSS и атрибуты — везде `<input type=text>`; нет color/select/number+unit/toggle, нет различения computed/inline/source-rule, нет значений `value`/`checked`/`required` и т.п.
-- План: registry типизированных PropertyDefinition + контекстные атрибуты по тегу; расширение whitelist атрибутов протокола с поддержкой toggle (set/remove) — потребует `PROTOCOL_VERSION = 4`.
+- План: registry типизированных PropertyDefinition + контекстные атрибуты по тегу; расширение whitelist атрибутов протокола с поддержкой toggle (set/remove) — потребует `PROTOCOL_VERSION = 4`. (Исторический план: выполнено в EPIC D; текущий протокол — v9, whitelist — 40 атрибутов.)
 
 ### RC5. Производительность hover (EPIC E, не начат)
 
@@ -53,7 +64,7 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 - `proxy-html.ts` `targetFromProxyPath()` и `PreviewHostServer.fetchWithFallbacks()` принимают внешние URL-кандидаты; сопоставить с обещанием `docs/SECURITY.md` (только loopback), централизовать валидацию, DNS-rebinding, redirect re-validation, tests.
 - `resolveProjectPath`: проверить symlink escape через realpath.
 
-## Порядок работ
+## Порядок работ (исторический: все шаги A–G закрыты, см. `docs/AI_HANDOFF.md`; актуальный план — `docs/IMPROVEMENT_PLAN.md`)
 
 | Шаг | Содержание | Статус |
 |---|---|---|
@@ -168,7 +179,7 @@ DOM события (iframe) → packages/preview-runtime/src/index.ts (capture l
 - [x] **C3. Cookie jar.** Ключуется только по имени и общий для всех loopback-origin'ов, Path и Secure не учитываются. Cookie приложения могут уйти на другой локальный порт через `/proxy/` — разнести по origin.
 - [x] **C4. CSP webview.** Разрешены `frame-src http: https:` и `img-src https:`; достаточно `http://127.0.0.1:*`.
 - [x] **C5. Инъекция контента страницы в промпт ИИ.** Текст, классы, атрибуты и сниппеты вставляются без ограждения (`Text: ${ctx.text}`). Контент приложения может содержать инструкции для агента с правом записи; переводы строк дают фальшивые строки вида «User request: …». Огородить блоком данных и убрать переводы строк.
-- [ ] **C6. Origin-проверки runtime.** Защита sessionId/nonce не защищает от JS самой страницы (значения ей известны): `style:persist`, `source:reveal`, `ai:copyComponent` управляются недоверенными данными. Проверка CSS-свойств/значений и realpath-проверка пути сделаны хорошо и остаются. Но `postMessage(..., "*")` и условие `!parentOrigin.includes("vscode-webview")` — слабая проверка origin, заменить на точную.
+- [x] **C6. Origin-проверки runtime.** Защита sessionId/nonce не защищает от JS самой страницы (значения ей известны): `style:persist`, `source:reveal`, `ai:copyComponent` управляются недоверенными данными. Проверка CSS-свойств/значений и realpath-проверка пути сделаны хорошо и остаются. Но `postMessage(..., "*")` и условие `!parentOrigin.includes("vscode-webview")` — слабая проверка origin, заменить на точную. (Закрыто после аудита: P1-1 — явный `targetOrigin` вместо `"*"`, фильтр `event.origin`, allowlist родительских origin; в коммите 05f9b0d валидация входящих webview-сообщений дополнительно ужесточена.)
 - [ ] **C7. Зависимости.** `npm audit`: 11 уязвимостей (2 critical, 1 high, 8 moderate) в dev-зависимостях (vitest/tinypool, esbuild ≤0.24). В пакет расширения не попадают, но обновить vitest/vite/esbuild.
 
 ## D. Недоработки репозитория
@@ -552,7 +563,8 @@ test 317 (25 файлов), build verify-build зелёный.
   `EDITABLE_ATTRIBUTES` = 40, `STYLE_PROPS` = 70 (проверено по
   `packages/preview-runtime/src/protocol.ts`), P2-13 помечен закрытым
   (у runtime-ready/error есть продюсеры), добавлена ссылка на
-  `docs/AI_AGENT_FIX_PLAN.md`.
+  `docs/AI_AGENT_FIX_PLAN.md`. (Историческая запись на момент DOC-01;
+  текущий протокол — v9, counts 40/70 остаются актуальными.)
 
 Гейты после Фаз C+D+DOC-01: typecheck OK, lint OK, test OK,
 build (verify-build) OK — финальный прогон см. отчёт сессии.
@@ -622,3 +634,84 @@ build (verify-build) OK — финальный прогон см. отчёт с�
   форматом тесты в `SourceHintFinder.test.ts` describe "contextToPrompt" —
   сначала упали на новой структуре (RED), обновлены под неё.
 - Коммит: refactor(prompt): PROMPT-01 structured Markdown AI instruction.
+
+## Текущее состояние (2026-11-18): протокол v9
+
+Всё выше — исторический аудит и ledger. Актуальное состояние после коммитов
+`05f9b0d` (security hardening, protocol v8), `0dac41d` (IMP-G, UI фазы 1–2)
+и батча IMP-A (персист журнала + replay, protocol v9, ещё не закоммичен).
+Актуальный роадмап — `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A и IMP-G
+выполнены); история версий протокола — `docs/PROTOCOL_CHANGELOG.md`; полная
+таблица сообщений и handshake — в `docs/AI_HANDOFF.md`, раздел «Текущее состояние».
+
+### Протокол v9 (кратко)
+
+- `PROTOCOL_VERSION = "9"` (`packages/preview-runtime/src/protocol.ts`);
+  каждое сообщение несёт `version` (строгое равенство `"9"` в
+  `isRuntimeMessage`) и опциональный `sessionId` (≤128).
+- 21 тип: `ds:runtime-ready`, `ds:ping`, `ds:pong`, `ds:set-mode`,
+  `ds:mode-changed`, `ds:select`, `ds:apply-style`, `ds:style-applied`,
+  `ds:apply-op`, `ds:op-applied`, `ds:navigate`, `ds:navigate-history`,
+  `ds:navigate-blocked`, `ds:reload`, `ds:mark`, `ds:undo`, `ds:undone`,
+  `ds:rect`, `ds:runtime-error`, `ds:replay`, `ds:replayed`.
+- Добавлено после v6 (коммит 05f9b0d): `ds:mark` (бейдж элемента с
+  pending-правками/комментарием) и `ds:undo`/`ds:undone` (DOM-снапшот до
+  структурной операции по `requestId`, runtime хранит ≤50 снапшотов).
+  `requestId` в apply-style/style-applied/apply-op/op-applied был уже в v6.
+- Добавлено в v9 (IMP-A): `ds:replay` (`edits` ≤200 × `ReplayEdit`: kind
+  style/text/classes/attribute, selector 1–500, property?, value ≤5000, forget?)
+  и `ds:replayed` (`applied`/`skipped`, неотрицательные целые) — идемпотентное
+  применение правок по селекторам без выбора элемента; `forget: true` удаляет
+  запись из reapply-реестра (отмена правки).
+- `ElementOp`: set-text, delete, duplicate, move-up, move-down, set-classes,
+  set-attribute. `EDITABLE_ATTRIBUTES` = 40, `STYLE_PROPS` = 70. Пустое значение
+  `set-attribute` удаляет атрибут; boolean-атрибуты зеркалируются в live DOM.
+- Лимиты: style value ≤500, op value ≤5000, attribute value ≤2000,
+  selectors ≤20×500, classes ≤30×100, text ≤2000, rules ≤8, component-цепочка ≤6,
+  replay edits ≤200, replay value ≤5000.
+- Handshake: runtime анонсирует `ds:runtime-ready` сразу после init (nonce
+  опционален); webview шлёт `ds:ping` с nonce; все webview→iframe посты —
+  с явным `targetOrigin` (preview origin), не `"*"`; ответы принимаются только
+  от preview origin; `ds:set-mode` повторяется до эха `ds:mode-changed`
+  (WV-03, 8×400 мс). Лимиты 64 КБ / 5 с — у WS-handshake прокси
+  (`PreviewHostServer.ts`), не у postMessage.
+
+### IMP-A: переживание правок (v9, не закоммичено)
+
+- Журнал правок персистится хостом в `workspaceState` (`designStudio.journal.v1`,
+  ≤20 маршрутов FIFO, sanitize полей); webview сохраняет с debounce 500 мс и
+  запрашивает журнал при смене маршрута (`journal:save`/`journal:request`/
+  `journal:loaded` — сообщения webview↔хост, вне ds:*-протокола).
+- Runtime ведёт reapply-реестр (LRU ≤200) и переустанавливает уплывшие значения
+  через MutationObserver (debounce 100 мс, проверки на равенство — без циклов).
+- После reload страницы / перезагрузки окна webview реплеит журнал
+  (`ds:replay`) на `ds:runtime-ready`; тост «Восстановлено правок: N».
+- Undo всех видов правок: структура — снапшот `ds:undo` (только в памяти
+  runtime, после reload отказ); style/text/classes/attribute — replay значения
+  `before` с `forget: true`; комментарий — удаление записи журнала.
+
+### Security hardening (05f9b0d) — актуальное состояние
+
+- NTFS ADS deny: сегменты пути с `:` (`.env::$DATA`) → 403.
+- SSRF-гейт `upstream-validation.ts` с DNS-resolve валидацией (все адреса
+  loopback), только http/https, без userinfo.
+- URL-атрибуты (href/src/poster/action): `javascript:`/`vbscript:`/
+  `data:text/html` блокируются (с вырезанием control-символов).
+- Cookie jar изолирован по upstream-origin (`origin|path|name`, LRU 512).
+- CSP страницы снимается полностью (заголовки и `<meta http-equiv>`) —
+  известное ограничение, IMP-B добавит nonce-инжекцию.
+- Промпт ИИ: контент страницы — недоверенные PAGE DATA внутри ограждения;
+  пожелание пользователя — снаружи.
+- `StylePersistenceAdapter` перечитывает файл перед `WorkspaceEdit`;
+  `ComponentResolver` — TTL 30 с + LRU-кэш (≤100 записей).
+
+### Гейты и известные ограничения
+
+- Baseline: typecheck/lint/build чистые; `npm test` — 462 теста / 35 файлов,
+  зелёные.
+- Ограничения (RC1–RC5 в `docs/IMPROVEMENT_PLAN.md`): style/text/classes/attribute
+  переживают reload/ререндер/HMR и перезагрузку окна (IMP-A: журнал в
+  workspaceState + replay); структурные операции после reload не восстанавливаются
+  (снапшоты только в памяти runtime), их undo отвечает отказом; ёмкость ≤20
+  маршрутов / ≤200 reapply-записей / ≤50 снапшотов; детекция компонентов только
+  в React dev mode; CSP снимается; e2e в живом VS Code ещё нет (IMP-D).

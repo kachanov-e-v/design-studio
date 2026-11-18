@@ -57,6 +57,7 @@ const messages = {
   "inspector.duplicate": { ru: "Дублировать", en: "Duplicate" },
   "inspector.delete": { ru: "Удалить", en: "Delete" },
   "inspector.undoStructure": { ru: "Отменить структурную правку", en: "Undo structure edit" },
+  "inspector.undoEdit": { ru: "Отменить правку", en: "Undo edit" },
   "inspector.styles": { ru: "Стили", en: "Styles" },
   "inspector.classesPlaceholder": { ru: "Классы через пробел", en: "Classes separated by spaces" },
   "inspector.addClass": { ru: "Добавить", en: "Add" },
@@ -108,6 +109,8 @@ const messages = {
   "status.operationFailed": { ru: "Не удалось изменить элемент", en: "Could not update element" },
   "status.undone": { ru: "Структурная правка отменена", en: "Structure edit undone" },
   "status.undoFailed": { ru: "Не удалось отменить правку", en: "Could not undo the edit" },
+  "status.editUndone": { ru: "Правка отменена", en: "Edit undone" },
+  "status.editsRestored": { ru: "Восстановлено правок: {count}", en: "Restored edits: {count}" },
   "status.previewError": { ru: "Ошибка предпросмотра", en: "Preview error" },
   "app.errorTitle": { ru: "Интерфейс упал", en: "The UI crashed" }, // P2-20
   "app.reload": { ru: "Перезагрузить", en: "Reload" }, // P2-20

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = "8";
+export const PROTOCOL_VERSION = "9";
 
 /** A CSS rule from a real stylesheet the element matches. */
 export interface SourceRule {
@@ -119,6 +119,34 @@ export interface UndoMessage {
   sessionId?: string;
 }
 
+/** One replayable edit, applied by selector (IMP-A: survival after reload/HMR). */
+export interface ReplayEdit {
+  kind: "style" | "text" | "classes" | "attribute";
+  selector: string;
+  /** CSS property for style, attribute name for attribute; omitted otherwise. */
+  property?: string;
+  /** Target value; for undo this is the before-value ("" removes the override). */
+  value: string;
+  /** Apply the value AND drop the edit from the runtime reapply registry (undo). */
+  forget?: boolean;
+}
+
+/** Re-applies journal edits by selector; missing elements are skipped silently. */
+export interface ReplayMessage {
+  type: "ds:replay";
+  version: string;
+  edits: ReplayEdit[];
+  sessionId?: string;
+}
+
+export interface ReplayedMessage {
+  type: "ds:replayed";
+  version: string;
+  applied: number;
+  skipped: number;
+  sessionId?: string;
+}
+
 export interface UndoneMessage {
   type: "ds:undone";
   version: string;
@@ -226,6 +254,8 @@ export type RuntimeMessage =
   | MarkMessage
   | UndoMessage
   | UndoneMessage
+  | ReplayMessage
+  | ReplayedMessage
   | RectMessage
   | RuntimeErrorMessage;
 
@@ -247,6 +277,8 @@ const RUNTIME_TYPES = new Set([
   "ds:mark",
   "ds:undo",
   "ds:undone",
+  "ds:replay",
+  "ds:replayed",
   "ds:rect",
   "ds:runtime-error",
 ]);
@@ -257,6 +289,20 @@ function isFiniteNumber(value: unknown): value is number {
 
 export function isEditableAttribute(value: unknown): value is EditableAttribute {
   return typeof value === "string" && (EDITABLE_ATTRIBUTES as readonly string[]).includes(value);
+}
+
+const REPLAY_KINDS = new Set(["style", "text", "classes", "attribute"]);
+
+export function isReplayEdit(value: unknown): value is ReplayEdit {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.kind !== "string" || !REPLAY_KINDS.has(v.kind)) return false;
+  if (typeof v.selector !== "string" || v.selector.length === 0 || v.selector.length > 500) return false;
+  if (typeof v.value !== "string" || v.value.length > 5000) return false;
+  if (v.forget !== undefined && typeof v.forget !== "boolean") return false;
+  if (v.kind === "style") return typeof v.property === "string" && STYLE_PROPERTY_PATTERN.test(v.property);
+  if (v.kind === "attribute") return isEditableAttribute(v.property);
+  return v.property === undefined;
 }
 
 export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
@@ -368,6 +414,16 @@ export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
       if (typeof v.success !== "boolean") return false;
       if (v.reason !== undefined && (typeof v.reason !== "string" || v.reason.length > 500)) return false;
       if (v.payload !== undefined && v.payload !== null && !isElementPayload(v.payload)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:replay":
+      if (!Array.isArray(v.edits) || v.edits.length > 200) return false;
+      if (!v.edits.every(isReplayEdit)) return false;
+      if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
+      return true;
+    case "ds:replayed":
+      if (!isFiniteNumber(v.applied) || !Number.isInteger(v.applied) || v.applied < 0) return false;
+      if (!isFiniteNumber(v.skipped) || !Number.isInteger(v.skipped) || v.skipped < 0) return false;
       if (v.sessionId !== undefined && (typeof v.sessionId !== "string" || v.sessionId.length > 128)) return false;
       return true;
     default:

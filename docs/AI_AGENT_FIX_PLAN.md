@@ -30,7 +30,7 @@
 - Сборочный конвейер и маркеры `scripts/verify-build.js`; артефакты
   `webview/public/runtime.js` не коммитить (генерируются `scripts/copy-runtime.js`).
 - При изменении протокола: обновить ОБЕ стороны (runtime + webview), валидаторы, тесты,
-  `PROTOCOL_VERSION` (сейчас "6") и пересобрать `npm run build`.
+  `PROTOCOL_VERSION` (на момент написания — "6"; текущая версия — в `docs/PROTOCOL_CHANGELOG.md`) и пересобрать `npm run build`.
 
 **Baseline перед правками (всё зелёное):**
 ```bash

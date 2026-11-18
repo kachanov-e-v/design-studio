@@ -26,7 +26,7 @@ function renderInspector(overrides: {
   onEditText?: (text: string) => void;
   selected?: ElementPayload;
   edits?: DesignEdit[];
-  onUndoStructure?: (requestId: string) => void;
+  onUndoEdit?: (edit: DesignEdit) => void;
 } = {}) {
   return render(
     <Inspector
@@ -40,7 +40,7 @@ function renderInspector(overrides: {
       onInstructionChange={vi.fn()}
       edits={overrides.edits ?? []}
       onCopyInstruction={vi.fn()}
-      onUndoStructure={overrides.onUndoStructure}
+      onUndoEdit={overrides.onUndoEdit ?? vi.fn()}
     />
   );
 }
@@ -148,6 +148,7 @@ describe("Inspector debounce timer safety", () => {
         onInstructionChange={vi.fn()}
         edits={[]}
         onCopyInstruction={vi.fn()}
+        onUndoEdit={vi.fn()}
       />
     );
     act(() => {
@@ -157,18 +158,27 @@ describe("Inspector debounce timer safety", () => {
   });
 });
 
-describe("Inspector structure undo", () => {
-  it("renders an undo button for structure edits with a requestId and calls onUndoStructure", () => {
-    const onUndoStructure = vi.fn();
+describe("Inspector journal undo (IMP-A)", () => {
+  it("renders an undo button on every structure entry and calls onUndoEdit with the edit", () => {
+    const onUndoEdit = vi.fn();
     const edits: DesignEdit[] = [
       { kind: "structure", selector: "h1", operation: "duplicate", requestId: "req-1" },
       { kind: "structure", selector: "h1", operation: "move-up" },
     ];
-    renderInspector({ edits, onUndoStructure });
+    renderInspector({ edits, onUndoEdit });
     const buttons = screen.getAllByRole("button", { name: "Отменить структурную правку" });
-    expect(buttons.length).toBe(1);
+    expect(buttons.length).toBe(2);
     fireEvent.click(buttons[0]);
-    expect(onUndoStructure).toHaveBeenCalledWith("req-1");
+    expect(onUndoEdit).toHaveBeenCalledWith(edits[0]);
+  });
+
+  it("renders an undo button for a style entry and calls onUndoEdit with that edit", () => {
+    const onUndoEdit = vi.fn();
+    const edit: DesignEdit = { kind: "style", selector: "h1", property: "color", before: "red", after: "blue" };
+    renderInspector({ edits: [edit], onUndoEdit });
+    const button = screen.getByRole("button", { name: "Отменить правку" });
+    fireEvent.click(button);
+    expect(onUndoEdit).toHaveBeenCalledWith(edit);
   });
 });
 
@@ -189,6 +199,7 @@ describe("Inspector journal kind chips", () => {
           { kind: "comment", selector: "h1", after: "Добавить тень" },
         ]}
         onCopyInstruction={vi.fn()}
+        onUndoEdit={vi.fn()}
       />
     );
     expect(screen.getByText("стиль")).toBeTruthy();

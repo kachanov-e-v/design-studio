@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isRuntimeMessage, isElementPayload, isValidClassListValue, PROTOCOL_VERSION } from "./protocol";
+import { isRuntimeMessage, isElementPayload, isReplayEdit, isValidClassListValue, PROTOCOL_VERSION } from "./protocol";
 
 describe("isRuntimeMessage", () => {
   it("accepts valid runtime-ready", () => {
@@ -172,6 +172,66 @@ describe("message validator edge cases (P3-6 coverage)", () => {
     expect(isRuntimeMessage({ ...base, type: "ds:navigate-history", direction: "back" })).toBe(true);
     expect(isRuntimeMessage({ ...base, type: "ds:navigate-history", direction: "sideways" })).toBe(false);
     expect(isRuntimeMessage({ ...base, type: "ds:reload", sessionId: "s" })).toBe(true);
+  });
+});
+
+describe("replay validation (IMP-A, protocol v9)", () => {
+  const base = { version: PROTOCOL_VERSION } as Record<string, unknown>;
+  const styleEdit = { kind: "style", selector: "#card", property: "color", value: "blue" };
+  const textEdit = { kind: "text", selector: "#title", value: "Hello" };
+  const classesEdit = { kind: "classes", selector: ".btn", value: "p-4 bg-white" };
+  const attributeEdit = { kind: "attribute", selector: "#link", property: "href", value: "/target" };
+
+  it("isReplayEdit accepts all four kinds and the forget flag", () => {
+    expect(isReplayEdit(styleEdit)).toBe(true);
+    expect(isReplayEdit(textEdit)).toBe(true);
+    expect(isReplayEdit(classesEdit)).toBe(true);
+    expect(isReplayEdit(attributeEdit)).toBe(true);
+    expect(isReplayEdit({ ...styleEdit, value: "", forget: true })).toBe(true);
+    expect(isReplayEdit({ ...styleEdit, property: "--brand", value: "anything goes" })).toBe(true);
+  });
+
+  it("isReplayEdit rejects bad kind, selector and value", () => {
+    expect(isReplayEdit(null)).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, kind: "explode" })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, selector: "" })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, selector: "s".repeat(501) })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, value: 42 })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, value: "x".repeat(5001) })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, forget: "yes" })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, forget: 1 })).toBe(false);
+  });
+
+  it("isReplayEdit enforces property pairing per kind", () => {
+    expect(isReplayEdit({ kind: "style", selector: "#a", value: "red" })).toBe(false);
+    expect(isReplayEdit({ ...styleEdit, property: "not a property!" })).toBe(false);
+    expect(isReplayEdit({ kind: "attribute", selector: "#a", value: "x" })).toBe(false);
+    expect(isReplayEdit({ ...attributeEdit, property: "onclick" })).toBe(false);
+    expect(isReplayEdit({ ...textEdit, property: "color" })).toBe(false);
+    expect(isReplayEdit({ ...classesEdit, property: "href" })).toBe(false);
+  });
+
+  it("ds:replay accepts a bounded edits array and rejects oversize/malformed ones", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: [styleEdit, textEdit, classesEdit, attributeEdit] })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: [] })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: Array(200).fill(styleEdit), sessionId: "s1" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: Array(201).fill(styleEdit) })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: [styleEdit, { kind: "nope", selector: "#a", value: "x" }] })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: [{ ...styleEdit, value: "x".repeat(5001) }] })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replay", edits: [styleEdit], sessionId: "s".repeat(129) })).toBe(false);
+  });
+
+  it("ds:replayed requires non-negative integer counters", () => {
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 3, skipped: 1 })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 0, skipped: 0, sessionId: "s1" })).toBe(true);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: -1, skipped: 0 })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 1.5, skipped: 0 })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: NaN, skipped: 0 })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 1, skipped: -2 })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 1, skipped: "0" })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 1 })).toBe(false);
+    expect(isRuntimeMessage({ ...base, type: "ds:replayed", applied: 1, skipped: 0, sessionId: "s".repeat(129) })).toBe(false);
   });
 });
 

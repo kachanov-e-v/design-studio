@@ -29,7 +29,7 @@
 - Сборочный конвейер и маркеры `scripts/verify-build.js` (`initDesignStudioRuntime`, IIFE
   `DesignStudioRuntime`); сборочные артефакты `webview/public/runtime.js|protocol.js` не коммитить.
 - При изменении протокола: обновлять ОБЕ стороны (runtime + webview), валидаторы, тесты и
-  `PROTOCOL_VERSION` (сейчас "6"); пересобирать `npm run build`.
+  `PROTOCOL_VERSION` (на момент написания — "6"; текущая версия — в `docs/PROTOCOL_CHANGELOG.md`); пересобирать `npm run build`.
 
 **Baseline перед любыми правками (всё должно быть зелёным):**
 

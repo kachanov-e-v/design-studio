@@ -8,6 +8,7 @@ import { ackPendingStyles, buildStylePersistMessage, type PendingStyleEdit } fro
 import { resolveTailwindClassList, styleToUtilities } from "@design-studio/shared/tailwind";
 import { primaryComponent } from "./componentInfo";
 import { translate, type Language } from "@design-studio/shared/i18n";
+import type { ReplayEdit } from "@design-studio/preview-runtime/protocol";
 import type { EditableAttribute, ElementOp, ElementPayload, PreviewStateMessage } from "./types";
 import type { DesignEdit } from "../src/domain/entities/DesignEdit";
 import styles from "./App.module.css";
@@ -20,6 +21,37 @@ interface PendingStyleRequest {
   value: string;
   previousValue: string;
   timeoutId: number;
+}
+
+const EDIT_KINDS = new Set(["style", "text", "classes", "attribute", "structure", "comment"]);
+const JOURNAL_SAVE_DEBOUNCE_MS = 500;
+
+/** IMP-A: journal entries the runtime can re-apply by selector after reload/HMR. */
+function toReplayEdits(list: DesignEdit[]): ReplayEdit[] {
+  const replay: ReplayEdit[] = [];
+  for (const edit of list) {
+    if (edit.kind !== "style" && edit.kind !== "text" && edit.kind !== "classes" && edit.kind !== "attribute") continue;
+    if (edit.after === undefined) continue;
+    replay.push({
+      kind: edit.kind,
+      selector: edit.selector,
+      ...(edit.kind === "style" || edit.kind === "attribute" ? { property: edit.property } : {}),
+      value: edit.after,
+    });
+  }
+  return replay;
+}
+
+/** Minimal shape check for a journal restored from extension storage. */
+function sanitizeLoadedEdits(value: unknown): DesignEdit[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is DesignEdit =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      EDIT_KINDS.has((item as DesignEdit).kind) &&
+      typeof (item as DesignEdit).selector === "string"
+  );
 }
 
 export function App(): React.ReactElement {
@@ -93,6 +125,8 @@ export function App(): React.ReactElement {
         message?: string;
         success?: boolean;
         file?: string;
+        path?: string;
+        edits?: unknown;
       } & Partial<PreviewStateMessage>;
       if (msg.type === "preview:state") {
         setState({
@@ -116,6 +150,19 @@ export function App(): React.ReactElement {
         notify(msg.message ?? "");
       } else if (msg.type === "error") {
         notify(translate(languageRef.current, "status.extensionError", { error: msg.message ?? "" }));
+      } else if (msg.type === "journal:loaded") {
+        // IMP-A: restore only into an empty journal for the current route —
+        // a late load must never clobber live edits.
+        if (msg.path !== lastRouteRef.current || editsRef.current.length > 0) return;
+        const loaded = sanitizeLoadedEdits(msg.edits);
+        if (loaded.length === 0) return;
+        setEdits(loaded);
+        const selectors = new Set(loaded.map((edit) => edit.selector));
+        for (const selector of selectors) previewRef.current?.markElement(selector, true);
+        // The runtime may already be ready; if not, handleRuntimeReady replays
+        // later — applying the same values twice is idempotent.
+        const replay = toReplayEdits(loaded);
+        if (replay.length > 0) previewRef.current?.replayEdits(replay);
       }
     });
   }, [notify]);
@@ -125,6 +172,17 @@ export function App(): React.ReactElement {
     resetSessionEdits();
     lastRouteRef.current = null;
   }, [state.url, resetSessionEdits]);
+
+  // IMP-A: persist the journal (debounced) so a window reload can restore it.
+  useEffect(() => {
+    if (lastRouteRef.current === null) return;
+    const timer = window.setTimeout(() => {
+      if (lastRouteRef.current !== null) {
+        postToExtension({ type: "journal:save", path: lastRouteRef.current, edits });
+      }
+    }, JOURNAL_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [edits]);
 
   const handleChange = (property: string, value: string) => {
     const current = selectedRef.current;
@@ -270,7 +328,16 @@ export function App(): React.ReactElement {
     // whenever the runtime handshake resolves again.
     const selectors = new Set(editsRef.current.map((edit) => edit.selector));
     for (const selector of selectors) previewRef.current?.markElement(selector, true);
+    // IMP-A: DOM edits are wiped by page reload/HMR too — re-apply the journal.
+    const replay = toReplayEdits(editsRef.current);
+    if (replay.length > 0) previewRef.current?.replayEdits(replay);
   }, []);
+
+  const handleReplayed = useCallback((info: { applied: number; skipped: number }) => {
+    if (info.applied > 0) {
+      notify(translate(languageRef.current, "status.editsRestored", { count: String(info.applied) }));
+    }
+  }, [notify]);
 
   const handleUndone = (info: { requestId: string; success: boolean; payload?: ElementPayload | null }) => {
     if (!info.success) {
@@ -285,6 +352,47 @@ export function App(): React.ReactElement {
       previewRef.current?.markElement(edit.selector, false);
     }
     notify(translate(languageRef.current, "status.undone"));
+  };
+
+  // IMP-A: undo any journal entry. Structure ops restore the runtime snapshot;
+  // replayable kinds apply the before-value with forget:true (apply-then-drop
+  // from the runtime reapply registry); comments only live in the journal.
+  const handleUndoEdit = (edit: DesignEdit) => {
+    if (edit.kind === "structure") {
+      if (!edit.requestId) {
+        notify(translate(languageRef.current, "status.undoFailed"));
+        return;
+      }
+      previewRef.current?.undo(edit.requestId);
+      return;
+    }
+    const removeEntry = () => {
+      const remaining = editsRef.current.filter((candidate) => candidate !== edit);
+      setEdits(remaining);
+      if (!remaining.some((candidate) => candidate.selector === edit.selector)) {
+        previewRef.current?.markElement(edit.selector, false);
+      }
+      notify(translate(languageRef.current, "status.editUndone"));
+    };
+    if (edit.kind === "comment") {
+      removeEntry();
+      return;
+    }
+    const sent = previewRef.current?.replayEdits([{
+      kind: edit.kind,
+      selector: edit.selector,
+      ...(edit.kind === "style" || edit.kind === "attribute" ? { property: edit.property } : {}),
+      value: edit.before ?? "",
+      forget: true,
+    }]) ?? false;
+    if (!sent) {
+      notify(translate(languageRef.current, "status.undoFailed"));
+      return;
+    }
+    if (edit.kind === "style") {
+      setPendingStyles((previous) => previous.filter((item) => !(item.selector === edit.selector && item.property === edit.property)));
+    }
+    removeEntry();
   };
 
   const handleSave = () => {
@@ -397,6 +505,7 @@ export function App(): React.ReactElement {
     if (lastRouteRef.current !== null && lastRouteRef.current !== path) resetSessionEdits();
     lastRouteRef.current = path;
     postToExtension({ type: "project:rememberNavigation", path });
+    postToExtension({ type: "journal:request", path });
   };
 
   const handleNavigateBlocked = (url: string) => {
@@ -455,6 +564,7 @@ export function App(): React.ReactElement {
           onOpApplied={handleOpApplied}
           onRuntimeReady={handleRuntimeReady}
           onUndone={handleUndone}
+          onReplayed={handleReplayed}
         />
         <Inspector
           selected={selected}
@@ -467,7 +577,7 @@ export function App(): React.ReactElement {
           onInstructionChange={setInstruction}
           edits={edits}
           onCopyInstruction={handleCopyInstruction}
-          onUndoStructure={(requestId) => previewRef.current?.undo(requestId)}
+          onUndoEdit={handleUndoEdit}
           error={styleError}
         />
       </div>

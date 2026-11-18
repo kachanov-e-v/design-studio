@@ -3,6 +3,7 @@ import {
   type ElementOp,
   type EditableAttribute,
   type ElementPayload,
+  type ReplayEdit,
   type RuntimeMessage,
   type SourceRule,
   EDITABLE_ATTRIBUTES,
@@ -656,6 +657,165 @@ export function initDesignStudioRuntime(): void {
     return ownTextNodes(el).map((node) => node.nodeValue ?? "").join("").replace(/\s+/g, " ").trim();
   }
 
+  // IMP-A: element-targeted core appliers, shared by the selection-bound
+  // message handlers and the selector-based replay path. They carry no
+  // selection, ack or badge side effects — callers own those.
+  type ApplyResult = { ok: true } | { ok: false; reason: string };
+
+  function applyStyleTo(el: Element, property: string, value: string): ApplyResult {
+    // Custom properties accept any token stream; everything else must be a
+    // value the engine actually supports — otherwise report a honest failure.
+    if (!property.startsWith("--") && typeof CSS !== "undefined" && typeof CSS.supports === "function" && !CSS.supports(property, value)) {
+      return { ok: false, reason: "invalid-value" };
+    }
+    (el as HTMLElement).style.setProperty(property, value);
+    return { ok: true };
+  }
+
+  function applyTextTo(el: Element, text: string): ApplyResult {
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+      if (el instanceof HTMLInputElement && el.type === "password") {
+        return { ok: false, reason: "Password values cannot be edited" };
+      }
+      el.value = text;
+      el.setAttribute("value", text);
+    } else {
+      // Replace only direct text nodes; never wipe child elements. The
+      // first non-whitespace own node receives the text, the other
+      // non-whitespace own nodes are removed (not blanked) so the text
+      // never jumps across child elements; whitespace separators stay.
+      const nodes = ownTextNodes(el).filter((n) => (n.nodeValue ?? "").trim() !== "");
+      if (text && nodes.length === 0) {
+        el.insertBefore(document.createTextNode(text), el.firstChild);
+      } else if (nodes.length > 0) {
+        if (text) nodes[0].nodeValue = text;
+        for (let i = text ? 1 : 0; i < nodes.length; i++) nodes[i].remove();
+      }
+    }
+    return { ok: true };
+  }
+
+  function applyClassesTo(el: Element, value: string | undefined): ApplyResult {
+    if (!isValidClassListValue(value)) return { ok: false, reason: "Invalid class list" };
+    el.setAttribute("class", value.trim());
+    return { ok: true };
+  }
+
+  function applyAttributeTo(el: Element, attribute: EditableAttribute | undefined, value: string | undefined): ApplyResult {
+    if (!isEditableAttribute(attribute) || typeof value !== "string" || value.length > 2000) {
+      return { ok: false, reason: "Invalid attribute" };
+    }
+    if (URL_ATTRIBUTES.has(attribute) && value !== "" && isUnsafeUrl(value)) {
+      return { ok: false, reason: "Blocked URL scheme" };
+    }
+    if (value === "") {
+      el.removeAttribute(attribute);
+    } else {
+      el.setAttribute(attribute, value);
+    }
+    // Boolean attributes and `value` are mirrored to the live DOM property
+    // so the preview reacts immediately, not only on later attribute reads.
+    const liveProperty = LIVE_PROPERTY_BY_ATTRIBUTE[attribute];
+    if (liveProperty) {
+      const live = el as unknown as Record<string, unknown>;
+      if (liveProperty in el) {
+        live[liveProperty] = liveProperty === "value" ? value : value !== "";
+      }
+    }
+    return { ok: true };
+  }
+
+  // IMP-A: reapply registry — successful edits keyed by kind/selector/property,
+  // re-asserted after framework re-renders and replayed by selector after reload.
+  const reapplyRegistry = new Map<string, ReplayEdit>();
+  const MAX_REAPPLY_ENTRIES = 200;
+
+  function reapplyKey(edit: ReplayEdit): string {
+    return `${edit.kind}:${edit.selector}:${edit.property ?? ""}`;
+  }
+
+  /** Upsert a replay entry (forget:true drops it — undo); bounded, evicts oldest. */
+  function recordReapply(edit: ReplayEdit): void {
+    const key = reapplyKey(edit);
+    reapplyRegistry.delete(key);
+    if (edit.forget) return;
+    reapplyRegistry.set(key, edit);
+    while (reapplyRegistry.size > MAX_REAPPLY_ENTRIES) {
+      const oldest = reapplyRegistry.keys().next().value;
+      if (oldest === undefined) break;
+      reapplyRegistry.delete(oldest);
+    }
+  }
+
+  /** Record a successful selection-bound edit with the canonical payload selector. */
+  function recordElementEdit(el: Element, kind: ReplayEdit["kind"], value: string, property?: string): void {
+    recordReapply({ kind, selector: getSelector(el), property, value });
+  }
+
+  function applyReplayEdit(el: Element, edit: ReplayEdit): boolean {
+    try {
+      switch (edit.kind) {
+        case "style":
+          // Undo to "no override": CSS.supports rejects empty values, so an
+          // empty target removes the inline property instead of failing.
+          if (edit.value === "") {
+            (el as HTMLElement).style.removeProperty(edit.property!);
+            return true;
+          }
+          return applyStyleTo(el, edit.property!, edit.value).ok;
+        case "text":
+          return applyTextTo(el, edit.value.slice(0, 5000)).ok;
+        case "classes":
+          return applyClassesTo(el, edit.value).ok;
+        case "attribute":
+          return applyAttributeTo(el, edit.property as EditableAttribute | undefined, edit.value).ok;
+        default:
+          return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  /** Live-value drift check; equality keeps the second observer pass a no-op. */
+  function replayEditDrifted(el: Element, edit: ReplayEdit): boolean {
+    switch (edit.kind) {
+      case "style":
+        return (el as HTMLElement).style.getPropertyValue(edit.property!) !== edit.value;
+      case "text":
+        if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return el.value !== edit.value;
+        // Same extraction set-text writes: concatenated non-whitespace own nodes.
+        return ownTextNodes(el).filter((n) => (n.nodeValue ?? "").trim() !== "").map((n) => n.nodeValue ?? "").join("") !== edit.value;
+      case "classes": {
+        const tokens = (s: string): string[] => s.trim().split(/\s+/).filter((t) => t.length > 0);
+        const current = tokens(el.getAttribute("class") ?? "");
+        const target = tokens(edit.value);
+        return current.length !== target.length || current.some((t, i) => t !== target[i]);
+      }
+      case "attribute":
+        return (el.getAttribute(edit.property!) ?? "") !== edit.value;
+      default:
+        return false;
+    }
+  }
+
+  /** Re-assert journal edits whose live value drifted (React re-render/HMR). */
+  function reassertReapplyEdits(): void {
+    if (reapplyRegistry.size === 0) return;
+    for (const edit of reapplyRegistry.values()) {
+      let el: Element | null = null;
+      try {
+        el = document.querySelector(edit.selector);
+      } catch {
+        el = null;
+      }
+      // HMR detaches elements temporarily: keep the entry, retry on a later tick.
+      if (!el || !el.isConnected || !canSelect(el)) continue;
+      if (!replayEditDrifted(el, edit)) continue;
+      applyReplayEdit(el, edit);
+    }
+  }
+
   function postToParent(msg: RuntimeMessage): void {
     // Without a trusted parent origin (no accepted ping yet) nothing is sent:
     // replying to "*" would leak element/page data to any surrounding page.
@@ -748,26 +908,12 @@ export function initDesignStudioRuntime(): void {
       switch (op) {
         case "set-text": {
           const text = typeof value === "string" ? value.slice(0, 5000) : "";
-          if (selectedElement instanceof HTMLTextAreaElement || selectedElement instanceof HTMLInputElement) {
-            if (selectedElement instanceof HTMLInputElement && selectedElement.type === "password") {
-              postOpApplied(op, text, false, "Password values cannot be edited", null, requestId);
-              return;
-            }
-            selectedElement.value = text;
-            selectedElement.setAttribute("value", text);
-          } else {
-            // Replace only direct text nodes; never wipe child elements. The
-            // first non-whitespace own node receives the text, the other
-            // non-whitespace own nodes are removed (not blanked) so the text
-            // never jumps across child elements; whitespace separators stay.
-            const nodes = ownTextNodes(selectedElement).filter((n) => (n.nodeValue ?? "").trim() !== "");
-            if (text && nodes.length === 0) {
-              selectedElement.insertBefore(document.createTextNode(text), selectedElement.firstChild);
-            } else if (nodes.length > 0) {
-              if (text) nodes[0].nodeValue = text;
-              for (let i = text ? 1 : 0; i < nodes.length; i++) nodes[i].remove();
-            }
+          const result = applyTextTo(selectedElement, text);
+          if (!result.ok) {
+            postOpApplied(op, text, false, result.reason, null, requestId);
+            return;
           }
+          recordElementEdit(selectedElement, "text", text);
           payload = collect(selectedElement);
           postOpApplied(op, text, true, undefined, payload, requestId);
           return;
@@ -848,38 +994,23 @@ export function initDesignStudioRuntime(): void {
           return;
         }
         case "set-classes": {
-          if (!isValidClassListValue(value)) {
-            postOpApplied(op, value, false, "Invalid class list", null, requestId);
+          const result = applyClassesTo(selectedElement, value);
+          if (!result.ok) {
+            postOpApplied(op, value, false, result.reason, null, requestId);
             return;
           }
-          selectedElement.setAttribute("class", value.trim());
+          recordElementEdit(selectedElement, "classes", value ?? "");
           payload = collect(selectedElement);
           postOpApplied(op, value, true, undefined, payload, requestId);
           return;
         }
         case "set-attribute": {
-          if (!isEditableAttribute(attribute) || typeof value !== "string" || value.length > 2000) {
-            postOpApplied(op, value, false, "Invalid attribute", null, requestId, attribute);
+          const result = applyAttributeTo(selectedElement, attribute, value);
+          if (!result.ok) {
+            postOpApplied(op, value, false, result.reason, null, requestId, attribute);
             return;
           }
-          if (URL_ATTRIBUTES.has(attribute) && value !== "" && isUnsafeUrl(value)) {
-            postOpApplied(op, value, false, "Blocked URL scheme", null, requestId, attribute);
-            return;
-          }
-          if (value === "") {
-            selectedElement.removeAttribute(attribute);
-          } else {
-            selectedElement.setAttribute(attribute, value);
-          }
-          // Boolean attributes and `value` are mirrored to the live DOM property
-          // so the preview reacts immediately, not only on later attribute reads.
-          const liveProperty = LIVE_PROPERTY_BY_ATTRIBUTE[attribute];
-          if (liveProperty) {
-            const live = selectedElement as unknown as Record<string, unknown>;
-            if (liveProperty in selectedElement) {
-              live[liveProperty] = liveProperty === "value" ? value : value !== "";
-            }
-          }
+          recordElementEdit(selectedElement, "attribute", value ?? "", attribute);
           payload = collect(selectedElement);
           postOpApplied(op, value, true, undefined, payload, requestId, attribute);
           return;
@@ -1083,24 +1214,23 @@ export function initDesignStudioRuntime(): void {
         return;
       }
       try {
-        // Custom properties accept any token stream; everything else must be a
-        // value the engine actually supports — otherwise report a honest failure.
-        if (!property.startsWith("--") && typeof CSS !== "undefined" && typeof CSS.supports === "function" && !CSS.supports(property, value)) {
+        const result = applyStyleTo(selectedElement, property, value);
+        if (!result.ok) {
           postToParent({
             type: "ds:style-applied",
             version: PROTOCOL_VERSION,
             property,
             value,
             success: false,
-            reason: "invalid-value",
+            reason: result.reason,
             requestId,
             sessionId: activeSessionId || msg.sessionId,
           });
           return;
         }
-        (selectedElement as HTMLElement).style.setProperty(property, value);
         const actual = getComputedStyle(selectedElement).getPropertyValue(property).trim();
         markElementEdited(selectedElement);
+        recordElementEdit(selectedElement, "style", value, property);
         const payload = collect(selectedElement);
         postToParent({
           type: "ds:style-applied",
@@ -1129,6 +1259,39 @@ export function initDesignStudioRuntime(): void {
     if (msg.type === "ds:apply-op") {
       if (activeSessionId && msg.sessionId !== activeSessionId) return;
       applyElementOp(msg.op, msg.value, msg.requestId, msg.attribute);
+      return;
+    }
+    if (msg.type === "ds:replay") {
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      // IMP-A: re-apply journal edits by selector without touching the
+      // selection, per-edit acks or badges (the webview replays marks itself).
+      let applied = 0;
+      let skipped = 0;
+      for (const edit of msg.edits) {
+        let target: Element | null = null;
+        try {
+          target = document.querySelector(edit.selector);
+        } catch {
+          target = null;
+        }
+        if (!target || !document.body.contains(target) || !canSelect(target)) {
+          skipped++;
+          continue;
+        }
+        const ok = applyReplayEdit(target, edit);
+        if (ok) applied++;
+        else skipped++;
+        // forget:true is undo: drop the entry even when the apply failed so
+        // the observer never resurrects a reverted edit.
+        if (ok || edit.forget) recordReapply(edit);
+      }
+      postToParent({
+        type: "ds:replayed",
+        version: PROTOCOL_VERSION,
+        applied,
+        skipped,
+        sessionId: activeSessionId || msg.sessionId,
+      });
       return;
     }
     if (msg.type === "ds:undo") {
@@ -1270,6 +1433,7 @@ export function initDesignStudioRuntime(): void {
       mutationTimer = window.setTimeout(() => {
         mutationTimer = 0;
         pruneDetachedMarks();
+        reassertReapplyEdits();
         if (editMode) scheduleBadgeUpdate();
       }, 100);
     });

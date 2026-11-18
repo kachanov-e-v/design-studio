@@ -2,7 +2,7 @@
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, fireEvent, act } from "@testing-library/react";
-import { PreviewContainer } from "./PreviewContainer";
+import { PreviewContainer, type PreviewContainerHandle } from "./PreviewContainer";
 
 /**
  * WV-03: the first page of a demo/fresh project sometimes never reacts to
@@ -246,5 +246,105 @@ describe("PreviewContainer edit-mode accent frame", () => {
       })
     );
     expect(section.className).toContain("editing");
+  });
+});
+
+/**
+ * IMP-A: journal replay — the handle posts ds:replay with the active session
+ * and the pinned preview origin, refuses before the handshake, and surfaces
+ * the runtime's ds:replayed summary through onReplayed.
+ */
+describe("PreviewContainer journal replay (IMP-A)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const baseProps = {
+    url: "http://127.0.0.1:4100/project/index.html",
+    editMode: false,
+    language: "ru" as const,
+    status: "project",
+    onEditModeChange: () => {},
+    onRefresh: () => {},
+    onNavigate: () => {},
+    onLocationChange: () => {},
+    onSelect: () => {},
+  };
+
+  const replayEdits = [{ kind: "style" as const, selector: "h1", property: "color", value: "blue" }];
+
+  function renderWithRef(propsExtra: Record<string, unknown> = {}) {
+    const ref = React.createRef<PreviewContainerHandle>();
+    const utils = render(React.createElement(PreviewContainer, { ...baseProps, ...propsExtra, ref }));
+    const iframe = utils.container.querySelector("iframe") as HTMLIFrameElement;
+    return { ...utils, iframe, ref };
+  }
+
+  it("returns false and posts nothing before the handshake resolves", () => {
+    const { iframe, ref } = renderWithRef();
+    const postSpy = vi.spyOn(iframe.contentWindow as Window, "postMessage");
+    expect(ref.current?.replayEdits(replayEdits)).toBe(false);
+    expect(postSpy.mock.calls.some((call) => (call[0] as { type?: string }).type === "ds:replay")).toBe(false);
+  });
+
+  it("posts ds:replay with the active sessionId and explicit targetOrigin after the handshake", async () => {
+    const { PROTOCOL_VERSION } = await import("@design-studio/preview-runtime/protocol");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("fixed-session-id" as `${string}-${string}-${string}-${string}-${string}`);
+    const { iframe, ref } = renderWithRef();
+    fireEvent(iframe, new Event("load"));
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "ds:runtime-ready", version: PROTOCOL_VERSION },
+        origin: "http://127.0.0.1:4100",
+        source: iframe.contentWindow,
+      }));
+    });
+    const postSpy = vi.spyOn(iframe.contentWindow as Window, "postMessage");
+
+    expect(ref.current?.replayEdits(replayEdits)).toBe(true);
+    const replayCall = postSpy.mock.calls.find((call) => (call[0] as { type?: string }).type === "ds:replay");
+    expect(replayCall).toBeDefined();
+    expect(replayCall![0]).toEqual({
+      type: "ds:replay",
+      version: PROTOCOL_VERSION,
+      edits: replayEdits,
+      sessionId: "fixed-session-id",
+    });
+    expect(replayCall![1]).toBe("http://127.0.0.1:4100");
+  });
+
+  it("forwards a validated ds:replayed summary to onReplayed", async () => {
+    const { PROTOCOL_VERSION } = await import("@design-studio/preview-runtime/protocol");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("fixed-session-id" as `${string}-${string}-${string}-${string}-${string}`);
+    const onReplayed = vi.fn();
+    const { iframe } = renderWithRef({ onReplayed });
+    fireEvent(iframe, new Event("load"));
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "ds:runtime-ready", version: PROTOCOL_VERSION },
+        origin: "http://127.0.0.1:4100",
+        source: iframe.contentWindow,
+      }));
+    });
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "ds:replayed", version: PROTOCOL_VERSION, applied: 2, skipped: 1, sessionId: "fixed-session-id" },
+        origin: "http://127.0.0.1:4100",
+        source: iframe.contentWindow,
+      }));
+    });
+    expect(onReplayed).toHaveBeenCalledWith({ applied: 2, skipped: 1 });
+
+    // A foreign session id must not reach the callback.
+    onReplayed.mockClear();
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "ds:replayed", version: PROTOCOL_VERSION, applied: 9, skipped: 0, sessionId: "other-session" },
+        origin: "http://127.0.0.1:4100",
+        source: iframe.contentWindow,
+      }));
+    });
+    expect(onReplayed).not.toHaveBeenCalled();
   });
 });

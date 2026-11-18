@@ -45,7 +45,7 @@ export function Inspector({
   onInstructionChange,
   edits,
   onCopyInstruction,
-  onUndoStructure,
+  onUndoEdit,
 }: {
   selected: ElementPayload | null;
   onApplyStyle: (property: string, value: string) => void;
@@ -58,7 +58,7 @@ export function Inspector({
   onInstructionChange: (value: string) => void;
   edits: DesignEdit[];
   onCopyInstruction: (instruction: string) => void;
-  onUndoStructure?: (requestId: string) => void;
+  onUndoEdit: (edit: DesignEdit) => void;
 }): React.ReactElement {
   const [textDraft, setTextDraft] = useState<string | null>(null);
   const [classDraft, setClassDraft] = useState<string | null>(null);
@@ -444,22 +444,20 @@ export function Inspector({
                     <ul className={styles.editList}>
                       {group.items.map((edit, index) => {
                         const description = describeEdit(edit);
-                        const undoRequestId = edit.kind === "structure" ? edit.requestId : undefined;
+                        const undoLabel = edit.kind === "structure" ? t("inspector.undoStructure") : t("inspector.undoEdit");
                         return (
                           <li key={index} title={description}>
                             <span className={styles.kindChip} data-kind={edit.kind}>{t(KIND_CHIP_KEYS[edit.kind])}</span>
                             <span className={styles.editText}>{description}</span>
-                            {undoRequestId && onUndoStructure && (
-                              <button
-                                type="button"
-                                className={styles.undoEdit}
-                                title={t("inspector.undoStructure")}
-                                aria-label={t("inspector.undoStructure")}
-                                onClick={() => onUndoStructure(undoRequestId)}
-                              >
-                                <Icon name="undo" size={12} />
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              className={styles.undoEdit}
+                              title={undoLabel}
+                              aria-label={undoLabel}
+                              onClick={() => onUndoEdit(edit)}
+                            >
+                              <Icon name="undo" size={12} />
+                            </button>
                           </li>
                         );
                       })}
