@@ -4,7 +4,7 @@
 > Этот файл — исторический аудит и ledger выполненных работ (эпики A–I, фазы 0–5,
 > NAV/RT/WV/EXT/UX, PROMPT-01): версии протокола и статусы ниже зафиксированы
 > на момент своих сессий и не переписываются. Актуальный роадмап —
-> `docs/IMPROVEMENT_PLAN.md` (эпики IMP-A…IMP-F; IMP-A и IMP-G выполнены); история
+> `docs/IMPROVEMENT_PLAN.md` (эпики IMP-A…IMP-F; IMP-A, IMP-B и IMP-G выполнены); история
 > версий протокола — `docs/PROTOCOL_CHANGELOG.md`. Текущее состояние v9, security
 > hardening и известные ограничения — в разделе «Текущее состояние (2026-11-18)»
 > в конце файла; полная таблица сообщений — в `docs/AI_HANDOFF.md`.
@@ -13,7 +13,7 @@
 
 ## Baseline команд
 
-(На момент аудита; текущий baseline — 462 теста / 35 файлов, см. конец файла.)
+(На момент аудита; текущий baseline — 505 тестов / 37 файлов, см. конец файла.)
 
 | Команда | Результат |
 |---|---|
@@ -638,10 +638,10 @@ build (verify-build) OK — финальный прогон см. отчёт с�
 ## Текущее состояние (2026-11-18): протокол v9
 
 Всё выше — исторический аудит и ledger. Актуальное состояние после коммитов
-`05f9b0d` (security hardening, protocol v8), `0dac41d` (IMP-G, UI фазы 1–2)
-и батча IMP-A (персист журнала + replay, protocol v9, ещё не закоммичен).
-Актуальный роадмап — `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A и IMP-G
-выполнены); история версий протокола — `docs/PROTOCOL_CHANGELOG.md`; полная
+`05f9b0d` (security hardening, protocol v8), `0dac41d` (IMP-G, UI фазы 1–2),
+`9df444a` (IMP-A, protocol v9) и IMP-B (CSP-preserving инжекция).
+Актуальный роадмап — `docs/IMPROVEMENT_PLAN.md` (IMP-A…IMP-F; IMP-A, IMP-B
+и IMP-G выполнены); история версий протокола — `docs/PROTOCOL_CHANGELOG.md`; полная
 таблица сообщений и handshake — в `docs/AI_HANDOFF.md`, раздел «Текущее состояние».
 
 ### Протокол v9 (кратко)
@@ -676,7 +676,7 @@ build (verify-build) OK — финальный прогон см. отчёт с�
   (WV-03, 8×400 мс). Лимиты 64 КБ / 5 с — у WS-handshake прокси
   (`PreviewHostServer.ts`), не у postMessage.
 
-### IMP-A: переживание правок (v9, не закоммичено)
+### IMP-A: переживание правок (v9, коммит 9df444a)
 
 - Журнал правок персистится хостом в `workspaceState` (`designStudio.journal.v1`,
   ≤20 маршрутов FIFO, sanitize полей); webview сохраняет с debounce 500 мс и
@@ -690,6 +690,20 @@ build (verify-build) OK — финальный прогон см. отчёт с�
   runtime, после reload отказ); style/text/classes/attribute — replay значения
   `before` с `forget: true`; комментарий — удаление записи журнала.
 
+### IMP-B: CSP-preserving инжекция
+
+- `src/infrastructure/preview/csp.ts`: адаптация CSP вместо снятия — `'self'`
+  в source-списки, nonce сессии (`crypto.randomBytes(18).base64url`, на экземпляр
+  хоста) в script-src/script-src-elem; nonce не добавляется к unsafe-inline-политикам
+  без nonce/hash (защита inline-скриптов приложения); frame-ancestors и
+  upgrade-insecure-requests удаляются; meta-CSP переписывается.
+- CSP-заголовки enforce/report-only сохраняются адаптированными; nonce тот же,
+  что на внешнем `/__ds-runtime.js` и inline-SW-сниппете.
+- Политики с `sandbox` снимаются (fallback) с тостом в UI: хост → `onCspFallback`
+  (дедуп по маршруту) → webview-сообщение `preview:csp-fallback` (вне ds:*-протокола,
+  версия осталась v9).
+- Fixture `fixtures/static-site/csp.html`; тесты csp/proxyHtml/PreviewHostServer.
+
 ### Security hardening (05f9b0d) — актуальное состояние
 
 - NTFS ADS deny: сегменты пути с `:` (`.env::$DATA`) → 403.
@@ -700,6 +714,7 @@ build (verify-build) OK — финальный прогон см. отчёт с�
 - Cookie jar изолирован по upstream-origin (`origin|path|name`, LRU 512).
 - CSP страницы снимается полностью (заголовки и `<meta http-equiv>`) —
   известное ограничение, IMP-B добавит nonce-инжекцию.
+  (На момент 05f9b0d; текущее поведение — IMP-B ниже.)
 - Промпт ИИ: контент страницы — недоверенные PAGE DATA внутри ограждения;
   пожелание пользователя — снаружи.
 - `StylePersistenceAdapter` перечитывает файл перед `WorkspaceEdit`;
@@ -707,11 +722,12 @@ build (verify-build) OK — финальный прогон см. отчёт с�
 
 ### Гейты и известные ограничения
 
-- Baseline: typecheck/lint/build чистые; `npm test` — 462 теста / 35 файлов,
+- Baseline: typecheck/lint/build чистые; `npm test` — 505 тестов / 37 файлов,
   зелёные.
 - Ограничения (RC1–RC5 в `docs/IMPROVEMENT_PLAN.md`): style/text/classes/attribute
   переживают reload/ререндер/HMR и перезагрузку окна (IMP-A: журнал в
   workspaceState + replay); структурные операции после reload не восстанавливаются
   (снапшоты только в памяти runtime), их undo отвечает отказом; ёмкость ≤20
   маршрутов / ≤200 reapply-записей / ≤50 снапшотов; детекция компонентов только
-  в React dev mode; CSP снимается; e2e в живом VS Code ещё нет (IMP-D).
+  в React dev mode; CSP сохраняется адаптированным (IMP-B), политики с sandbox
+  снимаются с предупреждением; e2e в живом VS Code ещё нет (IMP-D).

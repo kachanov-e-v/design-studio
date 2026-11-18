@@ -33,14 +33,21 @@
   отказом; replay по селектору пропускает исчезнувшие/неоднозначные элементы;
   ёмкость ≤20 маршрутов / ≤200 reapply-записей / ≤50 снапшотов.
 
-### RC2. CSP страницы снимается полностью
+### RC2. CSP страницы снимается полностью — ЗАКРЫТО (IMP-B)
 
-- proxy-html.ts снимает CSP-заголовки и meta, иначе инлайн-runtime не выполнится.
-  Это ослабляет защиту пользовательской страницы на время превью.
-- План (IMP-B): инжекция runtime внешним скриптом (`/__ds-runtime.js` уже отдаётся
-  хостом) с nonce; сохранять исходный CSP, добавляя nonce/источник хоста;
-  fallback — текущее снятие с явным предупреждением в UI. Задокументировать
-  ограничение cookie jar браузера (изоляция сделана на уровне прокси).
+- Реализовано: CSP-заголовки (enforce и report-only) и meta-CSP сохраняются и
+  адаптируются (`src/infrastructure/preview/csp.ts`): `'self'` в source-списки,
+  nonce сессии в script-src/script-src-elem для внешнего `/__ds-runtime.js` и
+  inline-SW-сниппета; при опоре приложения на `'unsafe-inline'` без nonce/hash
+  nonce не добавляется (чтобы не сломать inline-скрипты приложения);
+  frame-ancestors и upgrade-insecure-requests удаляются.
+- Fallback: политики с `sandbox` снимаются с явным тостом в UI
+  (`preview:csp-fallback`, дедуп по маршруту). Fixture `fixtures/static-site/csp.html`
+  покрывает meta-CSP с unsafe-inline; тесты — csp.test.ts, proxyHtml.test.ts,
+  PreviewHostServer.test.ts.
+- Остаточные ослабления (осознанные, задокументированы в SECURITY.md): `'self'`
+  во всех source-списках (замена одиночного `'none'`), удаление frame-ancestors,
+  склейка нескольких CSP-заголовков в одну политику.
 
 ### RC3. Компоненты видны только в React dev mode
 
@@ -90,7 +97,7 @@
 |---|---|---|
 | 1 | IMP-F (доки) + смоук-чек-лист из IMP-D — дешёвая фиксация текущего состояния | выполнено (доки обновлены под v9, PROTOCOL_CHANGELOG.md и SMOKE_CHECKLIST.md созданы; сам смоук-прогон ещё не выполнялся) |
 | 2 | IMP-A: персист журнала (workspaceState) → reapply после ready → undo style/text | выполнено (протокол v9: ds:replay/ds:replayed; журнал переживает reload окна, правки style/text/classes/attribute восстанавливаются после reload/HMR, undo всех видов; структурные снапшоты после reload недоступны — ожидаемо) |
-| 3 | IMP-B: nonce-инжекция, тесты на CSP-страницах (fixtures) | не начат |
+| 3 | IMP-B: nonce-инжекция, тесты на CSP-страницах (fixtures) | выполнено (CSP сохраняется и адаптируется: nonce + 'self'; sandbox → снятие с тостом-предупреждением; fixture csp.html; SECURITY.md обновлён) |
 | 4 | IMP-D: e2e-каркас (@vscode/test-electron), первые сценарии | не начат |
 | 5 | IMP-C: индекс + watcher, затем source maps | не начат |
 | 6 | IMP-E: diff-превью, экспорт, a11y | не начат |
@@ -106,6 +113,8 @@
   отказом, персист DOM-снапшотов не делается.)
 - IMP-B: nonce должен ротироваться на сессию; страницы с `strict-dynamic`
   требуют отдельного теста; fallback обязан быть видимым пользователю.
+  (Реализовано: nonce на экземпляр хоста; strict-dynamic покрыт юнит-тестами
+  adaptCsp; fallback-тост `preview:csp-fallback`.)
 - IMP-C source maps: читать только локальные maps (loopback/файловая система),
   не ходить во внешнюю сеть — иначе новый SSRF-вектор.
 - Любой новый тип сообщения → bump PROTOCOL_VERSION + запись в CHANGELOG (IMP-F).

@@ -1,3 +1,5 @@
+import { rewriteMetaCsp } from "./csp";
+
 const RUNTIME_SCRIPT_ATTRS = ` data-design-studio="1" defer`;
 
 export function proxyPathFor(targetUrl: string): string {
@@ -85,12 +87,6 @@ export function candidateLoopbackTargets(target: string): string[] {
 const AUTHORED_BASE_RE = /<base\s[^>]*href=/i;
 
 /**
- * Meta-delivered CSP survives header stripping and silently blocks the
- * injected runtime — remove both enforce and report-only variants.
- */
-const META_CSP_RE = /<meta(?=[\s>])[^>]*http-equiv\s*=\s*["']?content-security-policy(?:-report-only)?["']?[^>]*>/gi;
-
-/**
  * Find the end of a real `<head>`/`<body>` open tag, skipping comments and
  * raw-text elements: a regex alone can land on "<head>" inside an inline
  * script string or an HTML comment.
@@ -131,6 +127,8 @@ export interface InjectOptions {
   upstreamOrigin?: string;
   /** Extra parent origins the runtime may accept in the handshake (P1-1). */
   parentOrigins?: string[];
+  /** IMP-B: session nonce stamped on injected scripts and adapted CSP policies. */
+  nonce?: string;
 }
 
 function escapeAttrValue(value: string): string {
@@ -142,7 +140,8 @@ function runtimeScriptTag(runtimeUrl: string, options?: InjectOptions): string {
   const parents = options?.parentOrigins?.length
     ? ` data-parent-origins="${escapeAttrValue(options.parentOrigins.join(","))}"`
     : "";
-  return `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}${origin}${parents}></script>`;
+  const nonce = options?.nonce ? ` nonce="${options.nonce}"` : "";
+  return `<script src="${runtimeUrl}"${RUNTIME_SCRIPT_ATTRS}${origin}${parents}${nonce}></script>`;
 }
 
 export function buildInjectedHead(runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
@@ -150,7 +149,7 @@ export function buildInjectedHead(runtimeUrl: string, baseHref: string, options?
 }
 
 export function injectIntoHtml(html: string, runtimeUrl: string, baseHref: string, options?: InjectOptions): string {
-  html = html.replace(META_CSP_RE, "");
+  html = rewriteMetaCsp(html, options?.nonce).html;
   const injection =
     options?.respectAuthoredBase && AUTHORED_BASE_RE.test(html)
       ? runtimeScriptTag(runtimeUrl, options)
@@ -187,12 +186,13 @@ export function prependProxyOriginToPathUrls(content: string, proxyPrefix: strin
   return rewriteCssUrls(content, proxyPrefix);
 }
 
-export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string): string {
+export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtimeUrl: string, proxyOrigin: string, nonce?: string): string {
   const prefix = targetOriginPrefix(finalTargetUrl);
   const target = new URL(finalTargetUrl);
   let out = injectIntoHtml(html, runtimeUrl, `${proxyOrigin}${target.pathname}${target.search}${target.hash}`, {
     upstreamOrigin: target.origin,
     parentOrigins: [proxyOrigin],
+    nonce,
   });  // Root-absolute attributes stay untouched so Next.js sees the same route
   // during hydration. The preview host proxies app routes through its sticky
   // dev-server target; CSS URLs use explicit proxy routes below.
@@ -200,7 +200,7 @@ export function rewriteProxiedHtml(html: string, finalTargetUrl: string, runtime
   out = out.replace(styleBlock, (m, open: string, css: string, close: string) =>
     open + rewriteCssUrls(css, prefix) + close
   );
-  const swSnippet = `<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/__ds-sw.js',{scope:'/'}).catch(function(){})})}</script>`;
+  const swSnippet = `<script${nonce ? ` nonce="${nonce}"` : ""}>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/__ds-sw.js',{scope:'/'}).catch(function(){})})}</script>`;
   out = injectBeforeCloseHead(out, swSnippet);
   return out;
 }

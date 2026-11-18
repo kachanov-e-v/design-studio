@@ -53,6 +53,7 @@ vi.mock("../../infrastructure/preview/PreviewHostServer", () => {
   const instances: any[] = [];
   const PreviewHostServer = class {
     static instances = instances;
+    options: any = null;
     running = true;
     port = 0;
     start = vi.fn(async () => {
@@ -67,7 +68,8 @@ vi.mock("../../infrastructure/preview/PreviewHostServer", () => {
     get origin() {
       return `http://127.0.0.1:${this.port}`;
     }
-    constructor() {
+    constructor(options?: any) {
+      this.options = options;
       instances.push(this);
     }
   };
@@ -551,6 +553,40 @@ describe("journal persistence (IMP-A)", () => {
     expect(journalWrites()).toBe(1);
     await save("/x", [{ ...baseEdit, after: "green" }]);
     expect(journalWrites()).toBe(2);
+  });
+});
+
+describe("CSP fallback notification (IMP-B)", () => {
+  beforeEach(() => {
+    mocks.postMessage.mockClear();
+    mocks.disposeCb?.();
+    mocks.disposeCb = null;
+    mocks.handler = null;
+  });
+
+  it("posts preview:csp-fallback to the open panel with the stripped target", async () => {
+    const { PreviewHostServer } = (await import("../../infrastructure/preview/PreviewHostServer")) as any;
+    PreviewHostServer.instances.length = 0;
+    await openDesignStudio(makeContext());
+    const server = PreviewHostServer.instances[PreviewHostServer.instances.length - 1];
+    expect(server.options.onCspFallback).toBeTypeOf("function");
+    server.options.onCspFallback("http://127.0.0.1:3000/");
+    expect(mocks.postMessage).toHaveBeenCalledWith({ type: "preview:csp-fallback", target: "http://127.0.0.1:3000/" });
+  });
+
+  it("reads the current panel at call time: silent after dispose, posts after reopen", async () => {
+    const { PreviewHostServer } = (await import("../../infrastructure/preview/PreviewHostServer")) as any;
+    PreviewHostServer.instances.length = 0;
+    await openDesignStudio(makeContext());
+    const first = PreviewHostServer.instances[0];
+    mocks.disposeCb?.();
+    mocks.disposeCb = null;
+    mocks.postMessage.mockClear();
+    first.options.onCspFallback("http://127.0.0.1:3000/");
+    expect(mocks.postMessage).not.toHaveBeenCalled();
+    await openDesignStudio(makeContext());
+    first.options.onCspFallback("http://127.0.0.1:3000/");
+    expect(mocks.postMessage).toHaveBeenCalledWith({ type: "preview:csp-fallback", target: "http://127.0.0.1:3000/" });
   });
 });
 

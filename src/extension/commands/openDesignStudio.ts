@@ -49,6 +49,11 @@ async function ensureHostServer(context: vscode.ExtensionContext, workspaceRoot:
       webviewRoot: path.join(context.extensionUri.fsPath, "dist", "webview"),
       projectRoot: workspaceRoot,
       trace: (line) => traceChannel.appendLine(`${new Date().toISOString()} ${line}`),
+      // IMP-B: the shared server outlives panels, so read activePanel at call
+      // time instead of capturing a stale one.
+      onCspFallback: (target) => {
+        void activePanel?.webview.postMessage({ type: "preview:csp-fallback", target });
+      },
     });
     await server.start();
     sharedHostServer = server;
